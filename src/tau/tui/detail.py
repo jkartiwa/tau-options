@@ -93,7 +93,15 @@ class DetailPane(Static):
         iv_line = f"spot {_fmt(cy.underlying)} · ATM IV {_fmt(atm and atm * 100, '.1f')}%"
         if atm is not None and c.iv30 is not None:
             iv_line += f" [dim](metrics iv30 {c.iv30:.1f}%)[/dim]"
-        lines = [head, iv_line, f"expected move ±{_fmt(cy.expected_move)} (1σ)", ""]
+        em_note = ""
+        if cy.expected_move_method == "straddle×0.85":
+            em_note = " [dim](wings unpriced, straddle-only)[/dim]"
+        lines = [
+            head,
+            iv_line,
+            f"expected move ±{_fmt(cy.expected_move)}{em_note}",
+            "",
+        ]
 
         if not st.complete:
             lines.append(f"[yellow]no structure: {st.reason}[/yellow]")

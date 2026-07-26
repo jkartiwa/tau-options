@@ -9,6 +9,7 @@ from tau.chain import (
     build_strangle,
     be_vs_expected_move,
     select_strikes,
+    strike_ladder,
 )
 
 
@@ -93,12 +94,65 @@ def test_off_target_reports_the_miss():
     assert round(st.off_target, 2) == 0.24  # 0.40 vs 0.16
 
 
-def test_expected_move_and_be_ratio():
-    cy = cycle(LEGS, underlying=100.0, dte=365)  # one year, iv 0.30 -> 30 pts
-    assert round(cy.expected_move, 2) == 30.0
-    st = build_strangle(cy)
-    # nearest breakeven is 85 - 2.1 = 82.9, i.e. 17.1 points away
-    assert round(be_vs_expected_move(cy, st), 3) == round(17.1 / 30.0, 3)
+# A ladder built so every component of tastytrade's weighted expected-move
+# formula (ATM straddle, 1st and 2nd OTM strangle) is independently checkable:
+# straddle@100 mid 6.00, wing1 (95p+105c) mid 3.00, wing2 (90p+110c) mid 1.20.
+EM_LEGS = (
+    leg(100, "C", 0.50, bid=2.95, ask=3.05, iv=0.30),
+    leg(100, "P", -0.50, bid=2.90, ask=3.10, iv=0.32),
+    leg(105, "C", 0.30, bid=1.45, ask=1.55, iv=0.29),
+    leg(95, "P", -0.30, bid=1.45, ask=1.55, iv=0.31),
+    leg(110, "C", 0.16, bid=0.55, ask=0.65, iv=0.28),
+    leg(90, "P", -0.16, bid=0.55, ask=0.65, iv=0.33),
+)
+
+
+def test_atm_iv_blends_call_and_put_at_the_nearest_strike():
+    cy = cycle(EM_LEGS, underlying=100.0)
+    assert cy.atm_iv == pytest.approx((0.30 + 0.32) / 2)
+
+
+def test_expected_move_uses_tastytrade_weighted_formula_when_wings_priced():
+    cy = cycle(EM_LEGS, underlying=100.0)
+    assert cy.expected_move == pytest.approx(0.6 * 6.0 + 0.3 * 3.0 + 0.1 * 1.2)
+    assert cy.expected_move_method == "weighted"
+
+
+def test_expected_move_falls_back_to_straddle_only_when_wings_missing():
+    atm_only = EM_LEGS[:2]  # just the 100-strike call and put
+    cy = cycle(atm_only, underlying=100.0)
+    assert cy.expected_move == pytest.approx(6.0 * 0.85)
+    assert cy.expected_move_method == "straddle×0.85"
+
+
+def test_expected_move_is_none_when_no_strike_has_both_sides():
+    # LEGS has puts at 80/85/90 and calls at 110/115/120 — no strike carries
+    # both, so there is no straddle to anchor on.
+    cy = cycle(LEGS, underlying=100.0)
+    assert cy.expected_move is None
+    assert cy.expected_move_method is None
+
+
+def test_expected_move_is_none_when_atm_straddle_leg_unpriced():
+    legs = (leg(100, "C", 0.50, bid=None, ask=None), leg(100, "P", -0.50))
+    cy = cycle(legs, underlying=100.0)
+    assert cy.expected_move is None
+
+
+def test_be_vs_expected_move_uses_the_weighted_move():
+    cy = cycle(EM_LEGS, underlying=100.0)
+    st = build_strangle(cy)  # nearest-0.16Δ: put@90 (mid .60), call@110 (mid .60)
+    assert (st.put.strike, st.call.strike) == (90, 110)
+    # credit 1.20, breakevens (88.8, 111.2); nearer one is 11.2 away
+    em = 0.6 * 6.0 + 0.3 * 3.0 + 0.1 * 1.2
+    assert be_vs_expected_move(cy, st) == pytest.approx(11.2 / em)
+
+
+def test_strike_ladder_groups_call_and_put_by_strike():
+    ladder = strike_ladder(EM_LEGS)
+    assert [row.strike for row in ladder] == [90, 95, 100, 105, 110]
+    row100 = ladder[2]
+    assert row100.call.right == "C" and row100.put.right == "P"
 
 
 def test_strike_window_spans_the_wings_on_a_dense_ladder():

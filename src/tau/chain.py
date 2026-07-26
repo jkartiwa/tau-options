@@ -41,6 +41,18 @@ MAX_STRIKES_PER_SIDE = 26
 DELTA_TOLERANCE = 0.05  # beyond this, the pick is reported as off-target
 DAYS_PER_YEAR = 365.0
 
+# tastytrade's own expected-move convention: the ATM straddle blended with
+# the first two OTM strangles, weighted 60/30/10 — not the plainer
+# straddle*0.85 heuristic (Brenner-Subrahmanyam gives ~0.7979 as the more
+# precise version of that constant, and different desks round it
+# differently). Weighting in the wings is a cheap skew correction: a
+# single-strike straddle only samples the smile at one point. Falls back to
+# the 0.85 straddle-only heuristic when the wing strikes are not both
+# priced, since that can still happen on a thin chain or a narrow fetch
+# window; falls back to None only if even the straddle is unpriced.
+EM_WEIGHTS = (0.6, 0.3, 0.1)  # straddle, 1st OTM strangle, 2nd OTM strangle
+STRADDLE_ONLY_FACTOR = 0.85
+
 
 @dataclass(frozen=True)
 class Leg:
@@ -72,6 +84,54 @@ class Leg:
 
 
 @dataclass(frozen=True)
+class StrikeRow:
+    """One strike's call and put together — the natural unit for a straddle
+    or a strangle leg pair, as opposed to `Leg`, which is one side alone."""
+
+    strike: float
+    call: Leg | None
+    put: Leg | None
+
+
+def strike_ladder(legs: tuple[Leg, ...]) -> list[StrikeRow]:
+    by_strike: dict[float, dict[str, Leg]] = {}
+    for leg in legs:
+        by_strike.setdefault(leg.strike, {})[leg.right] = leg
+    return [
+        StrikeRow(strike, sides.get("C"), sides.get("P"))
+        for strike, sides in sorted(by_strike.items())
+    ]
+
+
+def _atm_index(ladder: list[StrikeRow], spot: float) -> int | None:
+    if not ladder:
+        return None
+    return min(range(len(ladder)), key=lambda i: abs(ladder[i].strike - spot))
+
+
+def _straddle_mid(row: StrikeRow) -> float | None:
+    """Call mid + put mid at one strike. Both sides must be priced — half a
+    straddle is not a smaller straddle, it is a different, wrong number."""
+    if row.call is None or row.put is None:
+        return None
+    if not row.call.priced or not row.put.priced:
+        return None
+    return row.call.mid + row.put.mid
+
+
+def _strangle_mid(ladder: list[StrikeRow], atm_idx: int, n: int) -> float | None:
+    """Call n strikes above the ATM strike + put n strikes below it — the
+    'nth OTM strangle' tastytrade's expected-move formula weights in."""
+    up, down = atm_idx + n, atm_idx - n
+    if up >= len(ladder) or down < 0:
+        return None
+    call, put = ladder[up].call, ladder[down].put
+    if call is None or put is None or not call.priced or not put.priced:
+        return None
+    return call.mid + put.mid
+
+
+@dataclass(frozen=True)
 class Cycle:
     symbol: str
     expiration: date
@@ -82,27 +142,44 @@ class Cycle:
     expirations: tuple[tuple[date, int], ...] = ()  # every cycle available
 
     @property
-    def atm(self) -> Leg | None:
-        if self.underlying is None:
-            return None
-        priced = [leg for leg in self.legs if leg.iv is not None]
-        if not priced:
-            return None
-        return min(priced, key=lambda leg: abs(leg.strike - self.underlying))
-
-    @property
     def atm_iv(self) -> float | None:
-        leg = self.atm
-        return None if leg is None else leg.iv
+        """Call and put IV at the nearest strike to spot, averaged — a
+        single leg's IV is skew-biased (puts richer than calls, typically),
+        so blending both sides of the same strike is the honest read."""
+        ladder = strike_ladder(self.legs)
+        idx = _atm_index(ladder, self.underlying) if self.underlying else None
+        if idx is None:
+            return None
+        row = ladder[idx]
+        ivs = [leg.iv for leg in (row.call, row.put) if leg and leg.iv is not None]
+        return sum(ivs) / len(ivs) if ivs else None
 
     @property
     def expected_move(self) -> float | None:
-        """One standard deviation to expiration, sigma * sqrt(t) on the ATM
-        implied vol. Reported in points of the underlying."""
-        iv = self.atm_iv
-        if iv is None or self.underlying is None:
+        value = self._expected_move_calc()
+        return None if value is None else value[0]
+
+    @property
+    def expected_move_method(self) -> str | None:
+        value = self._expected_move_calc()
+        return None if value is None else value[1]
+
+    def _expected_move_calc(self) -> tuple[float, str] | None:
+        if self.underlying is None:
             return None
-        return self.underlying * iv * sqrt(max(self.dte, 0) / DAYS_PER_YEAR)
+        ladder = strike_ladder(self.legs)
+        idx = _atm_index(ladder, self.underlying)
+        if idx is None:
+            return None
+        straddle = _straddle_mid(ladder[idx])
+        if straddle is None:
+            return None
+        w1 = _strangle_mid(ladder, idx, 1)
+        w2 = _strangle_mid(ladder, idx, 2)
+        if w1 is not None and w2 is not None:
+            a, b, c = EM_WEIGHTS
+            return (a * straddle + b * w1 + c * w2, "weighted")
+        return (straddle * STRADDLE_ONLY_FACTOR, "straddle×0.85")
 
 
 @dataclass(frozen=True)
