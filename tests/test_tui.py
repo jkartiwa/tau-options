@@ -156,3 +156,150 @@ async def test_detail_pane_renders_and_chain_loads_on_enter():
         assert a._cycles["HIGH"] is cycle
         rendered = str(a.query_one("#detail").content)
         assert "strangle" in rendered and "credit" in rendered
+
+
+def _proposal_loader_factory(proposals_by_symbol):
+    """Fake loader that resolves synchronously via on_done, per candidate."""
+
+    async def loader(candidates, on_done):
+        for c in candidates:
+            on_done(proposals_by_symbol[c.symbol])
+
+    return loader
+
+
+def _fake_proposal(symbol, dte=40, credit=5.0, bpr=2000.0, pop=0.75, spread_cost=0.10):
+    from tau.chain import Cycle, Leg, Strangle
+
+    put = Leg(f"P{symbol}", f"sP{symbol}", 90.0, "P", bid=credit / 2 - 0.05, ask=credit / 2 + 0.05, delta=-0.16, iv=0.3)
+    call = Leg(f"C{symbol}", f"sC{symbol}", 110.0, "C", bid=credit / 2 - 0.05, ask=credit / 2 + 0.05, delta=0.16, iv=0.3)
+    cy = Cycle(symbol=symbol, expiration=date(2026, 9, 4), dte=dte, underlying=100.0,
+               legs=(put, call), fetched_at=datetime.now(UTC))
+    st = Strangle(put, call, target_delta=0.16)
+
+    class FakeProposal:
+        candidate = None
+        cycle = cy
+        strangle = st
+        error = None
+
+        @property
+        def ok(self):
+            return True
+
+        @property
+        def symbol(self):
+            return symbol
+
+        @property
+        def credit(self):
+            return round(put.mid + call.mid, 2)
+
+        @property
+        def bpr(self):
+            return bpr
+
+        @property
+        def roc(self):
+            return (self.credit * 100) / bpr
+
+        @property
+        def annualized_roc(self):
+            return self.roc * 365 / dte
+
+        @property
+        def pop(self):
+            return pop
+
+        @property
+        def spread_cost(self):
+            return spread_cost
+
+        @property
+        def be_over_em(self):
+            return 1.0
+
+    return FakeProposal()
+
+
+@pytest.mark.asyncio
+async def test_rank_view_prices_the_passing_shortlist():
+    async def loader():
+        return list(FIXTURE)  # HIGH, ERN(excluded by earnings), CHEAP pass by default
+
+    proposals = {
+        "HIGH": _fake_proposal("HIGH", credit=10.0, bpr=5000.0),  # ROC 20%
+        "CHEAP": _fake_proposal("CHEAP", credit=1.0, bpr=200.0),  # ROC 50%, richer
+        "MID": _fake_proposal("MID", credit=1.0, bpr=500.0),
+    }
+    a = TauApp(loader=loader, proposal_loader=_proposal_loader_factory(proposals))
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert symbols(a) == ["HIGH", "CHEAP", "MID"]  # screen order, default IVR sort
+        await pilot.press("p")
+        await pilot.pause()
+        assert a.mode == "rank"
+        # CHEAP's credit/BPR beats HIGH's, so ANN% rank reorders them.
+        ranked = [c.symbol for c in a._rank_rows]
+        assert ranked.index("CHEAP") < ranked.index("HIGH")
+
+
+@pytest.mark.asyncio
+async def test_rank_view_reuses_cached_proposals_on_reentry():
+    async def loader():
+        return [FIXTURE[0]]  # just HIGH
+
+    calls = []
+
+    async def track_loader(candidates, on_done):
+        calls.append([c.symbol for c in candidates])
+        on_done(_fake_proposal("HIGH"))
+
+    a = TauApp(loader=loader, proposal_loader=track_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.press("p")
+        await pilot.pause()
+        assert calls == [["HIGH"]]  # second entry served from cache, no refetch
+
+
+@pytest.mark.asyncio
+async def test_reprice_forces_a_refetch():
+    async def loader():
+        return [FIXTURE[0]]
+
+    calls = []
+
+    async def track_loader(candidates, on_done):
+        calls.append([c.symbol for c in candidates])
+        on_done(_fake_proposal("HIGH"))
+
+    a = TauApp(loader=loader, proposal_loader=track_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        await pilot.press("R")
+        await pilot.pause()
+        assert calls == [["HIGH"], ["HIGH"]]
+
+
+@pytest.mark.asyncio
+async def test_escape_returns_to_screen_view():
+    async def loader():
+        return list(FIXTURE)
+
+    a = TauApp(loader=loader, proposal_loader=_proposal_loader_factory(
+        {"HIGH": _fake_proposal("HIGH"), "CHEAP": _fake_proposal("CHEAP"), "MID": _fake_proposal("MID")}
+    ))
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        assert a.mode == "rank"
+        await pilot.press("escape")
+        assert a.mode == "screen"
+        assert symbols(a) == ["HIGH", "CHEAP", "MID"]

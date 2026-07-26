@@ -29,5 +29,12 @@ floor, `l` and `e` cycle the liquidity and earnings filters, `s` re-sorts,
 `c` or Enter prices the highlighted name's ~45 DTE cycle and shows a
 16-delta strangle with credit, breakevens, and breakeven-vs-expected-move.
 
+`p` prices the *whole current shortlist* concurrently and switches to a
+ranked view — return on capital (annualized), probability of profit, and
+spread cost as a share of credit, so trades across different names and
+prices are actually comparable instead of just sorted by IV rank. Proposals
+are cached per symbol, so `esc` back to the screen and `p` again is instant;
+`R` forces a re-price.
+
 Every scan is logged to a local SQLite database so picks can be evaluated
 against outcomes later.
