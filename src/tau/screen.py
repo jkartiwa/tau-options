@@ -29,22 +29,52 @@ class Candidate:
     liquidity: int | None  # tasty liquidity rating, 4 best
     beta: float | None
     earnings_date: date | None  # next expected report, if any
+    # Per-expiration IV, ascending by date — arrives free with the bulk
+    # metrics pull, so term structure costs no extra call.
+    term: tuple[tuple[date, float], ...] = ()
     excluded: tuple[str, ...] = ()
 
     @property
     def passed(self) -> bool:
         return not self.excluded
 
+    @property
+    def iv_hv(self) -> float | None:
+        """Implied over realized. IV rank says rich versus this name's own
+        history; this says rich versus what the name actually does — under
+        1.0 you are selling vol below realized."""
+        if self.iv30 is None or not self.hv30:
+            return None
+        return self.iv30 / self.hv30
+
+    def days_to_earnings(self, today: date) -> int | None:
+        if self.earnings_date is None or self.earnings_date < today:
+            return None
+        return (self.earnings_date - today).days
+
 
 def _pct(value) -> float | None:
     return None if value is None else float(value) * 100
 
 
-def parse(m: MarketMetricInfo) -> Candidate:
+def parse(m: MarketMetricInfo, today: date | None = None) -> Candidate:
+    today = today or date.today()
     earnings = None
     if m.earnings is not None and m.earnings.expected_report_date is not None:
         earnings = m.earnings.expected_report_date
+    # Per-expiration IV arrives 0–1 (unlike the percent-scale iv30/hv30), and
+    # the list keeps a just-expired row whose IV is garbage (SMH showed 160%
+    # on an expiration two days past), so drop anything not still live.
+    term = tuple(
+        (v.expiration_date, float(v.implied_volatility) * 100)
+        for v in sorted(
+            m.option_expiration_implied_volatilities or [],
+            key=lambda v: v.expiration_date,
+        )
+        if v.implied_volatility is not None and v.expiration_date >= today
+    )
     return Candidate(
+        term=term,
         symbol=m.symbol,
         ivr=_pct(m.implied_volatility_index_rank),
         ivp=_pct(m.implied_volatility_percentile),
@@ -109,7 +139,7 @@ def evaluate(
     return rank(
         [
             apply_filters(
-                parse(m),
+                parse(m, today),
                 min_ivr=min_ivr,
                 min_liquidity=min_liquidity,
                 earnings_days=earnings_days,

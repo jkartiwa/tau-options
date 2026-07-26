@@ -89,7 +89,15 @@ def main() -> None:
     p.add_argument("--all", action="store_true", help="show every symbol with exclusion reasons")
     p.add_argument("--universe", help="path to a custom universe file")
     p.add_argument("--no-log", action="store_true", help="skip writing the scan log")
+
+    sub.add_parser("tui", help="interactive triage over the screen")
+
     args = parser.parse_args()
+    if args.command == "tui":
+        from tau.tui.app import run
+
+        run()
+        return
     asyncio.run(scan(args))
 
 
