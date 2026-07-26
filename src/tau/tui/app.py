@@ -20,9 +20,13 @@ from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Static
 
+from tau import chain as chain_mod
 from tau import screen
 from tau.screen import Candidate
 from tau.session import get_session
+from tau.tui.detail import DetailPane
+
+ChainLoader = Callable[[Candidate], Awaitable[chain_mod.Cycle]]
 
 Loader = Callable[[], Awaitable[list[Candidate]]]
 
@@ -46,6 +50,13 @@ async def fetch_candidates() -> list[Candidate]:
     return [screen.parse(m, today) for m in metrics]
 
 
+async def fetch_cycle_for(candidate: Candidate) -> chain_mod.Cycle:
+    """The metrics pull already knows this name's 30-day IV, so the strike
+    window is sized without paying for a probe."""
+    hint = candidate.iv30 / 100 if candidate.iv30 else None
+    return await chain_mod.fetch_cycle(get_session(), candidate.symbol, iv_hint=hint)
+
+
 def _universe() -> list[str]:
     from tau import universe
 
@@ -64,12 +75,19 @@ class TauApp(App):
     CSS = """
     #meta { height: 1; padding: 0 1; background: $panel; color: $text-muted; }
     #filters { height: 1; padding: 0 1; color: $text-muted; }
-    DataTable { height: 1fr; }
-    .warn { color: $warning; }
+    #table { width: 1fr; height: 1fr; }
+    #detail {
+        width: 46; height: 1fr; padding: 0 1;
+        border-left: solid $panel; overflow-y: auto;
+    }
     """
 
     BINDINGS = [
         Binding("q", "quit", "quit"),
+        # Enter also works, via the table's RowSelected; it can't be bound
+        # here because the focused table consumes it before the app sees it,
+        # which would leave the action undiscoverable in the footer.
+        Binding("c", "load_chain", "chain"),
         Binding("r", "refresh", "refresh"),
         Binding("s", "sort", "sort"),
         Binding("x", "toggle_excluded", "excluded"),
@@ -86,19 +104,29 @@ class TauApp(App):
     sort_index: reactive[int] = reactive(0)
     show_excluded: reactive[bool] = reactive(False)
 
-    def __init__(self, loader: Loader | None = None) -> None:
+    def __init__(
+        self,
+        loader: Loader | None = None,
+        chain_loader: ChainLoader | None = None,
+    ) -> None:
         super().__init__()
         self._loader: Loader = loader or fetch_candidates
+        self._chain_loader: ChainLoader = chain_loader or fetch_cycle_for
         self._raw: list[Candidate] = []
         self._rows: list[Candidate] = []
         self._starred: set[str] = set()
         self._fetched_at: datetime | None = None
         self._status = "loading…"
+        # Cycles are kept per symbol so returning to a name is instant; the
+        # timestamp travels with them so a stale quote can't pass as live.
+        self._cycles: dict[str, chain_mod.Cycle] = {}
+        self._detail_status = ""
 
     def compose(self) -> ComposeResult:
         yield Static("", id="meta")
         with Horizontal():
             yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
+            yield DetailPane("", id="detail")
         yield Static("", id="filters")
         yield Footer()
 
@@ -165,6 +193,41 @@ class TauApp(App):
             )
         if self._rows:
             table.move_cursor(row=min(cursor, len(self._rows) - 1))
+        self.render_detail()
+
+    def render_detail(self) -> None:
+        c = self.selected
+        cycle = self._cycles.get(c.symbol) if c else None
+        self.query_one("#detail", DetailPane).show(
+            c, cycle, status=self._detail_status
+        )
+
+    def on_data_table_row_highlighted(self, _: DataTable.RowHighlighted) -> None:
+        self._detail_status = ""
+        self.render_detail()
+
+    def on_data_table_row_selected(self, _: DataTable.RowSelected) -> None:
+        # Enter reaches the focused table as a row selection, never the
+        # app-level binding, so the chain load hangs off this instead.
+        self.action_load_chain()
+
+    @work(exclusive=True)
+    async def load_chain(self, candidate: Candidate) -> None:
+        self._detail_status = f"loading {candidate.symbol} chain…"
+        self.render_detail()
+        try:
+            cycle = await self._chain_loader(candidate)
+            self._cycles[candidate.symbol] = cycle
+            self._detail_status = ""
+        except Exception as exc:
+            self._detail_status = f"chain failed: {exc}"
+        # The cursor may have moved on; only repaint what is selected now.
+        self.render_detail()
+
+    def action_load_chain(self) -> None:
+        c = self.selected
+        if c is not None:
+            self.load_chain(c)
 
     # ---- chrome ----
 

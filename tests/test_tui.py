@@ -1,3 +1,5 @@
+import asyncio
+from datetime import UTC, datetime
 from datetime import date, timedelta
 
 import pytest
@@ -106,3 +108,51 @@ async def test_star_toggles():
         assert a._starred == {"HIGH"}
         await pilot.press("space")
         assert a._starred == set()
+
+
+@pytest.mark.asyncio
+async def test_detail_pane_renders_and_chain_loads_on_enter():
+    """Guards the Textual base-class collision that silently deadlocked the
+    app: mounting a widget whose helper shadowed MessagePump._context stopped
+    message dispatch entirely."""
+    from datetime import date as _date
+
+    from tau.chain import Cycle, Leg
+
+    cycle = Cycle(
+        symbol="HIGH",
+        expiration=_date(2026, 9, 4),
+        dte=40,
+        underlying=100.0,
+        legs=(
+            Leg("P85", "s1", 85.0, "P", bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
+            Leg("C115", "s2", 115.0, "C", bid=0.8, ask=1.0, delta=0.17, iv=0.30),
+        ),
+        fetched_at=datetime.now(UTC),
+    )
+
+    calls = []
+
+    async def chain_loader(candidate):
+        calls.append(candidate.symbol)
+        return cycle
+
+    async def loader():
+        return list(FIXTURE)
+
+    a = TauApp(loader=loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        pane = a.query_one("#detail")
+        assert "HIGH" in str(pane.content)
+        assert not calls  # cursor movement alone never pulls a chain
+        await pilot.press("enter")
+        await pilot.pause()
+        for _ in range(50):
+            if "HIGH" in calls:
+                break
+            await asyncio.sleep(0.05)
+        assert calls == ["HIGH"]
+        assert a._cycles["HIGH"] is cycle
+        rendered = str(a.query_one("#detail").content)
+        assert "strangle" in rendered and "credit" in rendered
