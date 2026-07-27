@@ -146,12 +146,18 @@ class DetailPane(Static):
         st = chain_mod.build_strangle(cy)
         head = f"[b]{cy.expiration}[/b] · {cy.dte} DTE"
         atm = cy.atm_iv
-        # Chain IV and the metrics 30-day read are two different measurements;
-        # showing both makes a disagreement visible instead of picking a
-        # winner silently. They diverge most where the quotes are wide.
+        # The fair comparison is metrics' own term-structure IV *at this
+        # expiration*, not the fixed-tenor iv30 (shown separately in the
+        # context lines): iv30 is pinned to 30 days, but the chosen
+        # expiration usually isn't, and on names with steep term structure
+        # that alone produces a large gap that looks like mid-quote
+        # inflation but isn't. Verified live 2026-07-27: apparent 20+pt
+        # gaps against iv30 (SMH, MU, INTC) shrank to a consistent -2 to
+        # -7pt gap once compared at the matching expiration.
+        term_iv = next((v for d, v in c.term if d == cy.expiration), None)
         iv_line = f"spot {_fmt(cy.underlying)} · ATM IV {_fmt(atm and atm * 100, '.1f')}%"
-        if atm is not None and c.iv30 is not None:
-            iv_line += f" [dim](metrics iv30 {c.iv30:.1f}%)[/dim]"
+        if atm is not None and term_iv is not None:
+            iv_line += f" [dim](metrics @exp {term_iv:.1f}%)[/dim]"
         em_note = ""
         if cy.expected_move_method == "straddle×0.85":
             em_note = " [dim](wings unpriced, straddle-only)[/dim]"
