@@ -8,6 +8,7 @@ from tau.chain import (
     Leg,
     build_strangle,
     be_vs_expected_move,
+    choose_expiration,
     select_strikes,
     strike_ladder,
 )
@@ -171,3 +172,35 @@ def test_strike_window_without_spot_falls_back_to_the_middle():
     strikes = [FakeStrike(s) for s in range(50, 150)]
     sel = select_strikes(strikes, underlying=None, dte=40)
     assert sel and len(sel) <= 52
+
+
+@dataclass(frozen=True)
+class FakeExpiration:
+    expiration_date: date
+    days_to_expiration: int
+    expiration_type: str
+
+
+@dataclass(frozen=True)
+class FakeChain:
+    expirations: tuple
+
+
+def test_choose_expiration_excludes_weeklies():
+    chain = FakeChain(
+        expirations=(
+            FakeExpiration(date(2026, 9, 4), 40, "Weekly"),  # closer to target
+            FakeExpiration(date(2026, 9, 18), 54, "Regular"),
+            FakeExpiration(date(2026, 10, 16), 82, "Regular"),
+        )
+    )
+    exp = choose_expiration(chain, target_dte=45)
+    assert exp.expiration_type == "Regular"
+    assert exp.expiration_date == date(2026, 9, 18)
+
+
+def test_choose_expiration_none_when_only_weeklies_available():
+    chain = FakeChain(
+        expirations=(FakeExpiration(date(2026, 9, 4), 40, "Weekly"),)
+    )
+    assert choose_expiration(chain, target_dte=45) is None

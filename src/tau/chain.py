@@ -315,8 +315,21 @@ def select_strikes(
     )
 
 
+MONTHLY_EXPIRATION_TYPE = "Regular"
+
+
+def is_monthly(expiration) -> bool:
+    """True for a standard monthly (3rd-Friday) expiration. Weeklies and
+    quarterlies are excluded — monthly-only for now, since liquidity and
+    the rest of the pipeline haven't been verified against the thinner
+    weekly chains yet."""
+    return expiration.expiration_type == MONTHLY_EXPIRATION_TYPE
+
+
 def choose_expiration(chain, target_dte: int):
-    live = [e for e in chain.expirations if e.days_to_expiration >= 0]
+    live = [
+        e for e in chain.expirations if e.days_to_expiration >= 0 and is_monthly(e)
+    ]
     if not live:
         return None
     return min(live, key=lambda e: abs(e.days_to_expiration - target_dte))
@@ -339,11 +352,16 @@ async def fetch_cycle(
     available = tuple(
         (e.expiration_date, e.days_to_expiration)
         for e in sorted(chain.expirations, key=lambda e: e.expiration_date)
-        if e.days_to_expiration >= 0
+        if e.days_to_expiration >= 0 and is_monthly(e)
     )
     if expiration is not None:
         exp = next(
-            (e for e in chain.expirations if e.expiration_date == expiration), None
+            (
+                e
+                for e in chain.expirations
+                if e.expiration_date == expiration and is_monthly(e)
+            ),
+            None,
         )
     else:
         exp = choose_expiration(chain, target_dte)
