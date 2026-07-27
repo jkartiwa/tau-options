@@ -9,7 +9,9 @@ from datetime import date
 
 from textual.widgets import Static
 
+from tau import catalyst as catalyst_mod
 from tau import chain as chain_mod
+from tau import history as history_mod
 from tau.screen import Candidate
 
 TERM_NEAR_DTE = 7
@@ -50,12 +52,23 @@ class DetailPane(Static):
         cycle: chain_mod.Cycle | None = None,
         status: str = "",
         today: date | None = None,
+        history: history_mod.History | None = None,
+        brief: catalyst_mod.Brief | None = None,
+        why_status: str = "",
     ) -> None:
         if candidate is None:
             self.update("[dim]no selection[/dim]")
             return
         today = today or date.today()
         lines = self._context_lines(candidate, today)
+        # Price position sits with the vol context: both answer "what is
+        # this name doing", and the verdict below reads against them.
+        if history is not None:
+            lines += [""] + self._position_lines(history)
+        if brief is not None:
+            lines += [""] + self._catalyst_lines(brief)
+        if why_status:
+            lines += ["", f"[dim]{why_status}[/dim]"]
         if status:
             lines += ["", f"[dim]{status}[/dim]"]
         if cycle is not None:
@@ -81,6 +94,52 @@ class DetailPane(Static):
             lines.append(f"term {shape}")
         if c.excluded:
             lines += ["", f"[yellow]excluded: {'; '.join(c.excluded)}[/yellow]"]
+        return lines
+
+    def _position_lines(self, h: history_mod.History) -> list[str]:
+        """Where price sits, and whether it got there calmly. IV rank can't
+        tell a panic spike that mean-reverts from a repricing that keeps
+        going; a stretched move at the edge of the range is the tell."""
+        if not h.bars:
+            return ["[yellow]no price history[/yellow]"]
+        pos = h.range_position
+        band = _fmt(h.low_52w) + "–" + _fmt(h.high_52w)
+        pos_txt = "—" if pos is None else f"{pos:.0%}"
+        if pos is not None and (pos >= 0.95 or pos <= 0.05):
+            edge = "high" if pos >= 0.95 else "low"
+            pos_txt = f"[yellow]{pos_txt} ({edge} of range)[/yellow]"
+        lines = [
+            f"[b]price[/b] {_fmt(h.last)} · 52w {band} · at {pos_txt}",
+        ]
+        move, z = h.move, h.move_z
+        move_txt = "—" if move is None else f"{move * 100:+.1f}%"
+        z_txt = "—" if z is None else f"{z:+.2f}σ"
+        detail = (
+            f"{history_mod.MOVE_WINDOW}d move {move_txt} · {z_txt} vs own "
+            f"baseline {_fmt(h.baseline_vol_annual, '.0f')}%"
+        )
+        lines.append(f"[yellow]{detail}[/yellow]" if h.stretched else detail)
+        if h.stretched:
+            lines.append(
+                "[yellow]stretched — check this is repricing, not noise[/yellow]"
+            )
+        return lines
+
+    def _catalyst_lines(self, b: catalyst_mod.Brief) -> list[str]:
+        """The verdict on why vol is bid. Anything that isn't a clean sale
+        is coloured, including 'we can't tell' — an unreadable name is not
+        an all-clear."""
+        colour = "green" if b.tradable else "yellow"
+        lines = [
+            f"[b]why vol is bid[/b] "
+            f"[{colour}]{b.classification}[/{colour}] ({b.confidence})",
+            f"[dim]{b.gloss}[/dim]",
+        ]
+        if b.catalyst:
+            lines.append(f"catalyst {b.catalyst}")
+        for k in b.key_dates:
+            lines.append(f"[yellow]  {k.day} — {k.event}[/yellow]")
+        lines.append(b.note)
         return lines
 
     def _cycle_lines(self, c: Candidate, cy: chain_mod.Cycle) -> list[str]:

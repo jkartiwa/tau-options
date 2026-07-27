@@ -9,10 +9,12 @@ The app takes its data through a `loader` callable so tests (and a future
 cached mode) can drive it without the network.
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
 
+from tastytrade.instruments import Equity
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -20,7 +22,9 @@ from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Static
 
+from tau import catalyst as catalyst_mod
 from tau import chain as chain_mod
+from tau import history as history_mod
 from tau import propose as propose_mod
 from tau import screen
 from tau.propose import Proposal
@@ -31,6 +35,8 @@ from tau.tui.detail import DetailPane
 ChainLoader = Callable[[Candidate], Awaitable[chain_mod.Cycle]]
 Loader = Callable[[], Awaitable[list[Candidate]]]
 ProposalLoader = Callable[[list[Candidate], Callable[[Proposal], None]], Awaitable[None]]
+HistoryLoader = Callable[[Candidate], Awaitable[history_mod.History]]
+BriefLoader = Callable[[Candidate], Awaitable[catalyst_mod.Brief]]
 
 # Cycled by keypress rather than typed — a scanner's thresholds are coarse.
 IVR_STEP = 5.0
@@ -77,6 +83,26 @@ async def price_shortlist(
     await propose_mod.price_many(get_session(), candidates, on_done=on_done)
 
 
+async def fetch_history_for(candidate: Candidate) -> history_mod.History:
+    return await history_mod.fetch_history(get_session(), candidate.symbol)
+
+
+async def fetch_brief_for(candidate: Candidate) -> catalyst_mod.Brief:
+    """The company name makes a far better news query than a bare ticker,
+    which collides with ordinary words, but it is not worth failing over."""
+    description: str | None = None
+    try:
+        equity = await Equity.get(get_session(), candidate.symbol)
+        description = equity.description
+    except Exception:
+        pass
+    # Headline fetch and the model call are both blocking; keep them off the
+    # event loop or the TUI freezes for the duration.
+    return await asyncio.to_thread(
+        catalyst_mod.brief_for, candidate.symbol, description
+    )
+
+
 def _universe() -> list[str]:
     from tau import universe
 
@@ -108,6 +134,7 @@ class TauApp(App):
         # here because the focused table consumes it before the app sees it,
         # which would leave the action undiscoverable in the footer.
         Binding("c", "load_chain", "chain"),
+        Binding("w", "load_why", "why"),
         Binding("r", "refresh", "refresh"),
         Binding("s", "sort", "sort"),
         Binding("x", "toggle_excluded", "excluded"),
@@ -134,11 +161,15 @@ class TauApp(App):
         loader: Loader | None = None,
         chain_loader: ChainLoader | None = None,
         proposal_loader: ProposalLoader | None = None,
+        history_loader: HistoryLoader | None = None,
+        brief_loader: BriefLoader | None = None,
     ) -> None:
         super().__init__()
         self._loader: Loader = loader or fetch_candidates
         self._chain_loader: ChainLoader = chain_loader or fetch_cycle_for
         self._proposal_loader: ProposalLoader = proposal_loader or price_shortlist
+        self._history_loader: HistoryLoader = history_loader or fetch_history_for
+        self._brief_loader: BriefLoader = brief_loader or fetch_brief_for
         self._raw: list[Candidate] = []
         self._rows: list[Candidate] = []
         self._starred: set[str] = set()
@@ -148,6 +179,13 @@ class TauApp(App):
         # timestamp travels with them so a stale quote can't pass as live.
         self._cycles: dict[str, chain_mod.Cycle] = {}
         self._detail_status = ""
+        # Price context and the catalyst read, cached per symbol: the first
+        # is a websocket round trip, the second costs a model call.
+        self._history: dict[str, history_mod.History] = {}
+        self._briefs: dict[str, catalyst_mod.Brief] = {}
+        # Its own status line — one shared string would let the chain load
+        # and this one overwrite each other's message.
+        self._why_status = ""
         # Proposals persist across a rank-mode exit/re-entry so toggling back
         # and forth never re-fetches; only `R` forces a re-price.
         self._proposals: dict[str, Proposal] = {}
@@ -187,6 +225,11 @@ class TauApp(App):
         # as fresh would be worse than an empty rank view.
         self._proposals.clear()
         self._cycles.clear()
+        # Same reasoning for the price and catalyst reads: a brief taken
+        # before the refresh describes the market as it was, and re-reading
+        # costs nothing until the user asks for it again with `w`.
+        self._history.clear()
+        self._briefs.clear()
         self.rebuild()
 
     def rebuild(self) -> None:
@@ -309,11 +352,17 @@ class TauApp(App):
         c = self.selected
         cycle = self._cycles.get(c.symbol) if c else None
         self.query_one("#detail", DetailPane).show(
-            c, cycle, status=self._detail_status
+            c,
+            cycle,
+            status=self._detail_status,
+            history=self._history.get(c.symbol) if c else None,
+            brief=self._briefs.get(c.symbol) if c else None,
+            why_status=self._why_status,
         )
 
     def on_data_table_row_highlighted(self, _: DataTable.RowHighlighted) -> None:
         self._detail_status = ""
+        self._why_status = ""
         self.render_detail()
 
     def on_data_table_row_selected(self, _: DataTable.RowSelected) -> None:
@@ -338,6 +387,51 @@ class TauApp(App):
         c = self.selected
         if c is not None:
             self.load_chain(c)
+
+    # Its own worker group: the default group is shared, so an ungrouped
+    # exclusive worker here would cancel an in-flight chain load.
+    @work(exclusive=True, group="why")
+    async def load_why(self, candidate: Candidate) -> None:
+        """Price position and the catalyst read, together. They run
+        concurrently because the price side lands in about a second and the
+        model call takes a good deal longer; waiting on both to show either
+        would make the fast half feel slow."""
+        symbol = candidate.symbol
+        self._why_status = f"reading {symbol}…"
+        self.render_detail()
+
+        history_task = asyncio.create_task(self._history_loader(candidate))
+        brief_task = asyncio.create_task(self._brief_loader(candidate))
+        failures: list[str] = []
+        try:
+            try:
+                self._history[symbol] = await history_task
+            except Exception as exc:
+                failures.append(f"history failed: {exc}")
+            # Repaint so the price context appears without waiting on the
+            # model; the cursor may have moved, and render_detail re-reads it.
+            self._why_status = f"classifying {symbol}…"
+            self.render_detail()
+            try:
+                self._briefs[symbol] = await brief_task
+            except Exception as exc:
+                failures.append(f"catalyst failed: {exc}")
+        finally:
+            # On cancellation (a second keypress) neither task should outlive
+            # the worker that owns it.
+            for task in (history_task, brief_task):
+                if not task.done():
+                    task.cancel()
+        self._why_status = " · ".join(failures)
+        self.render_detail()
+
+    def action_load_why(self) -> None:
+        c = self.selected
+        if c is None:
+            return
+        if c.symbol in self._history and c.symbol in self._briefs:
+            return  # already read; both are cached per symbol
+        self.load_why(c)
 
     @work(exclusive=True)
     async def price_shortlist_worker(self, candidates: list[Candidate]) -> None:

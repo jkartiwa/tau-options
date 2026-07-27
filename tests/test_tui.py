@@ -158,6 +158,132 @@ async def test_detail_pane_renders_and_chain_loads_on_enter():
         assert "strangle" in rendered and "credit" in rendered
 
 
+def _why_app(history=None, brief=None, calls=None):
+    from datetime import UTC as _UTC
+
+    from tau.catalyst import Brief
+    from tau.history import Bar, History
+
+    calls = calls if calls is not None else []
+    history = history or History(
+        symbol="HIGH",
+        bars=tuple(
+            Bar(day=TODAY - timedelta(days=i), open=100.0, high=120.0, low=80.0, close=100.0)
+            for i in range(60, 0, -1)
+        ),
+        fetched_at=datetime.now(_UTC),
+    )
+    brief = brief or Brief(
+        symbol="HIGH",
+        classification="resolved",
+        catalyst="Q2 earnings reported",
+        key_dates=(),
+        confidence="high",
+        note="Event passed; IV should bleed.",
+        headlines=(),
+        fetched_at=datetime.now(_UTC),
+    )
+
+    async def history_loader(candidate):
+        calls.append(("history", candidate.symbol))
+        return history
+
+    async def brief_loader(candidate):
+        calls.append(("brief", candidate.symbol))
+        return brief
+
+    async def loader():
+        return list(FIXTURE)
+
+    return TauApp(
+        loader=loader, history_loader=history_loader, brief_loader=brief_loader
+    ), calls
+
+
+async def _settle(a, predicate, tries=60):
+    for _ in range(tries):
+        if predicate():
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
+@pytest.mark.asyncio
+async def test_why_loads_price_context_and_catalyst_on_w():
+    a, calls = _why_app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert not calls  # cursor movement alone costs nothing
+        await pilot.press("w")
+        assert await _settle(a, lambda: "HIGH" in a._briefs)
+        assert set(calls) == {("history", "HIGH"), ("brief", "HIGH")}
+        rendered = str(a.query_one("#detail").content)
+        assert "why vol is bid" in rendered and "resolved" in rendered
+        assert "52w" in rendered
+
+
+@pytest.mark.asyncio
+async def test_why_is_cached_per_symbol():
+    a, calls = _why_app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        assert await _settle(a, lambda: "HIGH" in a._briefs)
+        await pilot.press("w")
+        await pilot.pause()
+        assert len(calls) == 2  # second press served from cache
+
+
+@pytest.mark.asyncio
+async def test_why_does_not_cancel_an_in_flight_chain_load():
+    """Both are exclusive workers; sharing the default group would make one
+    keypress silently kill the other's fetch."""
+    from tau.chain import Cycle, Leg
+
+    started = asyncio.Event()
+    chain_calls = []
+
+    async def slow_chain_loader(candidate):
+        started.set()
+        await asyncio.sleep(0.3)
+        chain_calls.append(candidate.symbol)
+        return Cycle(
+            symbol=candidate.symbol,
+            expiration=date(2026, 9, 4),
+            dte=40,
+            underlying=100.0,
+            legs=(
+                Leg("P85", "s1", 85.0, "P", bid=1.0, ask=1.2, delta=-0.16, iv=0.3),
+                Leg("C115", "s2", 115.0, "C", bid=0.8, ask=1.0, delta=0.17, iv=0.3),
+            ),
+            fetched_at=datetime.now(UTC),
+        )
+
+    a, _ = _why_app()
+    a._chain_loader = slow_chain_loader
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        await asyncio.wait_for(started.wait(), timeout=2)
+        await pilot.press("w")  # must not cancel the chain worker
+        assert await _settle(a, lambda: chain_calls == ["HIGH"])
+        assert "HIGH" in a._cycles
+
+
+@pytest.mark.asyncio
+async def test_why_reports_failure_instead_of_rendering_a_blank():
+    async def boom(candidate):
+        raise RuntimeError("no news")
+
+    a, _ = _why_app()
+    a._brief_loader = boom
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        assert await _settle(a, lambda: "catalyst failed" in a._why_status)
+        assert "HIGH" in a._history  # the price half still landed
+
+
 def _proposal_loader_factory(proposals_by_symbol):
     """Fake loader that resolves synchronously via on_done, per candidate."""
 
