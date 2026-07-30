@@ -1,6 +1,7 @@
-"""CLI: `tau scan` — pull metrics for the universe, print the ranked screen,
-log the scan. `.env` resolves repo-root first, then cwd-upward; existing
-shell vars win either way (dotenv never overrides)."""
+"""CLI: `tau` launches the interactive TUI by default; `tau scan` pulls
+metrics for the universe and prints the ranked screen as text, logging the
+scan. `.env` resolves repo-root first, then cwd-upward; existing shell vars
+win either way (dotenv never overrides)."""
 
 import argparse
 import asyncio
@@ -80,8 +81,8 @@ async def scan(args: argparse.Namespace) -> None:
 def main() -> None:
     _load_env()
     parser = argparse.ArgumentParser(prog="tau", description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("scan", help="run the premium-selling screen")
+    sub = parser.add_subparsers(dest="command")
+    p = sub.add_parser("scan", help="run the premium-selling screen (text output)")
     p.add_argument("--min-ivr", type=float, default=30.0, help="IV rank floor (default 30)")
     p.add_argument("--min-liquidity", type=int, default=3, help="tasty liquidity rating floor, 4 best (default 3)")
     p.add_argument("--days", type=int, default=45, help="exclude symbols with earnings within N days; 0 disables (default 45)")
@@ -90,10 +91,10 @@ def main() -> None:
     p.add_argument("--universe", help="path to a custom universe file")
     p.add_argument("--no-log", action="store_true", help="skip writing the scan log")
 
-    sub.add_parser("tui", help="interactive triage over the screen")
+    sub.add_parser("tui", help="interactive triage over the screen (default)")
 
     args = parser.parse_args()
-    if args.command == "tui":
+    if args.command in (None, "tui"):
         from tau.tui.app import run
 
         run()
