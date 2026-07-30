@@ -1,7 +1,7 @@
-"""Tastytrade OAuth session — the only auth surface. Same personal-grant
-scheme as axion's adapter: TASTY_CLIENT_SECRET + TASTY_REFRESH_TOKEN (read
-scope), the refresh token never expires, and the SDK mints the short-lived
-access tokens per request, so one cached Session serves the process."""
+"""Tastytrade OAuth session — the only auth surface. Personal-grant scheme:
+TASTY_CLIENT_SECRET + TASTY_REFRESH_TOKEN (read scope), the refresh token
+never expires, and the SDK mints the short-lived access tokens per request,
+so one cached Session serves the process."""
 
 import os
 

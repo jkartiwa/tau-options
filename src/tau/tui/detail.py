@@ -7,6 +7,7 @@ loads only on request. That split is why moving down the list stays free.
 
 from datetime import date
 
+from rich.markup import escape
 from textual.widgets import Static
 
 from tau import catalyst as catalyst_mod
@@ -135,11 +136,15 @@ class DetailPane(Static):
             f"[{colour}]{b.classification}[/{colour}] ({b.confidence})",
             f"[dim]{b.gloss}[/dim]",
         ]
+        # catalyst/event/note are model-written from untrusted headlines, and
+        # this pane renders markup — so they are escaped. Unescaped, a crafted
+        # headline could close the [yellow] around a pending_binary and strip
+        # the warning off the one verdict that most needs it.
         if b.catalyst:
-            lines.append(f"catalyst {b.catalyst}")
+            lines.append(f"catalyst {escape(b.catalyst)}")
         for k in b.key_dates:
-            lines.append(f"[yellow]  {k.day} — {k.event}[/yellow]")
-        lines.append(b.note)
+            lines.append(f"[yellow]  {escape(k.day)} — {escape(k.event)}[/yellow]")
+        lines.append(escape(b.note))
         return lines
 
     def _cycle_lines(self, c: Candidate, cy: chain_mod.Cycle) -> list[str]:
