@@ -26,11 +26,38 @@ from tau import chain as chain_mod
 from tau.chain import Cycle, Strangle
 from tau.screen import Candidate
 
-# Concurrency for batch pricing: each symbol opens its own DXLink pass, so
-# this is a courtesy limit on the broker's feed as much as a local one.
+# Concurrency for batch pricing: each symbol's fetch_cycle makes two REST
+# calls (chain lookup, streamer token) before it ever opens a DXLink socket,
+# so MAX_CONCURRENT candidates in flight means up to 2x that many REST
+# requests landing in the same instant. 6 concurrent pipelines was enough to
+# 429 the REST API live; STAGGER_SECONDS spreads their starts so the burst
+# never fully lands at once, and exponential backoff below absorbs whatever
+# still slips through, so the cap can go back to its original size.
 MAX_CONCURRENT = 6
+STAGGER_SECONDS = 0.25
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_BASE_BACKOFF = 1.0
 CONTRACT_MULTIPLIER = 100
 DAYS_PER_YEAR = 365.0
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "429" in text or "too many requests" in text
+
+
+def _clean_error(exc: Exception) -> str:
+    """The SDK dumps the raw response body into the exception message when
+    it can't parse an error as JSON (tastytrade/utils.py's validate_response)
+    — a 429 from a rate-limiting proxy comes back as an HTML page, and that
+    HTML would otherwise leak straight into the rank view's detail pane."""
+    if _is_rate_limited(exc):
+        return "rate limited (429) — too many concurrent requests"
+    text = str(exc).strip()
+    if text.startswith("<"):
+        return f"{type(exc).__name__}: unreadable error response"
+    return text
+
 
 # Naked equity option margin, the standard broker formula. The requirement is
 # the greatest of these, per side, and a strangle is charged on the larger
@@ -168,12 +195,19 @@ async def price_candidate(
     target_delta: float = chain_mod.TARGET_DELTA,
 ) -> Proposal:
     hint = candidate.iv30 / 100 if candidate.iv30 else None
-    try:
-        cycle = await chain_mod.fetch_cycle(
-            session, candidate.symbol, target_dte=target_dte, iv_hint=hint
-        )
-    except Exception as exc:
-        return Proposal(candidate, error=str(exc))
+    attempt = 0
+    while True:
+        try:
+            cycle = await chain_mod.fetch_cycle(
+                session, candidate.symbol, target_dte=target_dte, iv_hint=hint
+            )
+            break
+        except Exception as exc:
+            if _is_rate_limited(exc) and attempt < RATE_LIMIT_RETRIES:
+                attempt += 1
+                await asyncio.sleep(RATE_LIMIT_BASE_BACKOFF * 2 ** (attempt - 1))
+                continue
+            return Proposal(candidate, error=_clean_error(exc))
     strangle = chain_mod.build_strangle(cycle, target_delta)
     return Proposal(candidate, cycle, strangle, error=strangle.reason)
 
@@ -190,7 +224,8 @@ async def price_many(
     the batch — it comes back as a Proposal carrying its error."""
     sem = asyncio.Semaphore(max_concurrent)
 
-    async def one(candidate: Candidate) -> Proposal:
+    async def one(candidate: Candidate, start_delay: float) -> Proposal:
+        await asyncio.sleep(start_delay)
         async with sem:
             proposal = await price_candidate(
                 session, candidate, target_dte, target_delta
@@ -199,7 +234,14 @@ async def price_many(
             on_done(proposal)
         return proposal
 
-    return list(await asyncio.gather(*(one(c) for c in candidates)))
+    return list(
+        await asyncio.gather(
+            *(
+                one(c, (i % max_concurrent) * STAGGER_SECONDS)
+                for i, c in enumerate(candidates)
+            )
+        )
+    )
 
 
 def rank_proposals(proposals: list[Proposal], key: str = "annualized_roc"):

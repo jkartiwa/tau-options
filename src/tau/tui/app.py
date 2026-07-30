@@ -351,10 +351,15 @@ class TauApp(App):
     def render_detail(self) -> None:
         c = self.selected
         cycle = self._cycles.get(c.symbol) if c else None
+        status = self._detail_status
+        if not status and self.mode == "rank" and c is not None:
+            p = self._proposals.get(c.symbol)
+            if p is not None and not p.ok and p.error:
+                status = f"pricing failed: {p.error}"
         self.query_one("#detail", DetailPane).show(
             c,
             cycle,
-            status=self._detail_status,
+            status=status,
             history=self._history.get(c.symbol) if c else None,
             brief=self._briefs.get(c.symbol) if c else None,
             why_status=self._why_status,
