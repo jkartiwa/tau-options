@@ -36,8 +36,9 @@ different names, strikes, and expirations.
   the vol is bid: a pending binary event, an already-resolved one, no
   identifiable single-name catalyst, or insufficient signal to say. Biased
   toward saying "not sure" over a false all-clear.
-- **Scan log** — every scan writes to a local SQLite database so picks can
-  be evaluated against outcomes later.
+- **Scan log** (opt-in) — `tau scan --log` records the screen to a local
+  SQLite database so picks can be compared against outcomes later. Off by
+  default; tau writes nothing to disk unless you ask it to.
 
 ## Requirements
 
@@ -74,7 +75,7 @@ tau scan --universe PATH      # custom universe file, one symbol per line
 
 `tau scan` flags: `--min-ivr` (default 30), `--min-liquidity` (1-4 scale,
 default 3), `--days` (earnings exclusion window, default 45; 0 disables),
-`--top N`, `--all`, `--universe PATH`, `--no-log`.
+`--top N`, `--all`, `--universe PATH`, `--log`.
 
 ### TUI
 
@@ -114,8 +115,8 @@ coming back is instant — only `r`/`R` force a refetch.
   why a name's vol is elevated.
 - `propose.py` — turns priced candidates into ranked, comparable trades
   (return on capital, probability of profit, spread cost).
-- `store.py` — SQLite scan log at `~/.local/share/tau/tau.sqlite3` (override
-  with `TAU_DATA_DIR`).
+- `store.py` — opt-in SQLite scan log at `~/.local/share/tau/tau.sqlite3`
+  (override with `TAU_DATA_DIR`).
 - `tui/` — the Textual interactive app.
 
 ## Testing
@@ -129,9 +130,11 @@ hitting the live API.
 
 ## Status
 
-Only the short strangle is implemented. Iron condor and cash-secured put,
-ex-dividend surfacing, and a persistent scoreboard over the scan-log corpus
-are still open.
+Only the short strangle is implemented; iron condor and cash-secured put are
+open, as is surfacing ex-dividend dates (an ex-div inside the trade window
+is real early-assignment risk on the short call). Nothing reads the scan log
+yet — it accumulates for a scoreboard that doesn't exist, which is why it's
+opt-in.
 
 ## License
 

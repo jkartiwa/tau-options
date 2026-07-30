@@ -64,7 +64,7 @@ async def scan(args: argparse.Namespace) -> None:
         f"(IVR ≥ {args.min_ivr:.0f}, liquidity ≥ {args.min_liquidity}, "
         f"no earnings within {args.days}d)"
     )
-    if not args.no_log:
+    if args.log:
         scan_id = store.log_scan(
             {
                 "min_ivr": args.min_ivr,
@@ -89,7 +89,7 @@ def main() -> None:
     p.add_argument("--top", type=int, default=0, help="show only the top N passing rows")
     p.add_argument("--all", action="store_true", help="show every symbol with exclusion reasons")
     p.add_argument("--universe", help="path to a custom universe file")
-    p.add_argument("--no-log", action="store_true", help="skip writing the scan log")
+    p.add_argument("--log", action="store_true", help="record this scan to the local scan log")
 
     sub.add_parser("tui", help="interactive triage over the screen (default)")
 

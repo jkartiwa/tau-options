@@ -1,6 +1,12 @@
-"""Scan log — every scan writes what it saw and what passed, so the scanner's
-picks accumulate as a queryable corpus from day one (the scoreboard reads
-this later). SQLite at {TAU_DATA_DIR|~/.local/share/tau}/tau.sqlite3."""
+"""Scan log — opt-in (`tau scan --log`). Records what a scan saw and what
+passed, so screens can be compared against outcomes later. Off by default:
+the tool is for finding trades, and history is only worth writing for
+someone who intends to read it. SQLite at
+{TAU_DATA_DIR|~/.local/share/tau}/tau.sqlite3.
+
+Note that this records the screen, not the trade — no strikes, credit, or
+catalyst verdict. Answering "how did the names tagged resolved actually do"
+would need those logged too."""
 
 import json
 import os
