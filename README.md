@@ -22,60 +22,22 @@ different names, strikes, and expirations.
 
 ## Where the name comes from
 
-In Black-Scholes, τ is time to expiration. It enters the option price in two
-places — the drift term, and the width term underneath it:
+In Black-Scholes, τ is time to expiration. It enters the option price twice —
+in the drift term, and in the width term underneath it:
 
 $$d_1 = \frac{\ln(S/K) + (r + \sigma^2/2)\tau}{\sigma\sqrt{\tau}}$$
 
 Set the risk-free rate to zero, which is what `tau` does when it computes
-probability of profit, and the two collapse into one: every τ in the
-expression is now carried by σ√τ. That single quantity is the whole
-distribution. It sets how wide the underlying is expected to range, and
-therefore what every option in the chain costs.
+probability of profit, and the two collapse into one: every τ left in the
+expression is carried by σ√τ. That single quantity is the distribution. It
+sets how wide the underlying is expected to range, and therefore what every
+option in the chain costs.
 
 It is also exactly what a premium seller sells. IV rank says σ is rich
-against the name's own history; days to expiration is τ; the credit you
-collect is the product of the two. Selling a strangle is selling σ√τ and
-waiting for τ to run down — the position is short volatility and long the
-passage of time, which are the same trade seen from two sides.
-
-So the screen and the pricing are one idea, not two. Screening on IV rank
-finds a rich σ. Pricing the chain turns that σ into a credit at a specific
-τ. Ranking asks which of those products pays best for the capital it ties
-up.
-
-## The math
-
-Probability of profit is the one place `tau` leans on Black-Scholes
-directly. It assumes a driftless lognormal — no expected return, just
-diffusion — and asks how much of the terminal distribution lands between the
-breakevens:
-
-$$\sigma_\tau = \sigma\sqrt{\tau} \quad \text{where} \quad \tau = \text{DTE}/365$$
-
-$$d(K) = \frac{\ln(K/S) + \sigma_\tau^{2}/2}{\sigma_\tau}$$
-
-$$P(\text{profit}) = N\big(d(B_{\text{up}})\big) - N\big(d(B_{\text{low}})\big)$$
-
-σ is the chain's at-the-money implied volatility, S is spot, and N is the
-standard normal CDF. The `σ²/2` term is the median shift that makes the
-process driftless in log terms.
-
-`d` is evaluated once at each breakeven — $B_{\text{up}}$ (upper) and
-$B_{\text{low}}$ (lower). $N(d(B_{\text{up}}))$ is the probability of
-finishing below the upper breakeven and $N(d(B_{\text{low}}))$ the
-probability of finishing below the lower one, so the difference is the
-probability of landing between them, which is where a short strangle pays.
-
-Two deliberate choices. It uses the **breakevens**, not the strikes — the
-credit pushes the breakevens further out than the strikes, so the common
-`1 − Δ` shortcut understates every proposal's real odds. And it takes the
-chain's own at-the-money implied volatility rather than a fixed-tenor number,
-so σ and τ refer to the same expiration.
-
-The usual caveat applies: a lognormal has thin tails, and real equities gap.
-Treat probability of profit as a comparison tool between proposals, not as a
-forecast.
+against the name's own history, days to expiration is τ, and the credit is
+the product of the two — so selling a strangle is selling σ√τ and waiting
+for τ to run down. Screen, price, and rank are three views of that one
+quantity rather than three separate features.
 
 ## Features
 
@@ -99,7 +61,8 @@ forecast.
   measured accuracy behind it, so check the name before selling. Without a
   key the headlines are shown unclassified.
 - **Scan log** (opt-in) — `tau scan --log` records the screen to a local
-  SQLite database so picks can be compared against outcomes later. Off by
+  SQLite database (`~/.local/share/tau/tau.sqlite3`, override with
+  `TAU_DATA_DIR`) so picks can be compared against outcomes later. Off by
   default; `tau` writes nothing to disk unless you ask it to.
 
 ## Requirements
@@ -194,23 +157,38 @@ the reason, so a filter that's too tight is visible rather than silent.
 
 ![Excluded view](docs/img/excluded.svg)
 
-## How it works
+## How probability of profit is computed
 
-- `screen.py` — pulls and filters market metrics; pure logic, separated from
-  SDK parsing so it's testable without live data.
-- `chain.py` — fetches one symbol's option chain and quotes over a single
-  DXLink connection, selects strikes around a target delta, and builds the
-  strangle. Expected move follows tastytrade's own weighted straddle/strangle
-  convention rather than the textbook `S·σ·√t`.
-- `history.py` — daily bars for price-position and volatility-normalized
-  move context.
-- `catalyst.py` — headlines plus one structured-output LLM call classifying
-  why a name's vol is elevated.
-- `propose.py` — turns priced candidates into ranked, comparable trades
-  (return on capital, probability of profit, spread cost).
-- `store.py` — opt-in SQLite scan log at `~/.local/share/tau/tau.sqlite3`
-  (override with `TAU_DATA_DIR`).
-- `tui/` — the Textual interactive app.
+This is the one place `tau` leans on Black-Scholes directly. It assumes a
+driftless lognormal — no expected return, just diffusion — and asks how much
+of the terminal distribution lands in the profitable range:
+
+$$\sigma_\tau = \sigma\sqrt{\tau} \quad \text{where} \quad \tau = \text{DTE}/365$$
+
+$$d(K) = \frac{\ln(K/S) + \sigma_\tau^{2}/2}{\sigma_\tau}$$
+
+$$P(\text{profit}) = N\big(d(B_{\text{up}})\big) - N\big(d(B_{\text{low}})\big)$$
+
+σ is the chain's at-the-money implied volatility, S is spot, and N is the
+standard normal CDF. The `σ²/2` term is the median shift that makes the
+process driftless in log terms.
+
+`d` is evaluated once at each breakeven, $B_{\text{up}}$ and
+$B_{\text{low}}$. $N(d(B_{\text{up}}))$ is the probability of finishing
+below the upper breakeven and $N(d(B_{\text{low}}))$ of finishing below the
+lower one, so the difference is the probability of landing between them.
+That two-term form is for a structure with breakevens on both sides — a
+strangle, straddle, or condor. A one-sided structure such as a cash-secured
+put keeps a single term.
+
+Two deliberate choices. It uses the **breakevens**, not the strikes — the
+credit pushes the breakevens further out than the strikes, so the common
+`1 − Δ` shortcut understates every proposal's real odds. And it takes the
+chain's own at-the-money implied volatility rather than a fixed-tenor number,
+so σ and τ refer to the same expiration.
+
+The usual caveat applies: a lognormal has thin tails and real equities gap.
+Treat probability of profit as a way to compare proposals, not as a forecast.
 
 ## Testing
 
