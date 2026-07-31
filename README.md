@@ -56,10 +56,18 @@ different names, strikes, and expirations.
 ## Setup
 
 ```bash
+git clone https://github.com/jkartiwa/tau-options.git
+cd tau-options
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env   # fill in tastytrade OAuth credentials
+```
+
+The catalyst read needs the `anthropic` package, which is a separate extra:
+
+```bash
+pip install -e ".[dev,catalyst]"
 ```
 
 Getting a tastytrade personal OAuth grant: my.tastytrade.com → Manage → API
@@ -163,6 +171,22 @@ open, as is surfacing ex-dividend dates (an ex-div inside the trade window
 is real early-assignment risk on the short call). Nothing reads the scan log
 yet — it accumulates for a scoreboard that doesn't exist, which is why it's
 opt-in.
+
+## Disclaimer
+
+This is a personal research tool, not financial advice, and nothing it
+outputs is a recommendation to trade. Selling options carries unlimited risk;
+short strangles can lose far more than the credit received.
+
+Specific things not to trust blindly: buying-power reduction is an estimate
+from a standard margin formula, not a broker quote, and your actual
+requirement will differ. Probability of profit assumes a driftless lognormal,
+which real markets are not. Quotes are mid-based and can be stale, especially
+outside market hours. The catalyst read is a language model's opinion of
+recent headlines with no measured accuracy — it can and will miss events.
+
+Verify every number against your broker before placing a trade. Provided as
+is, without warranty — see [LICENSE](LICENSE).
 
 ## License
 

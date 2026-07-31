@@ -252,7 +252,14 @@ def classify(
             return _unreadable(
                 symbol, headlines, "no ANTHROPIC_API_KEY — headlines only"
             )
-        import anthropic
+        try:
+            import anthropic
+        except ImportError:
+            # A key is set but the optional extra isn't installed. Same
+            # degradation as no key at all: headlines, no verdict.
+            return _unreadable(
+                symbol, headlines, "anthropic not installed — headlines only"
+            )
 
         client = anthropic.Anthropic()
 
