@@ -22,13 +22,16 @@ different names, strikes, and expirations.
 
 ## Where the name comes from
 
-In Black-Scholes, τ is time to expiration. It never appears on its own — only
-ever as σ√τ:
+In Black-Scholes, τ is time to expiration. It enters the option price in two
+places — the drift term, and the width term underneath it:
 
-$$d_1 = \frac{\ln(S/K) + (r + \sigma^2/2)\,\tau}{\sigma\sqrt{\tau}}, \qquad d_2 = d_1 - \sigma\sqrt{\tau}$$
+$$d_1 = \frac{\ln(S/K) + (r + \sigma^2/2)\tau}{\sigma\sqrt{\tau}}$$
 
-That product is the whole distribution. It sets how wide the underlying is
-expected to range, and therefore what every option in the chain costs.
+Set the risk-free rate to zero, which is what `tau` does when it computes
+probability of profit, and the two collapse into one: every τ in the
+expression is now carried by σ√τ. That single quantity is the whole
+distribution. It sets how wide the underlying is expected to range, and
+therefore what every option in the chain costs.
 
 It is also exactly what a premium seller sells. IV rank says σ is rich
 against the name's own history; days to expiration is τ; the credit you
@@ -48,12 +51,15 @@ directly. It assumes a driftless lognormal — no expected return, just
 diffusion — and asks how much of the terminal distribution lands between the
 breakevens:
 
-$$\sigma_\tau = \sigma\sqrt{\tau}, \qquad \tau = \frac{\text{DTE}}{365}$$
+$$\sigma_\tau = \sigma\sqrt{\tau} \quad \text{where} \quad \tau = \text{DTE}/365$$
 
-$$P(\text{profit}) = N(d_{\text{up}}) - N(d_{\text{low}}), \qquad d = \frac{\ln(K/S) + \sigma_\tau^{2}/2}{\sigma_\tau}$$
+$$d = \frac{\ln(K/S) + \sigma_\tau^{2}/2}{\sigma_\tau}$$
 
-The `+σ²/2` is the median shift that makes the process driftless in log
-terms, and `N` is the standard normal CDF.
+$$P(\text{profit}) = N(d_{\text{up}}) - N(d_{\text{low}})$$
+
+Here σ is the chain's at-the-money implied volatility, K each breakeven, S
+spot, and N the standard normal CDF. The `σ²/2` term is the median shift
+that makes the process driftless in log terms.
 
 Two deliberate choices. It uses the **breakevens**, not the strikes — the
 credit pushes the breakevens further out than the strikes, so the common
