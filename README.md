@@ -157,13 +157,20 @@ the reason, so a filter that's too tight is visible rather than silent.
 
 ![Excluded view](docs/img/excluded.svg)
 
-## Strategy and parameters
+## Structures and parameters
 
-`tau` prices exactly one structure: a **short strangle** — one short call and
-one short put, same expiration, naked. Risk is undefined on both sides.
+`tau` is a scanner, and the structure is the last step of it. Screening,
+pricing, and ranking are all structure-agnostic — return on capital,
+probability of profit, and spread cost as a share of credit are defined for
+anything that collects a credit against a margin requirement. Adding a
+structure means writing two things: a builder that picks its legs off the
+chain, and a margin model.
 
-These are fixed in code rather than exposed as flags. Change them by editing
-the constant:
+Today one structure is implemented: the **short strangle** — one short call
+and one short put, same expiration, naked, undefined risk on both sides.
+
+Its parameters are fixed in code rather than exposed as flags. Change them by
+editing the constant:
 
 | Parameter | Value | Constant |
 |---|---|---|
@@ -177,11 +184,11 @@ Monthlies-only means a symbol with no monthly near 45 DTE has no usable
 cycle at all, rather than quietly falling back to a weekly with different
 liquidity.
 
-**Not supported:** iron condor, cash-secured put, vertical spreads,
-calendars, ratio spreads. These aren't drop-in additions — defined-risk
-structures need a different margin model and a credit-to-width measure that
-doesn't exist here, and single-sided structures change the probability
-calculation below from two terms to one.
+**Next up:** iron condor and cash-secured put, then verticals. Each needs a
+little more than a builder — defined-risk structures want a credit-to-width
+measure alongside return on capital, and single-sided ones reduce the
+probability calculation below from two terms to one. The ranking layer
+itself doesn't change.
 
 **Not surfaced:** ex-dividend dates. An ex-div inside the trade window is
 real early-assignment risk on the short call, and `tau` will not warn you.
