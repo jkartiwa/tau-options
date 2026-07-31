@@ -7,6 +7,8 @@ each one a plain-language read on *why* its volatility is elevated before
 you sell it. CLI-first, no web UI — a text screen for quick checks and a
 Textual TUI for interactive triage.
 
+![The screen](docs/img/screen.svg)
+
 ## Why
 
 High IV rank alone doesn't tell you whether premium is free money or fair
@@ -104,6 +106,28 @@ happen in memory with no refetch until you ask for one.
 
 Proposals and chains are cached per symbol, so leaving a view with `esc` and
 coming back is instant — only `r`/`R` force a refetch.
+
+**`c` — the chain.** Term structure, price position, and the 16-delta
+strangle with credit, breakevens, and breakeven-vs-expected-move.
+
+![Detail pane with a priced chain](docs/img/detail.svg)
+
+**`w` — why vol is bid.** Price context plus the catalyst read. Here SMH
+classifies as `no_idiosyncratic`: a diversified sector ETF repricing with the
+chip complex, no single-name binary to sell into.
+
+![Catalyst read](docs/img/catalyst.svg)
+
+**`p` — the rank view.** The whole shortlist priced concurrently and sorted
+by annualized return on capital, so names at different prices and
+expirations are comparable.
+
+![Ranked proposals](docs/img/rank.svg)
+
+**`x` — what was excluded, and why.** Every symbol the screen dropped, with
+the reason, so a filter that's too tight is visible rather than silent.
+
+![Excluded view](docs/img/excluded.svg)
 
 ## How it works
 
