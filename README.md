@@ -157,6 +157,36 @@ the reason, so a filter that's too tight is visible rather than silent.
 
 ![Excluded view](docs/img/excluded.svg)
 
+## Strategy and parameters
+
+`tau` prices exactly one structure: a **short strangle** — one short call and
+one short put, same expiration, naked. Risk is undefined on both sides.
+
+These are fixed in code rather than exposed as flags. Change them by editing
+the constant:
+
+| Parameter | Value | Constant |
+|---|---|---|
+| Target delta per side | 0.16 | `chain.TARGET_DELTA` |
+| Target days to expiration | 45 | `chain.TARGET_DTE` |
+| Expirations considered | monthlies only | `chain.MONTHLY_EXPIRATION_TYPE` |
+| Strike window | ±2.5σ, max 26 per side | `chain.SIGMA_SPAN` |
+| Margin estimate | max(20% spot − OTM + premium, 10% strike + premium, $50) per contract | `propose.OTM_PERCENT`, `STRIKE_PERCENT`, `MIN_PER_CONTRACT` |
+
+Monthlies-only means a symbol with no monthly near 45 DTE has no usable
+cycle at all, rather than quietly falling back to a weekly with different
+liquidity.
+
+**Not supported:** iron condor, cash-secured put, vertical spreads,
+calendars, ratio spreads. These aren't drop-in additions — defined-risk
+structures need a different margin model and a credit-to-width measure that
+doesn't exist here, and single-sided structures change the probability
+calculation below from two terms to one.
+
+**Not surfaced:** ex-dividend dates. An ex-div inside the trade window is
+real early-assignment risk on the short call, and `tau` will not warn you.
+Check it yourself.
+
 ## How probability of profit is computed
 
 This is the one place `tau` leans on Black-Scholes directly. It assumes a
@@ -198,14 +228,6 @@ pytest
 
 Tests cover the pure filter/rank/pricing logic and TUI behavior without
 hitting the live API.
-
-## Status
-
-Only the short strangle is implemented; iron condor and cash-secured put are
-open, as is surfacing ex-dividend dates (an ex-div inside the trade window
-is real early-assignment risk on the short call). Nothing reads the scan log
-yet — it accumulates for a scoreboard that doesn't exist, which is why it's
-opt-in.
 
 ## Disclaimer
 
