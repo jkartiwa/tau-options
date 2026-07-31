@@ -14,11 +14,56 @@ Textual TUI for interactive triage.
 High IV rank alone doesn't tell you whether premium is free money or fair
 payment for a coin flip — a name can be "high IVR" because it's a panic
 spike about to mean-revert, or because it's genuinely repricing for a
-pending binary event (earnings, an FDA date, litigation). tau screens for
+pending binary event (earnings, an FDA date, litigation). `tau` screens for
 the former and flags the latter, then prices what's left into apples-to-apples
 trades (annualized return on capital, probability of profit, spread cost as
 a share of credit) instead of leaving you to compare raw IV numbers across
 different names, strikes, and expirations.
+
+## Where the name comes from
+
+In Black-Scholes, τ is time to expiration. It never appears on its own — only
+ever as σ√τ:
+
+$$d_1 = \frac{\ln(S/K) + (r + \sigma^2/2)\,\tau}{\sigma\sqrt{\tau}}, \qquad d_2 = d_1 - \sigma\sqrt{\tau}$$
+
+That product is the whole distribution. It sets how wide the underlying is
+expected to range, and therefore what every option in the chain costs.
+
+It is also exactly what a premium seller sells. IV rank says σ is rich
+against the name's own history; days to expiration is τ; the credit you
+collect is the product of the two. Selling a strangle is selling σ√τ and
+waiting for τ to run down — the position is short volatility and long the
+passage of time, which are the same trade seen from two sides.
+
+So the screen and the pricing are one idea, not two. Screening on IV rank
+finds a rich σ. Pricing the chain turns that σ into a credit at a specific
+τ. Ranking asks which of those products pays best for the capital it ties
+up.
+
+## The math
+
+Probability of profit is the one place `tau` leans on Black-Scholes
+directly. It assumes a driftless lognormal — no expected return, just
+diffusion — and asks how much of the terminal distribution lands between the
+breakevens:
+
+$$\sigma_\tau = \sigma\sqrt{\tau}, \qquad \tau = \frac{\text{DTE}}{365}$$
+
+$$P(\text{profit}) = N(d_{\text{up}}) - N(d_{\text{low}}), \qquad d = \frac{\ln(K/S) + \sigma_\tau^{2}/2}{\sigma_\tau}$$
+
+The `+σ²/2` is the median shift that makes the process driftless in log
+terms, and `N` is the standard normal CDF.
+
+Two deliberate choices. It uses the **breakevens**, not the strikes — the
+credit pushes the breakevens further out than the strikes, so the common
+`1 − Δ` shortcut understates every proposal's real odds. And it takes the
+chain's own at-the-money implied volatility rather than a fixed-tenor number,
+so σ and τ refer to the same expiration.
+
+The usual caveat applies: a lognormal has thin tails, and real equities gap.
+Treat probability of profit as a comparison tool between proposals, not as a
+forecast.
 
 ## Features
 
@@ -43,13 +88,13 @@ different names, strikes, and expirations.
   key the headlines are shown unclassified.
 - **Scan log** (opt-in) — `tau scan --log` records the screen to a local
   SQLite database so picks can be compared against outcomes later. Off by
-  default; tau writes nothing to disk unless you ask it to.
+  default; `tau` writes nothing to disk unless you ask it to.
 
 ## Requirements
 
 - Python 3.12+
 - A tastytrade account with API access (personal OAuth grant, read scope is
-  enough — tau never places orders)
+  enough — `tau` never places orders)
 - An Anthropic API key — optional. Without one, the catalyst read still
   fetches and shows headlines; only the classification is skipped.
 
