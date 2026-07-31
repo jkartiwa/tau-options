@@ -1,5 +1,9 @@
-"""Option-chain reads for one symbol, and the short-premium structures built
+"""Option-chain reads for one symbol, and the short-premium strategies built
 over them.
+
+A strategy is one or more legs traded as a unit. Only the short strangle is
+implemented; generalising waits for a second one, since an interface designed
+against a single example is an interface designed wrong.
 
 Fetching is one DXLink pass per symbol, measured at ~1.4s all-in (0.4s chain
 metadata, 1.0s quotes+greeks over ~40 legs), which is what makes per-symbol
@@ -10,7 +14,7 @@ two-phase over a single connection: underlying quote first, then a strike
 window around it.
 
 Degradation follows the same rule as the rest of the stack: a leg missing a
-quote or greeks is dropped rather than defaulted, and a structure that loses
+quote or greeks is dropped rather than defaulted, and a strategy that loses
 either side reports itself incomplete rather than quoting a partial credit —
 half a strangle's credit is a wrong number, not an imprecise one.
 """
@@ -186,7 +190,7 @@ class Cycle:
 class Strangle:
     put: Leg | None
     call: Leg | None
-    reason: str | None = None  # set when the structure could not be completed
+    reason: str | None = None  # set when the strategy could not be completed
     target_delta: float = TARGET_DELTA
 
     @property
@@ -226,7 +230,7 @@ class Strangle:
 
     @property
     def theta(self) -> float | None:
-        """Decay collected per day, per share, by the *short* structure.
+        """Decay collected per day, per share, by the *short* strategy.
 
         The feed signs greeks for a long position, where time decay is a
         loss, so theta arrives negative on both legs. A seller is on the

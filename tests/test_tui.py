@@ -350,7 +350,7 @@ async def test_rank_view_prices_the_passing_shortlist():
     async with a.run_test() as pilot:
         await pilot.pause()
         assert symbols(a) == ["HIGH", "CHEAP", "MID"]  # screen order, default IVR sort
-        await pilot.press("p")
+        await pilot.press("P")
         await pilot.pause()
         assert a.mode == "rank"
         # CHEAP's credit/BPR beats HIGH's, so ANN% rank reorders them.
@@ -372,10 +372,10 @@ async def test_rank_view_reuses_cached_proposals_on_reentry():
     a = TauApp(loader=loader, proposal_loader=track_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("p")
+        await pilot.press("P")
         await pilot.pause()
         await pilot.press("escape")
-        await pilot.press("p")
+        await pilot.press("P")
         await pilot.pause()
         assert calls == [["HIGH"]]  # second entry served from cache, no refetch
 
@@ -394,7 +394,7 @@ async def test_reprice_forces_a_refetch():
     a = TauApp(loader=loader, proposal_loader=track_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("p")
+        await pilot.press("P")
         await pilot.pause()
         await pilot.press("R")
         await pilot.pause()
@@ -411,7 +411,7 @@ async def test_escape_returns_to_screen_view():
     ))
     async with a.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("p")
+        await pilot.press("P")
         await pilot.pause()
         assert a.mode == "rank"
         await pilot.press("escape")
@@ -419,43 +419,60 @@ async def test_escape_returns_to_screen_view():
         assert symbols(a) == ["HIGH", "CHEAP", "MID"]
 
 
-# ---- symbol search ----
+# ---- symbol jump ----
 
 
 @pytest.mark.asyncio
-async def test_search_narrows_the_view_without_changing_the_screen():
-    """The filter is a lens on the result, not another threshold: the pass
-    count underneath it has to keep reporting the real screen."""
+async def test_slash_moves_the_cursor_and_keeps_every_row_visible():
+    """Filtering answers "show me only these", which the thresholds already
+    do. Typing a ticker asks "take me to this one", and the rows either side
+    are the context the list was being read for."""
     a = app()
     async with a.run_test() as pilot:
         await pilot.pause()
         assert symbols(a) == ["HIGH", "CHEAP", "MID"]
         await pilot.press("/")
-        await pilot.press("h", "i")
+        await pilot.press("m", "i")
         await pilot.pause()
-        assert a._query == "HI"
-        assert symbols(a) == ["HIGH"]
-        assert a._passed == 3  # the screen itself is untouched
+        assert symbols(a) == ["HIGH", "CHEAP", "MID"]  # nothing hidden
+        assert a.selected.symbol == "MID"  # cursor moved instead
 
 
 @pytest.mark.asyncio
-async def test_enter_commits_the_search_and_returns_focus_to_the_table():
+async def test_enter_keeps_the_landing_row_and_returns_focus_to_the_table():
     a = app()
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("/")
-        await pilot.press("m", "i", "d")
+        await pilot.press("c")
         await pilot.press("enter")
         await pilot.pause()
-        assert symbols(a) == ["MID"]  # filter survives
-        assert a.query_one("#table").has_focus  # but the keys go to the table
+        assert a.selected.symbol == "CHEAP"
+        assert a.query_one("#table").has_focus
         assert not a.searching
 
 
 @pytest.mark.asyncio
-async def test_escape_clears_the_search_before_leaving_the_rank_view():
-    """Escape unwinds one layer at a time. Cancelling a search that was run
-    inside the rank view must not also throw away the rank view."""
+async def test_escape_puts_the_cursor_back_where_the_jump_started():
+    """A cancelled jump has to be a no-op, or `/` becomes a keypress you
+    hesitate over."""
+    a = app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        a.query_one("#table").move_cursor(row=2)
+        await pilot.pause()
+        assert a.selected.symbol == "MID"
+        await pilot.press("/")
+        await pilot.press("h")
+        await pilot.pause()
+        assert a.selected.symbol == "HIGH"  # jumped
+        await pilot.press("escape")
+        await pilot.pause()
+        assert a.selected.symbol == "MID"  # and back
+
+
+@pytest.mark.asyncio
+async def test_escape_cancels_the_jump_before_leaving_the_page():
     a = app()
     async with a.run_test() as pilot:
         await pilot.pause()
@@ -465,16 +482,40 @@ async def test_escape_clears_the_search_before_leaving_the_rank_view():
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
-        assert a._query == ""
-        assert a.mode == "rank"  # still here
+        assert a.mode == "rank"  # the page survives a cancelled jump
         await pilot.press("escape")
         await pilot.pause()
         assert a.mode == "screen"
 
 
 @pytest.mark.asyncio
-async def test_search_keys_do_not_trigger_bindings():
-    """`q` typed into the filter is a letter, not quit."""
+async def test_a_jump_to_an_excluded_symbol_says_why_it_is_not_there():
+    """Typing the ticker of a name the screen dropped otherwise looks
+    exactly like the tool being broken."""
+    a = app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("/")
+        await pilot.press("i", "l", "l")  # ILLIQ, excluded on liquidity
+        await pilot.pause()
+        assert "ILLIQ excluded" in a._jump_miss
+        assert "liquidity 1 < 3" in a._jump_miss
+
+
+@pytest.mark.asyncio
+async def test_a_jump_to_an_unknown_symbol_reports_the_miss():
+    a = app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("/")
+        await pilot.press("z", "z")
+        await pilot.pause()
+        assert "no match for ZZ" in a._jump_miss
+
+
+@pytest.mark.asyncio
+async def test_jump_keys_do_not_trigger_bindings():
+    """`q` typed into the jump bar is a letter, not quit."""
     a = app()
     async with a.run_test() as pilot:
         await pilot.pause()
@@ -482,7 +523,6 @@ async def test_search_keys_do_not_trigger_bindings():
         await pilot.press("q")
         await pilot.pause()
         assert a.is_running
-        assert a._query == "Q"
 
 
 # ---- help ----
@@ -501,75 +541,6 @@ async def test_help_overlay_opens_and_any_key_closes_it():
         await pilot.press("j")
         await pilot.pause()
         assert not isinstance(a.screen, HelpScreen)
-
-
-# ---- structure parameters ----
-
-
-@pytest.mark.asyncio
-async def test_delta_cycle_reprices_from_cached_chains_without_refetching():
-    """The cached cycle holds the whole strike window, so moving the wing is
-    a re-read of data already in memory. If this ever costs a fetch, the
-    keypress has become expensive enough to hesitate over."""
-    async def loader():
-        return [FIXTURE[0]]
-
-    calls = []
-
-    async def track_loader(candidates, on_done, target_dte=45, target_delta=0.16):
-        calls.append(target_delta)
-        on_done(_fake_proposal("HIGH"))
-
-    a = TauApp(loader=loader, proposal_loader=track_loader)
-    async with a.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("p")
-        await pilot.pause()
-        assert calls == [0.16]
-        await pilot.press("d")
-        await pilot.pause()
-        assert a.target_delta == 0.20
-        assert calls == [0.16]  # no second pass over the network
-        assert a._proposals["HIGH"].strangle.target_delta == 0.20
-
-
-@pytest.mark.asyncio
-async def test_dte_cycle_drops_quotes_rather_than_relabelling_them():
-    """A different tenor is a different chain. Keeping the old quotes and
-    showing the new DTE beside them would be the one genuinely dishonest
-    outcome available here."""
-    async def loader():
-        return [FIXTURE[0]]
-
-    async def track_loader(candidates, on_done, target_dte=45, target_delta=0.16):
-        on_done(_fake_proposal("HIGH"))
-
-    a = TauApp(loader=loader, proposal_loader=track_loader)
-    async with a.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("p")
-        await pilot.pause()
-        assert a._proposals
-        await pilot.press("D")
-        await pilot.pause()
-        assert a.target_dte == 60
-        assert not a._proposals and not a._cycles
-
-
-@pytest.mark.asyncio
-async def test_command_line_parameters_seed_the_cycle_position():
-    """A delta supplied on the command line need not be one of the stops,
-    and `d` has to keep working from wherever it lands."""
-    async def loader():
-        return [FIXTURE[0]]
-
-    a = TauApp(loader=loader, target_delta=0.22, target_dte=30)
-    async with a.run_test() as pilot:
-        await pilot.pause()
-        assert a.target_delta == 0.22
-        await pilot.press("d")  # nearest stop is 0.20, so the next is 0.25
-        assert a.target_delta == 0.25
-        assert a.target_dte == 30
 
 
 # ---- expirations ----
@@ -663,40 +634,157 @@ async def test_expiration_keys_say_so_when_no_chain_is_loaded():
 
 
 def _book():
+    """A short strangle on HIGH, opened for 3.00 and now worth 1.50 — half
+    the credit collected, which is where the usual take-profit rule fires."""
     from tau.portfolio import Book, Position
 
+    def leg(strike, right, open_price, mark_price):
+        return Position(
+            f"H26{right}", "HIGH", "Equity Option", -2.0,
+            date(2026, 9, 18), strike, right,
+            open_price=open_price, mark_price=mark_price,
+            multiplier=100.0, opened_at=date(2026, 7, 1),
+        )
+
     return Book(
-        positions=(
-            Position("H 26P", "HIGH", "Equity Option", -2.0, date(2026, 9, 18), 90.0, "P"),
-        ),
+        positions=(leg(90.0, "P", 2.00, 1.00), leg(110.0, "C", 1.00, 0.50)),
         net_liq=100_000.0,
         maintenance=25_000.0,
         account_number="5WX",
+        requirements={"HIGH": 4_200.0},
     )
 
 
 @pytest.mark.asyncio
-async def test_position_column_appears_only_when_the_account_is_readable():
-    """A column of dashes reads as 'flat', which is the wrong claim when the
-    truth is 'not known'. So the column is absent instead."""
+async def test_the_screener_carries_a_marker_not_a_position_column():
+    """Positions have their own page. What the screener keeps is the one
+    fact that changes whether a row is a trade at all — that you are already
+    short the name — and it costs no horizontal space."""
     async def loader():
         return list(FIXTURE)
 
     async def book_loader():
         return _book()
 
-    a = TauApp(loader=loader)  # conftest disables the real account read
+    a = TauApp(loader=loader, book_loader=book_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
+        assert await _settle(a, lambda: a.has_book)
         assert "POS" not in a._screen_columns()
+        assert a._marker("HIGH", "\u00b7") == "[yellow]\u25c6[/yellow]"
+        assert a._marker("MID", "\u00b7") == "\u00b7"
 
-    b = TauApp(loader=loader, book_loader=book_loader)
-    async with b.run_test() as pilot:
+
+@pytest.mark.asyncio
+async def test_the_held_marker_outranks_a_star():
+    """A star is a note to yourself; being short the name is a fact."""
+    async def loader():
+        return list(FIXTURE)
+
+    async def book_loader():
+        return _book()
+
+    a = TauApp(loader=loader, book_loader=book_loader)
+    async with a.run_test() as pilot:
         await pilot.pause()
-        assert await _settle(b, lambda: b.has_book)
-        assert "POS" in b._screen_columns()
-        assert "%NL" in b._rank_columns()
-        assert b._book.contracts("HIGH") == -2
+        assert await _settle(a, lambda: a.has_book)
+        await pilot.press("space")  # star HIGH, which is also held
+        assert "HIGH" in a._starred
+        assert a._marker("HIGH", "\u00b7") == "[yellow]\u25c6[/yellow]"
+
+
+# ---- positions page ----
+
+
+@pytest.mark.asyncio
+async def test_p_opens_the_positions_page_with_its_own_rows():
+    async def loader():
+        return list(FIXTURE)
+
+    async def book_loader():
+        return _book()
+
+    a = TauApp(loader=loader, book_loader=book_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert await _settle(a, lambda: a.has_book)
+        await pilot.press("p")
+        await pilot.pause()
+        assert a.mode == "positions"
+        assert [t.underlying for t in a._trades] == ["HIGH"]
+        assert a._columns_mode[0] == "positions"
+        rendered = str(a.query_one("#detail").content)
+        assert "90P" in rendered  # the leg detail, not a screener candidate
+        assert "credit" in rendered and "P/L" in rendered
+
+
+@pytest.mark.asyncio
+async def test_escape_returns_from_positions_to_the_screener():
+    async def loader():
+        return list(FIXTURE)
+
+    async def book_loader():
+        return _book()
+
+    a = TauApp(loader=loader, book_loader=book_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert await _settle(a, lambda: a.has_book)
+        await pilot.press("p")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert a.mode == "screen"
+        assert symbols(a) == ["HIGH", "CHEAP", "MID"]
+
+
+@pytest.mark.asyncio
+async def test_candidate_actions_are_inert_on_a_position_row():
+    """`c` and `w` price and classify a screen candidate. A position row is
+    not one, and pressing them there must do nothing rather than raise."""
+    async def loader():
+        return list(FIXTURE)
+
+    async def book_loader():
+        return _book()
+
+    calls = []
+
+    async def chain_loader(candidate, expiration=None, target_dte=45):
+        calls.append(candidate.symbol)
+        raise AssertionError("should never be reached from the positions page")
+
+    a = TauApp(loader=loader, book_loader=book_loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert await _settle(a, lambda: a.has_book)
+        await pilot.press("p")
+        await pilot.pause()
+        await pilot.press("c")
+        await pilot.press("w")
+        await pilot.press("space")
+        await pilot.pause()
+        assert calls == []
+        assert a.is_running
+
+
+@pytest.mark.asyncio
+async def test_positions_page_is_empty_rather_than_broken_without_an_account():
+    async def loader():
+        return list(FIXTURE)
+
+    async def boom():
+        raise RuntimeError("forbidden")
+
+    a = TauApp(loader=loader, book_loader=boom)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert await _settle(a, lambda: bool(a._book_error))
+        await pilot.press("p")
+        await pilot.pause()
+        assert a.mode == "positions"
+        assert a._trades == []
+        assert "no open positions" in str(a.query_one("#detail").content)
 
 
 @pytest.mark.asyncio

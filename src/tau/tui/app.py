@@ -12,7 +12,6 @@ cached mode) can drive it without the network.
 import asyncio
 import os
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
 from datetime import UTC, date, datetime
 
 from tastytrade.instruments import Equity
@@ -46,12 +45,6 @@ BookLoader = Callable[[], Awaitable[portfolio_mod.Book]]
 IVR_STEP = 5.0
 LIQUIDITY_CYCLE = (0, 1, 2, 3, 4)
 EARNINGS_CYCLE = (0, 14, 21, 45, 60)
-# The wing and the tenor, the two parameters that define the structure. They
-# were constants in `chain`, which meant changing either was a source edit;
-# they are cycled here so a shortlist can be re-read at another wing without
-# leaving the screen. Both keep chain's defaults as their starting point.
-DELTA_CYCLE = (0.10, 0.16, 0.20, 0.25, 0.30)
-DTE_CYCLE = (21, 30, 45, 60, 90)
 SORTS = (
     ("IVR", lambda c: (c.ivr is None, -(c.ivr or 0))),
     ("IV/HV", lambda c: (c.iv_hv is None, -(c.iv_hv or 0))),
@@ -59,17 +52,23 @@ SORTS = (
     ("SYM", lambda c: (False, c.symbol)),
 )
 
-# The position columns exist only when the account could actually be read —
-# a column of dashes is worse than no column, because it reads as "flat" when
-# it means "unknown".
 COLUMNS = ("", "SYM", "IVR", "IVP", "IV/HV", "IV30", "HV30", "LIQ", "BETA", "ERN", "WHY")
-POS_AFTER = COLUMNS.index("ERN")
 
 RANK_COLUMNS = (
     "", "SYM", "DTE", "CREDIT", "BPR~", "ROC%", "ANN%",
     "θ/DAY", "θ/BPR", "POP%", "SPRD%", "BE/EM",
 )
-RANK_POS_AFTER = RANK_COLUMNS.index("ROC%")
+# %NL is a property of the proposed trade — what it would cost this account —
+# so it belongs with the other per-trade numbers, and only exists once the
+# account is known.
+RANK_NL_AFTER = RANK_COLUMNS.index("ROC%")
+
+# The positions page answers one question — is it time to take this off — so
+# it carries the two figures the usual management rules are written in, P/L
+# against the credit received and days left, and little else.
+POSITION_COLUMNS = (
+    "SYM", "STRUCTURE", "DTE", "CREDIT", "NOW", "P/L", "P/L%", "BPR", "HELD",
+)
 # (label, Proposal attribute, higher-is-better) — build_rank_rows() looks up
 # the attribute per candidate's cached Proposal; "symbol" is handled as a
 # literal case rather than a Proposal attribute.
@@ -162,11 +161,18 @@ def _fmt(value, spec: str = ".1f") -> str:
     return "—" if value is None else format(value, spec)
 
 
-def _nearest_index(cycle: tuple, value) -> int:
-    """Where a value sits in its cycle. Nearest rather than exact, because a
-    value supplied on the command line need not be one of the stops — and
-    `list.index` would raise on it."""
-    return min(range(len(cycle)), key=lambda i: abs(cycle[i] - value))
+def _colour_pnl(value, spec: str) -> str:
+    """Green up, red down. The one place in the app colour carries data
+    rather than warning — a position's P/L is the only number here that is
+    already an outcome rather than an estimate of one."""
+    if value is None:
+        return "—"
+    text = format(value, spec)
+    if value > 0:
+        return f"[green]+{text}[/green]"
+    if value < 0:
+        return f"[red]{text}[/red]"
+    return text
 
 
 class TauApp(App):
@@ -203,7 +209,7 @@ class TauApp(App):
         # which would leave the action undiscoverable in the footer.
         Binding("c", "load_chain", "chain"),
         Binding("w", "load_why", "why"),
-        Binding("slash", "search", "search"),
+        Binding("slash", "search", "jump"),
         Binding("r", "refresh", "refresh"),
         Binding("s", "sort", "sort"),
         Binding("x", "toggle_excluded", "excluded"),
@@ -212,9 +218,8 @@ class TauApp(App):
         Binding("right_square_bracket", "ivr_up", "IVR+"),
         Binding("l", "cycle_liquidity", "liq"),
         Binding("e", "cycle_earnings", "ern"),
-        Binding("d", "cycle_delta", "Δ", show=False),
-        Binding("D", "cycle_dte", "DTE", show=False),
-        Binding("p", "rank_shortlist", "rank"),
+        Binding("p", "positions", "positions"),
+        Binding("P", "rank_shortlist", "rank"),
         Binding("R", "reprice", "re-price", show=False),
         # Both spellings: the shifted form is what the pane labels, the bare
         # one is what a hand reaches for.
@@ -230,10 +235,11 @@ class TauApp(App):
     earnings_days: reactive[int] = reactive(45)
     sort_index: reactive[int] = reactive(0)
     show_excluded: reactive[bool] = reactive(False)
-    mode: reactive[str] = reactive("screen")  # "screen" | "rank"
+    # "screen" and "rank" are two column sets over the same candidates;
+    # "positions" is a different row set entirely — open trades, not screened
+    # names — which is why it is a page rather than another sort.
+    mode: reactive[str] = reactive("screen")  # "screen" | "rank" | "positions"
     rank_sort_index: reactive[int] = reactive(0)
-    target_delta: reactive[float] = reactive(chain_mod.TARGET_DELTA)
-    target_dte: reactive[int] = reactive(chain_mod.TARGET_DTE)
 
     def __init__(
         self,
@@ -243,8 +249,6 @@ class TauApp(App):
         history_loader: HistoryLoader | None = None,
         brief_loader: BriefLoader | None = None,
         book_loader: BookLoader | None = None,
-        target_delta: float | None = None,
-        target_dte: int | None = None,
     ) -> None:
         super().__init__()
         self._loader: Loader = loader or fetch_candidates
@@ -253,16 +257,17 @@ class TauApp(App):
         self._history_loader: HistoryLoader = history_loader or fetch_history_for
         self._brief_loader: BriefLoader = brief_loader or fetch_brief_for
         self._book_loader: BookLoader | None = book_loader or fetch_book
-        if target_delta is not None:
-            self.target_delta = target_delta
-        if target_dte is not None:
-            self.target_dte = target_dte
         # The account, if it can be read. None means "not known", which is
         # deliberately distinct from "flat" — the position columns stay
         # hidden rather than showing dashes that read as no exposure.
         self._book: portfolio_mod.Book | None = None
         self._book_error = ""
-        self._query = ""  # `/` symbol filter, applied to both views
+        # `/` jumps rather than filters, so the only state it needs is where
+        # the cursor was when the search opened — to put it back on cancel.
+        self._jump_origin = 0
+        self._jump_miss = ""
+        self._trades: list[portfolio_mod.Trade] = []
+        self._all_scored: list[Candidate] = []
         self._raw: list[Candidate] = []
         self._rows: list[Candidate] = []
         self._starred: set[str] = set()
@@ -310,16 +315,14 @@ class TauApp(App):
         return self._book is not None
 
     def _screen_columns(self) -> tuple[str, ...]:
-        if not self.has_book:
-            return COLUMNS
-        return _insert(COLUMNS, POS_AFTER, "POS")
+        return COLUMNS
 
     def _rank_columns(self) -> tuple[str, ...]:
         # Sizing, not exposure: in the rank view the account's contribution is
         # what share of it each proposal would consume.
         if not self.has_book:
             return RANK_COLUMNS
-        return _insert(RANK_COLUMNS, RANK_POS_AFTER, "%NL")
+        return _insert(RANK_COLUMNS, RANK_NL_AFTER, "%NL")
 
     def _sync_columns(self, mode: str, columns: tuple[str, ...]) -> DataTable:
         """Repaint the header only when it actually changes — clearing
@@ -373,10 +376,8 @@ class TauApp(App):
         except Exception as exc:
             self._book = None
             self._book_error = f"account unavailable: {exc}"
+        self.build_position_rows()
         self.rebuild()
-
-    def _matches_query(self, c: Candidate) -> bool:
-        return not self._query or self._query in c.symbol
 
     def rebuild(self) -> None:
         """Re-filter and re-rank from the held raw pull. No network."""
@@ -391,11 +392,9 @@ class TauApp(App):
             )
             for c in self._raw
         ]
+        self._all_scored = scored
         self._passing = [c for c in scored if c.passed]
         rows = scored if self.show_excluded else self._passing
-        # The symbol filter narrows what is displayed, never what passed:
-        # the counters keep reporting the real screen underneath it.
-        rows = [c for c in rows if self._matches_query(c)]
         _, key = SORTS[self.sort_index]
         self._rows = sorted(rows, key=key)
         self._passed = len(self._passing)
@@ -421,26 +420,62 @@ class TauApp(App):
                 return (True, 0.0)
             return (False, -value if desc else value)
 
-        self._rank_rows = sorted(
-            [c for c in self._passing if self._matches_query(c)], key=keyfn
-        )
+        self._rank_rows = sorted(self._passing, key=keyfn)
 
     def render_current_table(self) -> None:
-        if self.mode == "rank":
+        if self.mode == "positions":
+            self.render_positions_table()
+        elif self.mode == "rank":
             self.render_rank_table()
         else:
             self.render_screen_table()
 
-    def _pos_cell(self, symbol: str) -> str:
-        """Net option contracts on the name. Short shows coloured, because a
-        short position is the one that makes another sale concentration."""
-        if self._book is None:
-            return "—"
-        contracts = self._book.contracts(symbol)
-        if not contracts:
-            return "·" if self._book.holds(symbol) else "—"
-        text = f"{contracts:+g}"
-        return f"[yellow]{text}[/yellow]" if contracts < 0 else text
+    def build_position_rows(self) -> None:
+        """Open trades, soonest to expire first.
+
+        Time is the axis that matters on this page — a trade at 12 DTE wants
+        a decision today whether or not it is the biggest winner — so it is
+        the default order rather than something to sort into."""
+        trades = list(self._book.trades) if self._book is not None else []
+        today = date.today()
+        self._trades = sorted(
+            trades,
+            key=lambda t: (t.dte(today) is None, t.dte(today) or 0, t.underlying),
+        )
+
+    def render_positions_table(self) -> None:
+        table = self._sync_columns("positions", POSITION_COLUMNS)
+        cursor = table.cursor_row
+        today = date.today()
+        for t in self._trades:
+            dte = t.dte(today)
+            held = t.days_held(today)
+            pnl, pct = t.pnl, t.pnl_pct
+            table.add_row(
+                t.underlying,
+                t.describe(),
+                "—" if dte is None else f"{dte}d",
+                _fmt(t.credit, ",.0f"),
+                _fmt(t.value, ",.0f"),
+                _colour_pnl(pnl, ",.0f"),
+                _colour_pnl(pct * 100 if pct is not None else None, ".0f"),
+                _fmt(self._book.requirement(t.underlying) if self._book else None, ",.0f"),
+                "—" if held is None else f"{held}d",
+                key=f"{t.underlying}:{t.expiration}",
+            )
+        if self._trades:
+            table.move_cursor(row=min(max(cursor, 0), len(self._trades) - 1))
+        self.render_detail()
+
+    def _marker(self, symbol: str, state: str) -> str:
+        """The leftmost cell: starred, or held, or plain state.
+
+        Existing short premium wins the slot over a star. A star is a note
+        to yourself; already being short the name is a fact that changes
+        whether the row in front of you is a trade at all."""
+        if self._book is not None and self._book.short_premium_in(symbol):
+            return "[yellow]\u25c6[/yellow]"
+        return "\u2605" if symbol in self._starred else state
 
     def render_screen_table(self) -> None:
         table = self._sync_columns("screen", self._screen_columns())
@@ -449,7 +484,7 @@ class TauApp(App):
         for c in self._rows:
             dte = c.days_to_earnings(today)
             cells = [
-                "★" if c.symbol in self._starred else ("·" if c.passed else "✗"),
+                self._marker(c.symbol, "·" if c.passed else "✗"),
                 c.symbol,
                 _fmt(c.ivr, ".0f"),
                 _fmt(c.ivp, ".0f"),
@@ -461,8 +496,6 @@ class TauApp(App):
                 "—" if dte is None else f"{dte}d",
                 "; ".join(c.excluded),
             ]
-            if self.has_book:
-                cells.insert(POS_AFTER, self._pos_cell(c.symbol))
             table.add_row(*cells, key=c.symbol)
         if self._rows:
             table.move_cursor(row=min(cursor, len(self._rows) - 1))
@@ -475,15 +508,13 @@ class TauApp(App):
         blanks = len(columns) - 2  # every column after the marker and symbol
         for c in self._rank_rows:
             p = self._proposals.get(c.symbol)
-            star = c.symbol in self._starred
             if p is None or not p.ok:
-                pending = p is None
-                marker = "★" if star else ("…" if pending else "✗")
+                state = "…" if p is None else "✗"
+                marker = self._marker(c.symbol, state)
                 table.add_row(marker, c.symbol, *(["—"] * blanks), key=c.symbol)
                 continue
-            marker = "★" if star else "·"
             cells = [
-                marker,
+                self._marker(c.symbol, "·"),
                 c.symbol,
                 f"{p.cycle.dte}d",
                 _fmt(p.credit),
@@ -502,7 +533,7 @@ class TauApp(App):
             if self.has_book:
                 share = self._book.pct_of_net_liq(p.bpr)
                 cells.insert(
-                    RANK_POS_AFTER,
+                    RANK_NL_AFTER,
                     _fmt(share * 100 if share is not None else None, ".1f"),
                 )
             table.add_row(*cells, key=c.symbol)
@@ -511,7 +542,12 @@ class TauApp(App):
         self.render_detail()
 
     def render_detail(self) -> None:
-        c = self.selected
+        if self.mode == "positions":
+            self.query_one("#detail", DetailPane).show_trade(
+                self.selected, self._book
+            )
+            return
+        c = self.selected_candidate
         cycle = self._cycles.get(c.symbol) if c else None
         status = self._detail_status
         if not status and self.mode == "rank" and c is not None:
@@ -525,7 +561,7 @@ class TauApp(App):
             history=self._history.get(c.symbol) if c else None,
             brief=self._briefs.get(c.symbol) if c else None,
             why_status=self._why_status,
-            target_delta=self.target_delta,
+            target_delta=chain_mod.TARGET_DELTA,
             book=self._book,
         )
 
@@ -548,7 +584,7 @@ class TauApp(App):
         self.render_detail()
         try:
             cycle = await self._chain_loader(
-                candidate, expiration, self.target_dte
+                candidate, expiration, chain_mod.TARGET_DTE
             )
             self._cycles[candidate.symbol] = cycle
             self._detail_status = ""
@@ -558,7 +594,7 @@ class TauApp(App):
         self.render_detail()
 
     def action_load_chain(self) -> None:
-        c = self.selected
+        c = self.selected_candidate
         if c is not None:
             self.load_chain(c)
 
@@ -570,7 +606,7 @@ class TauApp(App):
         than starting over — which is the point: 45 DTE is a default, not a
         finding, and whether it is the right cycle is visible only next to
         its neighbours."""
-        c = self.selected
+        c = self.selected_candidate
         cycle = self._cycles.get(c.symbol) if c else None
         if c is None or cycle is None:
             self._detail_status = "load a chain first (c)"
@@ -631,7 +667,7 @@ class TauApp(App):
         self.render_detail()
 
     def action_load_why(self) -> None:
-        c = self.selected
+        c = self.selected_candidate
         if c is None:
             return
         if c.symbol in self._history and c.symbol in self._briefs:
@@ -655,12 +691,23 @@ class TauApp(App):
 
         try:
             await self._proposal_loader(
-                candidates, on_done, self.target_dte, self.target_delta
+                candidates, on_done, chain_mod.TARGET_DTE, chain_mod.TARGET_DELTA
             )
         except Exception as exc:
             self._status = f"pricing failed: {exc}"
         self._pricing = False
         self.refresh_meta()
+
+    def action_positions(self) -> None:
+        """The open book. Its own page because its rows are its own thing —
+        trades you hold, not names you are considering — and mixing the two
+        would make every column mean two things."""
+        self.mode = "positions"
+        self.build_position_rows()
+        self.render_current_table()
+        self.refresh_meta()
+        if self._book is None and not self._book_error:
+            self.load_book()
 
     def action_rank_shortlist(self) -> None:
         self.mode = "rank"
@@ -681,16 +728,13 @@ class TauApp(App):
             self.price_shortlist_worker(list(self._passing))
 
     def action_back_to_screen(self) -> None:
-        # Escape unwinds one layer at a time, innermost first: the search bar
-        # is closer to hand than the view, so it goes first and the rank view
-        # survives a cancelled search.
+        # Escape unwinds one layer at a time, innermost first: an open jump
+        # is closer to hand than the page, so cancelling one never also
+        # costs you the page you were on.
         if self.searching:
-            self._close_search(clear=True)
+            self._close_search(restore=True)
             return
-        if self._query:
-            self._close_search(clear=True)
-            return
-        if self.mode == "rank":
+        if self.mode != "screen":
             self.mode = "screen"
             self.render_current_table()
             self.refresh_meta()
@@ -704,7 +748,12 @@ class TauApp(App):
             else "—"
         )
         passed = getattr(self, "_passed", 0)
-        if self.mode == "rank":
+        if self.mode == "positions":
+            bits = [f"tau · positions · {len(self._trades)} open"]
+            if self._book is not None and self._book.net_liq:
+                pnl = sum(t.pnl or 0 for t in self._trades)
+                bits.append(f"P/L {pnl:+,.0f}")
+        elif self.mode == "rank":
             priced = sum(1 for c in self._passing if c.symbol in self._proposals)
             bits = [f"tau · rank view · {priced}/{len(self._passing)} priced"]
             if self._pricing:
@@ -718,25 +767,31 @@ class TauApp(App):
                 f"★ {len(self._starred)}",
                 f"fetched {fetched}",
             ]
-        if self._query:
-            bits.append(f"/{self._query}")
+        if self._jump_miss:
+            bits.append(f"[yellow]{self._jump_miss}[/yellow]")
         bits.append(self._book_summary())
         if self._status:
             bits.append(self._status)
         self.query_one("#meta", Static).update("  ·  ".join(b for b in bits if b))
 
-        structure = f"{self.target_delta:.2f}Δ @ {self.target_dte}d"
-        if self.mode == "rank":
+        structure = (
+            f"{chain_mod.TARGET_DELTA:.2f}Δ @ {chain_mod.TARGET_DTE}d"
+        )
+        if self.mode == "positions":
+            self.query_one("#filters", Static).update(
+                "r refresh  ·  / jump  ·  ? help  ·  esc back to screener"
+            )
+        elif self.mode == "rank":
             label = RANK_SORTS[self.rank_sort_index][0]
             self.query_one("#filters", Static).update(
                 f"{structure}   sort {label}  ·  R force re-price all  ·  "
-                f"d/D change structure  ·  ? help  ·  esc back to screen"
+                f"? help  ·  esc back to screener"
             )
         else:
             self.query_one("#filters", Static).update(
                 f"IVR ≥ {self.min_ivr:.0f}   liquidity ≥ {self.min_liquidity}   "
                 f"earnings > {self.earnings_days}d   sort {SORTS[self.sort_index][0]}"
-                f"   {structure}   ? help"
+                f"   {structure}   p positions  ·  ? help"
             )
 
     def _book_summary(self) -> str:
@@ -795,64 +850,87 @@ class TauApp(App):
         self.earnings_days = EARNINGS_CYCLE[(i + 1) % len(EARNINGS_CYCLE)]
         self.rebuild()
 
-    def action_cycle_delta(self) -> None:
-        """Move the wing. Every cached cycle holds the whole strike window,
-        so the new delta is picked out of chain data already in memory — the
-        shortlist re-prices at the new wing with no network at all."""
-        i = _nearest_index(DELTA_CYCLE, self.target_delta)
-        self.target_delta = DELTA_CYCLE[(i + 1) % len(DELTA_CYCLE)]
-        for symbol, proposal in list(self._proposals.items()):
-            cycle = proposal.cycle
-            if cycle is None:
-                continue
-            strangle = chain_mod.build_strangle(cycle, self.target_delta)
-            self._proposals[symbol] = replace(
-                proposal, strangle=strangle, error=strangle.reason
-            )
-        self.build_rank_rows()
-        self.render_current_table()
-        self.refresh_meta()
-
-    def action_cycle_dte(self) -> None:
-        """Move the tenor. Unlike the wing, this cannot be answered from
-        cache — a different expiration is a different chain — so held
-        quotes are dropped rather than re-labelled, and `p`/`c` refetch."""
-        i = _nearest_index(DTE_CYCLE, self.target_dte)
-        self.target_dte = DTE_CYCLE[(i + 1) % len(DTE_CYCLE)]
-        self._proposals.clear()
-        self._cycles.clear()
-        self.build_rank_rows()
-        self.render_current_table()
-        self.refresh_meta()
-
-    # ---- search ----
+    # ---- jump ----
 
     def action_search(self) -> None:
+        """`/` moves the cursor; it does not hide rows.
+
+        Filtering answers "show me only these", which is what the thresholds
+        already do. Typing a ticker asks "take me to this one" — and the rows
+        either side of it are the context you were reading the list for, so
+        throwing them away to honour the request would be answering a
+        different question."""
+        self._jump_origin = max(self.query_one("#table", DataTable).cursor_row, 0)
+        self._jump_miss = ""
         box = self.query_one("#search", Input)
+        box.value = ""
         box.add_class("open")
         box.focus()
 
-    def _close_search(self, clear: bool) -> None:
+    def _close_search(self, restore: bool) -> None:
+        if restore and self.current_rows:
+            self.query_one("#table", DataTable).move_cursor(
+                row=min(self._jump_origin, len(self.current_rows) - 1)
+            )
+        self._jump_miss = ""
         box = self.query_one("#search", Input)
-        if clear:
-            box.value = ""
-            self._query = ""
+        box.value = ""
         box.remove_class("open")
         self.query_one("#table", DataTable).focus()
-        self.rebuild()
+        self.render_detail()
+        self.refresh_meta()
+
+    def _jump_to(self, prefix: str) -> None:
+        """Move to the first row whose symbol starts with what was typed.
+
+        A miss is reported rather than ignored, and a name the screen
+        excluded says so with its reason — otherwise typing the ticker of a
+        name filtered out an hour ago looks exactly like the tool being
+        broken."""
+        if not prefix:
+            self._jump_miss = ""
+            self.refresh_meta()
+            return
+        rows = self.current_rows
+        index = next(
+            (i for i, c in enumerate(rows) if self._row_symbol(c).startswith(prefix)),
+            None,
+        )
+        if index is not None:
+            self._jump_miss = ""
+            self.query_one("#table", DataTable).move_cursor(row=index)
+            self.render_detail()
+        else:
+            self._jump_miss = self._explain_miss(prefix)
+        self.refresh_meta()
+
+    def _explain_miss(self, prefix: str) -> str:
+        """Why a symbol that exists is not on screen."""
+        hidden = next(
+            (
+                c
+                for c in self._all_scored
+                if c.symbol.startswith(prefix) and c.excluded
+            ),
+            None,
+        )
+        if hidden is not None:
+            return f"{hidden.symbol} excluded: {'; '.join(hidden.excluded)} — x to show"
+        if any(c.symbol.startswith(prefix) for c in self._raw):
+            return f"{prefix} not in this view"
+        return f"no match for {prefix}"
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "search":
             return
-        self._query = event.value.strip().upper()
-        self.rebuild()
+        self._jump_to(event.value.strip().upper())
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "search":
             return
-        # Enter commits: the filter stays, the bar gets out of the way, and
-        # the cursor goes back to the table so `c`/`w` work on the result.
-        self._close_search(clear=False)
+        # Enter accepts where the cursor landed and hands the keys back to
+        # the table, so `c`/`w` act on what was jumped to.
+        self._close_search(restore=False)
 
     @property
     def searching(self) -> bool:
@@ -862,7 +940,7 @@ class TauApp(App):
         self.push_screen(HelpScreen())
 
     def action_star(self) -> None:
-        c = self.selected
+        c = self.selected_candidate
         if c is None:
             return
         self._starred.symmetric_difference_update({c.symbol})
@@ -870,17 +948,33 @@ class TauApp(App):
         self.refresh_meta()
 
     @property
-    def current_rows(self) -> list[Candidate]:
+    def current_rows(self) -> list:
+        if self.mode == "positions":
+            return self._trades
         return self._rank_rows if self.mode == "rank" else self._rows
 
+    @staticmethod
+    def _row_symbol(row) -> str:
+        """The ticker a row is about, whichever page it came from."""
+        return getattr(row, "symbol", None) or row.underlying
+
     @property
-    def selected(self) -> Candidate | None:
+    def selected(self):
         table = self.query_one("#table", DataTable)
         rows = self.current_rows
         if not rows or table.cursor_row < 0:
             return None
         return rows[min(table.cursor_row, len(rows) - 1)]
 
+    @property
+    def selected_candidate(self) -> Candidate | None:
+        """The selected row as a screen candidate, or None on a page whose
+        rows are not candidates. Actions that price or classify a name take
+        this rather than `selected`, so pressing `c` on an open position is
+        a no-op instead of an AttributeError."""
+        row = self.selected
+        return row if isinstance(row, Candidate) else None
 
-def run(target_delta: float | None = None, target_dte: int | None = None) -> None:
-    TauApp(target_delta=target_delta, target_dte=target_dte).run()
+
+def run() -> None:
+    TauApp().run()

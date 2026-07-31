@@ -29,6 +29,12 @@ STALE_QUOTE_MINUTES = 5
 # convention — this one is only here to turn a dollar estimate into a
 # sentence about the account.
 MAX_ALLOCATION = 0.05
+# Two conventions, shown as observations rather than instructions: most
+# premium-selling rulesets take profit somewhere near half the credit and
+# stop carrying short gamma into the last few weeks. tau has no opinion on
+# whether you follow either — it just says when you have arrived.
+TAKE_PROFIT = 0.50
+MANAGE_DTE = 21
 
 
 def _fmt(value, spec: str = ".2f", dash: str = "—") -> str:
@@ -109,6 +115,61 @@ class DetailPane(Static):
         if cycle is not None:
             lines += [""] + self._cycle_lines(
                 candidate, cycle, target_delta=target_delta, book=book
+            )
+        self.update("\n".join(lines))
+
+    def show_trade(
+        self,
+        trade: portfolio_mod.Trade | None,
+        book: portfolio_mod.Book | None = None,
+        today: date | None = None,
+    ) -> None:
+        """One open trade, leg by leg.
+
+        The table above gives the decision — P/L against the credit taken in,
+        and how long is left. This gives the arithmetic behind it, because a
+        management rule you cannot check is a rule you end up ignoring."""
+        if trade is None:
+            self.update("[dim]no open positions[/dim]")
+            return
+        today = today or date.today()
+        dte, held = trade.dte(today), trade.days_held(today)
+        lines = [
+            f"[b]{trade.underlying}[/b] · {escape(trade.describe())}",
+            "",
+            f"expires {trade.expiration or '—'}"
+            + (f" · {dte}d left" if dte is not None else "")
+            + (f" · held {held}d" if held is not None else ""),
+            "",
+        ]
+        for leg in sorted(trade.legs, key=lambda leg: (leg.strike or 0)):
+            opened = _fmt(leg.open_price)
+            now = _fmt(leg.mark_price)
+            lines.append(f"  {leg.describe():<16} {opened} → {now}")
+        credit, value, pnl, pct = trade.credit, trade.value, trade.pnl, trade.pnl_pct
+        lines += [
+            "",
+            f"credit {_fmt(credit, ',.0f')} · now {_fmt(value, ',.0f')}",
+        ]
+        if pnl is not None:
+            colour = "green" if pnl > 0 else "red" if pnl < 0 else "white"
+            share = f" ({pct:.0%} of credit)" if pct is not None else ""
+            lines.append(f"P/L [{colour}]{pnl:+,.0f}[/{colour}]{share}")
+        requirement = book.requirement(trade.underlying) if book else None
+        if requirement:
+            note = f"BPR {requirement:,.0f}"
+            share = book.pct_of_net_liq(requirement) if book else None
+            if share is not None:
+                note += f" · {share:.1%} of net liq"
+            lines.append(f"[dim]{note}[/dim]")
+        if dte is not None and dte <= MANAGE_DTE:
+            lines.append(
+                f"[yellow]inside {MANAGE_DTE}d — gamma rises fastest from "
+                f"here[/yellow]"
+            )
+        if pct is not None and pct >= TAKE_PROFIT:
+            lines.append(
+                f"[green]past {TAKE_PROFIT:.0%} of max profit[/green]"
             )
         self.update("\n".join(lines))
 
@@ -248,7 +309,7 @@ class DetailPane(Static):
         ]
 
         if not st.complete:
-            lines.append(f"[yellow]no structure: {st.reason}[/yellow]")
+            lines.append(f"[yellow]no strategy: {st.reason}[/yellow]")
             return lines
 
         be = st.breakevens

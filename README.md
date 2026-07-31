@@ -55,12 +55,13 @@ quantity rather than three separate features.
 - **Price context** — how far a name's recent move sits outside its own
   normal (z-score against a baseline that excludes the move itself), and
   where it sits in its 52-week range.
-- **Account awareness** — reads current positions and balances (still read
-  scope; `tau` cannot place an order) and uses them to answer the two
-  questions a screen alone cannot: whether a candidate would *add to* short
-  premium you already carry, and what share of net liq the estimated buying
-  power represents. Degrades silently: a grant without account access loses
-  the position columns and nothing else.
+- **Positions** — a page of its own (`p`) for what you already hold, grouped
+  into trades rather than listed as loose legs, sorted soonest-to-expire.
+  Carries the two figures the usual management rules are written in: P/L as a
+  share of the credit received, and days left. Reads positions and balances
+  with the same read-scope grant — `tau` still cannot place an order.
+  Degrades silently: without account access the page is empty and the rest of
+  the tool is unchanged.
 - **Catalyst read** — pulls recent headlines for the name and, if an
   Anthropic API key is configured, asks a model to classify why the vol is
   bid: a pending binary event, an already-resolved one, no identifiable
@@ -180,7 +181,6 @@ works outside market hours.
 ```bash
 tau                           # interactive TUI (default)
 tau tui                       # same, explicit
-tau tui --delta 0.20 --dte 30 # start on a different wing and tenor
 tau scan                      # ranked screen, text output, default filters
 tau scan --min-ivr 40         # tighter IV rank floor
 tau scan --all                # every symbol, with exclusion reasons
@@ -197,28 +197,36 @@ default 3), `--days` (earnings exclusion window, default 45; 0 disables),
 One metrics pull feeds everything — filtering, sorting, and pricing all
 happen in memory with no refetch until you ask for one.
 
+Three pages. The **screener** and the **rank view** are two column sets over
+the same candidates; **positions** is a different row set — trades you hold,
+not names you are considering — which is why it is a page rather than a sort.
+
 | Key | Action |
 |---|---|
 | `?` | help — what every column means and which way is good |
 | `[` / `]` | move the IV rank floor down / up |
 | `l` | cycle liquidity filter |
 | `e` | cycle earnings filter |
-| `/` | filter by symbol; `esc` clears it |
+| `/` | jump to a symbol — moves the cursor, hides nothing |
 | `s` | re-sort |
 | `x` | toggle excluded view (shows exclusion reasons) |
 | `c` / Enter | price the highlighted name's cycle, show the strangle |
 | `<` / `>` | previous / next monthly expiration on a loaded chain |
-| `d` / `D` | cycle target delta / target DTE |
 | `w` | catalyst read for the highlighted name |
-| `p` | price the whole current shortlist, switch to ranked view |
+| `p` | positions — what you already hold |
+| `P` | price the whole current shortlist, switch to ranked view |
 | `R` | force a re-price (rank view) |
 | `space` | star a name (session-only) |
-| `r` | refresh from the API |
-| `esc` | back to the screen |
+| `r` | refresh from the API and the account |
+| `esc` | back to the screener |
 | `q` | quit |
 
-`esc` unwinds one layer at a time — an open search first, then the rank
-view — so cancelling a filter never also discards a priced shortlist.
+`/` moves the cursor rather than filtering: the rows either side of a name
+are the context the list was being read for, so a jump keeps them. A symbol
+the screen excluded reports its reason instead of silently missing.
+
+`esc` unwinds one layer at a time — an open jump first, then the page — so
+cancelling a jump never also discards a priced shortlist.
 
 Proposals and chains are cached per symbol, so leaving a view with `esc` and
 coming back is instant — only `r`/`R` force a refetch.
@@ -236,7 +244,7 @@ chip complex, no single-name binary to sell into.
 
 ![Catalyst read](docs/img/catalyst.svg)
 
-**`p` — the rank view.** The whole shortlist priced concurrently and sorted
+**`P` — the rank view.** The whole shortlist priced concurrently and sorted
 by annualized return on capital, so names at different prices and
 expirations are comparable.
 
@@ -247,51 +255,47 @@ the reason, so a filter that's too tight is visible rather than silent.
 
 ![Excluded view](docs/img/excluded.svg)
 
-## Structures and parameters
+## Strategies and parameters
 
-`tau` is a scanner, and the structure is the last step of it. Screening,
-pricing, and ranking are all structure-agnostic — return on capital,
+`tau` is a scanner, and the strategy is the last step of it. Screening,
+pricing, and ranking are all strategy-agnostic — return on capital,
 probability of profit, and spread cost as a share of credit are defined for
 anything that collects a credit against a margin requirement. Adding a
-structure means writing two things: a builder that picks its legs off the
+strategy means writing two things: a builder that picks its legs off the
 chain, and a margin model.
 
-Today one structure is implemented: the **short strangle** — one short call
+Today one strategy is implemented: the **short strangle** — one short call
 and one short put, same expiration, naked, undefined risk on both sides.
 
-The two parameters that define the structure — the wing and the tenor — are
-adjustable at runtime. `d` and `D` cycle them in the TUI, and `tau tui
---delta 0.20 --dte 30` sets where they start:
-
-| Parameter | Default | Change it with |
-|---|---|---|
-| Target delta per side | 0.16 | `d`, `--delta` (0.10 / 0.16 / 0.20 / 0.25 / 0.30) |
-| Target days to expiration | 45 | `D`, `--dte` (21 / 30 / 45 / 60 / 90) |
-| Expiration priced | nearest monthly to target | `<` / `>` on a loaded chain |
-
-Moving the wing costs nothing: the cached cycle already holds the whole
-strike window, so the shortlist re-prices at the new delta with no API call.
-Moving the tenor is a different chain, so held quotes are dropped rather than
-relabelled, and the next `p` or `c` refetches.
-
-The rest is still fixed in code — change them by editing the constant:
+Its parameters are fixed in code rather than exposed as flags. Change them by
+editing the constant:
 
 | Parameter | Value | Constant |
 |---|---|---|
+| Target delta per side | 0.16 | `chain.TARGET_DELTA` |
+| Target days to expiration | 45 | `chain.TARGET_DTE` |
 | Expirations considered | monthlies only | `chain.MONTHLY_EXPIRATION_TYPE` |
 | Strike window | ±2.5σ, max 26 per side | `chain.SIGMA_SPAN` |
 | Margin estimate | max(20% spot − OTM + premium, 10% strike + premium, $50) per contract | `propose.OTM_PERCENT`, `STRIKE_PERCENT`, `MIN_PER_CONTRACT` |
 | Sizing ceiling shown against net liq | 5% | `tui.detail.MAX_ALLOCATION` |
+| Take-profit and management marks on the positions page | 50%, 21 DTE | `tui.detail.TAKE_PROFIT`, `MANAGE_DTE` |
+
+`<` and `>` walk a loaded chain along its monthly expirations, which is a
+read at a different tenor rather than a change to the target.
 
 Monthlies-only means a symbol with no monthly near 45 DTE has no usable
 cycle at all, rather than quietly falling back to a weekly with different
 liquidity.
 
-**Next up:** iron condor and cash-secured put, then verticals. Each needs a
-little more than a builder — defined-risk structures want a credit-to-width
-measure alongside return on capital, and single-sided ones reduce the
-probability calculation below from two terms to one. The ranking layer
-itself doesn't change.
+**Next up:** the iron condor. It needs a little more than a builder — a
+defined-risk strategy wants a credit-to-width measure alongside return on
+capital, and its margin is width minus credit rather than the naked formula.
+It is also what will force the strategy abstraction into existence: an
+interface designed against a single example is an interface designed wrong,
+so `Strangle` stays concrete until there is a second strategy to generalise
+against. Enumerating strategies is cheap once it exists — every one of them
+is built off the same fetched chain, so comparing four costs what pricing
+one costs today. The ranking layer itself doesn't change.
 
 **Not surfaced:** ex-dividend dates. An ex-div inside the trade window is
 real early-assignment risk on the short call, and `tau` will not warn you.
@@ -317,9 +321,9 @@ process driftless in log terms.
 $B_{\text{low}}$. $N(d(B_{\text{up}}))$ is the probability of finishing
 below the upper breakeven and $N(d(B_{\text{low}}))$ of finishing below the
 lower one, so the difference is the probability of landing between them.
-That two-term form is for a structure with breakevens on both sides — a
-strangle, straddle, or condor. A one-sided structure such as a cash-secured
-put keeps a single term.
+That two-term form is for a strategy with breakevens on both sides — a
+strangle, straddle, or condor. A one-sided one, such as a short put, keeps a
+single term.
 
 Two deliberate choices. It uses the **breakevens**, not the strikes — the
 credit pushes the breakevens further out than the strikes, so the common

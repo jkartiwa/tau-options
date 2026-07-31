@@ -29,10 +29,11 @@ HELP = """\
   [b]LIQ[/b]    tastytrade liquidity rating, 4 best. Symbol-level, so it
          cannot see the spread at the strike you actually sell.
   [b]BETA[/b]   Beta to the broad market.
-  [b]POS[/b]    Net option contracts you already hold. Signed.
   [b]ERN[/b]    Days to the next expected earnings report.
+  [b]◆[/b]      In the left column: you are already short premium on this
+         name. Another sale here concentrates, it does not diversify.
 
-[b]rank columns[/b] — the shortlist priced as comparable trades
+[b]rank columns[/b] ([b]P[/b]) — the shortlist priced as comparable trades
   [b]DTE[/b]    Days to expiration of the chosen cycle.
   [b]CREDIT[/b] Mid-price credit for the strangle, per share.
   [b]BPR~[/b]   Estimated buying power, dollars. [b]A formula, not a broker
@@ -52,6 +53,15 @@ HELP = """\
   [b]BE/EM[/b]  Nearest breakeven in expected moves. [b]Under 1.00 means a
          single standard deviation reaches it.[/b]
 
+[b]positions[/b] ([b]p[/b]) — what you already hold, soonest to expire first
+  [b]STRUCTURE[/b] The legs as one trade, since that is how it is managed.
+  [b]DTE[/b]    Days left. Short gamma rises fastest in the last few weeks.
+  [b]CREDIT[/b] What the trade took in at open.
+  [b]NOW[/b]    What closing it would cost today.
+  [b]P/L%[/b]   Profit as a share of that credit — the units the usual
+         management rules are written in.
+  [b]BPR[/b]    The broker's own requirement, not an estimate.
+
 [b]detail pane[/b]
   [b]term[/b]         Near vs far IV. Backwardation = the market pricing
                something soon. Contango is the resting state.
@@ -66,13 +76,13 @@ HELP = """\
 [b]keys[/b]
   [b][ ][/b]        IV rank floor down / up
   [b]l  e[/b]      cycle liquidity floor / earnings window
-  [b]d  D[/b]      cycle target delta / target DTE (re-prices from cache)
   [b]s[/b]         re-sort  ·  [b]x[/b] show excluded with reasons
-  [b]/[/b]         filter by symbol  ·  [b]esc[/b] clear
+  [b]/[/b]         jump to a symbol — moves the cursor, hides nothing
   [b]c[/b] Enter   price this name's cycle
   [b]< >[/b]      previous / next expiration on a loaded chain
   [b]w[/b]         why vol is bid — price context and catalyst read
-  [b]p[/b]         price the whole shortlist, ranked  ·  [b]R[/b] force re-price
+  [b]p[/b]         positions  ·  [b]P[/b] price the shortlist, ranked
+  [b]R[/b]         force a re-price  ·  [b]esc[/b] back to the screener
   [b]space[/b]     star  ·  [b]r[/b] refresh from the API  ·  [b]q[/b] quit
 
 [dim]Estimates, not broker numbers. Mids can be stale outside market hours.
