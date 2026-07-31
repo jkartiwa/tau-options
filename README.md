@@ -53,13 +53,19 @@ breakevens:
 
 $$\sigma_\tau = \sigma\sqrt{\tau} \quad \text{where} \quad \tau = \text{DTE}/365$$
 
-$$d = \frac{\ln(K/S) + \sigma_\tau^{2}/2}{\sigma_\tau}$$
+$$d(K) = \frac{\ln(K/S) + \sigma_\tau^{2}/2}{\sigma_\tau}$$
 
-$$P(\text{profit}) = N(d_{\text{up}}) - N(d_{\text{low}})$$
+$$P(\text{profit}) = N\big(d(B_{\text{up}})\big) - N\big(d(B_{\text{low}})\big)$$
 
-Here σ is the chain's at-the-money implied volatility, K each breakeven, S
-spot, and N the standard normal CDF. The `σ²/2` term is the median shift
-that makes the process driftless in log terms.
+σ is the chain's at-the-money implied volatility, S is spot, and N is the
+standard normal CDF. The `σ²/2` term is the median shift that makes the
+process driftless in log terms.
+
+`d` is evaluated once at each breakeven — $B_{\text{up}}$ (upper) and
+$B_{\text{low}}$ (lower). $N(d(B_{\text{up}}))$ is the probability of
+finishing below the upper breakeven and $N(d(B_{\text{low}}))$ the
+probability of finishing below the lower one, so the difference is the
+probability of landing between them, which is where a short strangle pays.
 
 Two deliberate choices. It uses the **breakevens**, not the strikes — the
 credit pushes the breakevens further out than the strikes, so the common
