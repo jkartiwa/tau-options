@@ -133,7 +133,7 @@ async def test_detail_pane_renders_and_chain_loads_on_enter():
 
     calls = []
 
-    async def chain_loader(candidate):
+    async def chain_loader(candidate, expiration=None, target_dte=45):
         calls.append(candidate.symbol)
         return cycle
 
@@ -243,7 +243,7 @@ async def test_why_does_not_cancel_an_in_flight_chain_load():
     started = asyncio.Event()
     chain_calls = []
 
-    async def slow_chain_loader(candidate):
+    async def slow_chain_loader(candidate, expiration=None, target_dte=45):
         started.set()
         await asyncio.sleep(0.3)
         chain_calls.append(candidate.symbol)
@@ -287,51 +287,39 @@ async def test_why_reports_failure_instead_of_rendering_a_blank():
 def _proposal_loader_factory(proposals_by_symbol):
     """Fake loader that resolves synchronously via on_done, per candidate."""
 
-    async def loader(candidates, on_done):
+    async def loader(candidates, on_done, target_dte=45, target_delta=0.16):
         for c in candidates:
             on_done(proposals_by_symbol[c.symbol])
 
     return loader
 
 
-def _fake_proposal(symbol, dte=40, credit=5.0, bpr=2000.0, pop=0.75, spread_cost=0.10):
-    from tau.chain import Cycle, Leg, Strangle
+def _fake_proposal(
+    symbol, dte=40, credit=5.0, bpr=2000.0, pop=0.75, spread_cost=0.10, theta=0.05
+):
+    """A real `Proposal` over a synthetic chain, with only the figures a test
+    pins overridden.
 
-    put = Leg(f"P{symbol}", f"sP{symbol}", 90.0, "P", bid=credit / 2 - 0.05, ask=credit / 2 + 0.05, delta=-0.16, iv=0.3)
-    call = Leg(f"C{symbol}", f"sC{symbol}", 110.0, "C", bid=credit / 2 - 0.05, ask=credit / 2 + 0.05, delta=0.16, iv=0.3)
+    Subclassing rather than reimplementing the interface is deliberate: a
+    hand-written stand-in silently stops covering every metric added to
+    Proposal after it, and the rank view reads those metrics by name.
+    """
+    from tau.chain import Cycle, Leg, Strangle
+    from tau.propose import Proposal
+
+    half = credit / 2
+    put = Leg(f"P{symbol}", f"sP{symbol}", 90.0, "P", bid=half - 0.05, ask=half + 0.05,
+              delta=-0.16, theta=-theta / 2, iv=0.3)
+    call = Leg(f"C{symbol}", f"sC{symbol}", 110.0, "C", bid=half - 0.05, ask=half + 0.05,
+               delta=0.16, theta=-theta / 2, iv=0.3)
     cy = Cycle(symbol=symbol, expiration=date(2026, 9, 4), dte=dte, underlying=100.0,
                legs=(put, call), fetched_at=datetime.now(UTC))
     st = Strangle(put, call, target_delta=0.16)
 
-    class FakeProposal:
-        candidate = None
-        cycle = cy
-        strangle = st
-        error = None
-
-        @property
-        def ok(self):
-            return True
-
-        @property
-        def symbol(self):
-            return symbol
-
-        @property
-        def credit(self):
-            return round(put.mid + call.mid, 2)
-
+    class FakeProposal(Proposal):
         @property
         def bpr(self):
             return bpr
-
-        @property
-        def roc(self):
-            return (self.credit * 100) / bpr
-
-        @property
-        def annualized_roc(self):
-            return self.roc * 365 / dte
 
         @property
         def pop(self):
@@ -345,7 +333,7 @@ def _fake_proposal(symbol, dte=40, credit=5.0, bpr=2000.0, pop=0.75, spread_cost
         def be_over_em(self):
             return 1.0
 
-    return FakeProposal()
+    return FakeProposal(candidate=cand(symbol, 50.0), cycle=cy, strangle=st)
 
 
 @pytest.mark.asyncio
@@ -377,7 +365,7 @@ async def test_rank_view_reuses_cached_proposals_on_reentry():
 
     calls = []
 
-    async def track_loader(candidates, on_done):
+    async def track_loader(candidates, on_done, target_dte=45, target_delta=0.16):
         calls.append([c.symbol for c in candidates])
         on_done(_fake_proposal("HIGH"))
 
@@ -399,7 +387,7 @@ async def test_reprice_forces_a_refetch():
 
     calls = []
 
-    async def track_loader(candidates, on_done):
+    async def track_loader(candidates, on_done, target_dte=45, target_delta=0.16):
         calls.append([c.symbol for c in candidates])
         on_done(_fake_proposal("HIGH"))
 
@@ -429,3 +417,341 @@ async def test_escape_returns_to_screen_view():
         await pilot.press("escape")
         assert a.mode == "screen"
         assert symbols(a) == ["HIGH", "CHEAP", "MID"]
+
+
+# ---- symbol search ----
+
+
+@pytest.mark.asyncio
+async def test_search_narrows_the_view_without_changing_the_screen():
+    """The filter is a lens on the result, not another threshold: the pass
+    count underneath it has to keep reporting the real screen."""
+    a = app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert symbols(a) == ["HIGH", "CHEAP", "MID"]
+        await pilot.press("/")
+        await pilot.press("h", "i")
+        await pilot.pause()
+        assert a._query == "HI"
+        assert symbols(a) == ["HIGH"]
+        assert a._passed == 3  # the screen itself is untouched
+
+
+@pytest.mark.asyncio
+async def test_enter_commits_the_search_and_returns_focus_to_the_table():
+    a = app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("/")
+        await pilot.press("m", "i", "d")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert symbols(a) == ["MID"]  # filter survives
+        assert a.query_one("#table").has_focus  # but the keys go to the table
+        assert not a.searching
+
+
+@pytest.mark.asyncio
+async def test_escape_clears_the_search_before_leaving_the_rank_view():
+    """Escape unwinds one layer at a time. Cancelling a search that was run
+    inside the rank view must not also throw away the rank view."""
+    a = app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        a.mode = "rank"
+        await pilot.press("/")
+        await pilot.press("h")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert a._query == ""
+        assert a.mode == "rank"  # still here
+        await pilot.press("escape")
+        await pilot.pause()
+        assert a.mode == "screen"
+
+
+@pytest.mark.asyncio
+async def test_search_keys_do_not_trigger_bindings():
+    """`q` typed into the filter is a letter, not quit."""
+    a = app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("/")
+        await pilot.press("q")
+        await pilot.pause()
+        assert a.is_running
+        assert a._query == "Q"
+
+
+# ---- help ----
+
+
+@pytest.mark.asyncio
+async def test_help_overlay_opens_and_any_key_closes_it():
+    from tau.tui.help import HelpScreen
+
+    a = app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("?")
+        await pilot.pause()
+        assert isinstance(a.screen, HelpScreen)
+        await pilot.press("j")
+        await pilot.pause()
+        assert not isinstance(a.screen, HelpScreen)
+
+
+# ---- structure parameters ----
+
+
+@pytest.mark.asyncio
+async def test_delta_cycle_reprices_from_cached_chains_without_refetching():
+    """The cached cycle holds the whole strike window, so moving the wing is
+    a re-read of data already in memory. If this ever costs a fetch, the
+    keypress has become expensive enough to hesitate over."""
+    async def loader():
+        return [FIXTURE[0]]
+
+    calls = []
+
+    async def track_loader(candidates, on_done, target_dte=45, target_delta=0.16):
+        calls.append(target_delta)
+        on_done(_fake_proposal("HIGH"))
+
+    a = TauApp(loader=loader, proposal_loader=track_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        assert calls == [0.16]
+        await pilot.press("d")
+        await pilot.pause()
+        assert a.target_delta == 0.20
+        assert calls == [0.16]  # no second pass over the network
+        assert a._proposals["HIGH"].strangle.target_delta == 0.20
+
+
+@pytest.mark.asyncio
+async def test_dte_cycle_drops_quotes_rather_than_relabelling_them():
+    """A different tenor is a different chain. Keeping the old quotes and
+    showing the new DTE beside them would be the one genuinely dishonest
+    outcome available here."""
+    async def loader():
+        return [FIXTURE[0]]
+
+    async def track_loader(candidates, on_done, target_dte=45, target_delta=0.16):
+        on_done(_fake_proposal("HIGH"))
+
+    a = TauApp(loader=loader, proposal_loader=track_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        assert a._proposals
+        await pilot.press("D")
+        await pilot.pause()
+        assert a.target_dte == 60
+        assert not a._proposals and not a._cycles
+
+
+@pytest.mark.asyncio
+async def test_command_line_parameters_seed_the_cycle_position():
+    """A delta supplied on the command line need not be one of the stops,
+    and `d` has to keep working from wherever it lands."""
+    async def loader():
+        return [FIXTURE[0]]
+
+    a = TauApp(loader=loader, target_delta=0.22, target_dte=30)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert a.target_delta == 0.22
+        await pilot.press("d")  # nearest stop is 0.20, so the next is 0.25
+        assert a.target_delta == 0.25
+        assert a.target_dte == 30
+
+
+# ---- expirations ----
+
+
+def _cycle_at(symbol, expiration, dte):
+    from tau.chain import Cycle, Leg
+
+    return Cycle(
+        symbol=symbol,
+        expiration=expiration,
+        dte=dte,
+        underlying=100.0,
+        legs=(
+            Leg("P90", "s1", 90.0, "P", bid=1.0, ask=1.2, delta=-0.16, theta=-0.03, iv=0.3),
+            Leg("C110", "s2", 110.0, "C", bid=0.8, ask=1.0, delta=0.17, theta=-0.02, iv=0.3),
+        ),
+        fetched_at=datetime.now(UTC),
+        expirations=(
+            (date(2026, 8, 21), 17),
+            (date(2026, 9, 18), 45),
+            (date(2026, 10, 16), 73),
+        ),
+    )
+
+
+def _expiration_app():
+    asked = []
+
+    async def loader():
+        return [FIXTURE[0]]
+
+    async def chain_loader(candidate, expiration=None, target_dte=45):
+        asked.append(expiration)
+        if expiration is None:
+            return _cycle_at(candidate.symbol, date(2026, 9, 18), 45)
+        dte = {date(2026, 8, 21): 17, date(2026, 9, 18): 45, date(2026, 10, 16): 73}
+        return _cycle_at(candidate.symbol, expiration, dte[expiration])
+
+    return TauApp(loader=loader, chain_loader=chain_loader), asked
+
+
+@pytest.mark.asyncio
+async def test_expiration_keys_walk_the_term_structure():
+    a, asked = _expiration_app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        assert await _settle(a, lambda: "HIGH" in a._cycles)
+        assert a._cycles["HIGH"].expiration == date(2026, 9, 18)
+        await pilot.press(">")
+        assert await _settle(
+            a, lambda: a._cycles["HIGH"].expiration == date(2026, 10, 16)
+        )
+        await pilot.press("<")
+        assert await _settle(
+            a, lambda: a._cycles["HIGH"].expiration == date(2026, 9, 18)
+        )
+        assert asked == [None, date(2026, 10, 16), date(2026, 9, 18)]
+
+
+@pytest.mark.asyncio
+async def test_expiration_walk_stops_at_the_ends_instead_of_wrapping():
+    a, _ = _expiration_app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        assert await _settle(a, lambda: "HIGH" in a._cycles)
+        await pilot.press("<")  # to the front month
+        assert await _settle(
+            a, lambda: a._cycles["HIGH"].expiration == date(2026, 8, 21)
+        )
+        await pilot.press("<")  # nothing nearer
+        await pilot.pause()
+        assert "nearest" in a._detail_status
+        assert a._cycles["HIGH"].expiration == date(2026, 8, 21)
+
+
+@pytest.mark.asyncio
+async def test_expiration_keys_say_so_when_no_chain_is_loaded():
+    a, asked = _expiration_app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(">")
+        await pilot.pause()
+        assert "load a chain first" in a._detail_status
+        assert asked == []
+
+
+# ---- the account ----
+
+
+def _book():
+    from tau.portfolio import Book, Position
+
+    return Book(
+        positions=(
+            Position("H 26P", "HIGH", "Equity Option", -2.0, date(2026, 9, 18), 90.0, "P"),
+        ),
+        net_liq=100_000.0,
+        maintenance=25_000.0,
+        account_number="5WX",
+    )
+
+
+@pytest.mark.asyncio
+async def test_position_column_appears_only_when_the_account_is_readable():
+    """A column of dashes reads as 'flat', which is the wrong claim when the
+    truth is 'not known'. So the column is absent instead."""
+    async def loader():
+        return list(FIXTURE)
+
+    async def book_loader():
+        return _book()
+
+    a = TauApp(loader=loader)  # conftest disables the real account read
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert "POS" not in a._screen_columns()
+
+    b = TauApp(loader=loader, book_loader=book_loader)
+    async with b.run_test() as pilot:
+        await pilot.pause()
+        assert await _settle(b, lambda: b.has_book)
+        assert "POS" in b._screen_columns()
+        assert "%NL" in b._rank_columns()
+        assert b._book.contracts("HIGH") == -2
+
+
+@pytest.mark.asyncio
+async def test_existing_short_premium_is_called_out_in_the_detail_pane():
+    async def loader():
+        return list(FIXTURE)
+
+    async def book_loader():
+        return _book()
+
+    a = TauApp(loader=loader, book_loader=book_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert await _settle(a, lambda: a.has_book)
+        rendered = str(a.query_one("#detail").content)
+        assert "held" in rendered
+        assert "already short premium" in rendered
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_account_never_blocks_the_screen():
+    """The book is an enrichment. A grant without account access is a normal
+    configuration, not a failure of the tool."""
+    async def loader():
+        return list(FIXTURE)
+
+    async def boom():
+        raise RuntimeError("forbidden")
+
+    a = TauApp(loader=loader, book_loader=boom)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert await _settle(a, lambda: bool(a._book_error))
+        assert symbols(a) == ["HIGH", "CHEAP", "MID"]  # screen unaffected
+        assert not a.has_book
+        assert "account unavailable" in str(a.query_one("#meta").content)
+
+
+@pytest.mark.asyncio
+async def test_refresh_rereads_the_account_too():
+    """A fill or an assignment moves the book without touching the screen,
+    so a refresh that skipped it would leave the position columns describing
+    a book that no longer exists."""
+    async def loader():
+        return list(FIXTURE)
+
+    calls = []
+
+    async def book_loader():
+        calls.append(1)
+        return _book()
+
+    a = TauApp(loader=loader, book_loader=book_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert await _settle(a, lambda: len(calls) == 1)
+        await pilot.press("r")
+        assert await _settle(a, lambda: len(calls) == 2)

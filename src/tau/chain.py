@@ -224,6 +224,20 @@ class Strangle:
             return None
         return max(self.put.spread, self.call.spread)
 
+    @property
+    def theta(self) -> float | None:
+        """Decay collected per day, per share, by the *short* structure.
+
+        The feed signs greeks for a long position, where time decay is a
+        loss, so theta arrives negative on both legs. A seller is on the
+        other side of that, which is why this negates: the number here is
+        positive when the trade earns from a day passing."""
+        if not self.complete:
+            return None
+        if self.put.theta is None or self.call.theta is None:
+            return None
+        return -(self.put.theta + self.call.theta)
+
 
 def pick_by_delta(
     legs: tuple[Leg, ...], right: str, target: float = TARGET_DELTA

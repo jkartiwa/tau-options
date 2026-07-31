@@ -187,6 +187,31 @@ class Proposal:
             return None
         return chain_mod.be_vs_expected_move(self.cycle, self.strangle)
 
+    @property
+    def theta_day(self) -> float | None:
+        """Dollars the position earns from one day passing, at today's
+        greeks. Not a run rate — theta accelerates into expiration, and a
+        move in the underlying rewrites it entirely."""
+        if not self.ok:
+            return None
+        theta = self.strangle.theta
+        return None if theta is None else theta * CONTRACT_MULTIPLIER
+
+    @property
+    def theta_yield(self) -> float | None:
+        """Daily decay as a fraction of the capital it ties up.
+
+        Return on capital prices the whole trade held to expiration.
+        Premium sellers rarely hold to expiration — they close at some
+        fraction of max profit — so the honest comparison between two
+        candidates is what each pays *per day* for the buying power it
+        consumes. Same units as annualized ROC divided by 365, but earned
+        rather than assumed."""
+        theta, bpr = self.theta_day, self.bpr
+        if theta is None or not bpr:
+            return None
+        return theta / bpr
+
 
 async def price_candidate(
     session: Session,

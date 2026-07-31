@@ -137,3 +137,53 @@ def test_rank_default_key_is_annualized_roc():
     slow = Proposal(cand("SLOW"), cycle((PUT, CALL), dte=90), STRANGLE)
     ranked = rank_proposals([slow, fast])
     assert ranked[0].symbol == "FAST"  # same ROC, shorter DTE annualizes higher
+
+
+def theta_leg(strike, right, delta, bid, ask, theta):
+    return Leg(
+        occ=f"{right}{strike}", streamer=f"s{right}{strike}", strike=strike,
+        right=right, bid=bid, ask=ask, delta=delta, theta=theta, iv=0.30,
+    )
+
+
+def test_theta_is_positive_for_the_seller():
+    """Greeks arrive signed for a long position, where a day passing is a
+    loss. The seller is on the other side, so a structure that decays must
+    report a positive number here — the sign is the whole point."""
+    put = theta_leg(85, "P", -0.16, 1.0, 1.2, theta=-0.03)
+    call = theta_leg(115, "C", 0.17, 1.0, 1.2, theta=-0.02)
+    st = Strangle(put, call, target_delta=0.16)
+    assert st.theta == pytest.approx(0.05)
+    p = Proposal(cand(), cycle((put, call)), st)
+    assert p.theta_day == pytest.approx(5.0)  # per contract, in dollars
+
+
+def test_theta_yield_is_decay_over_capital():
+    put = theta_leg(85, "P", -0.16, 1.0, 1.2, theta=-0.03)
+    call = theta_leg(115, "C", 0.17, 1.0, 1.2, theta=-0.02)
+    p = Proposal(cand(), cycle((put, call)), Strangle(put, call, target_delta=0.16))
+    assert p.theta_yield == pytest.approx(p.theta_day / p.bpr)
+
+
+def test_theta_is_none_when_a_leg_has_no_greeks():
+    """Half a structure's decay is a wrong number, not an imprecise one —
+    the same rule the credit follows."""
+    put = theta_leg(85, "P", -0.16, 1.0, 1.2, theta=-0.03)
+    call = leg(115, "C", 0.17, 1.0, 1.2)  # no theta
+    st = Strangle(put, call, target_delta=0.16)
+    assert st.theta is None
+    assert Proposal(cand(), cycle((put, call)), st).theta_day is None
+    assert Proposal(cand(), cycle((put, call)), st).theta_yield is None
+
+
+def test_rank_by_theta_yield():
+    rich = theta_leg(85, "P", -0.16, 1.0, 1.2, theta=-0.10)
+    rich_call = theta_leg(115, "C", 0.17, 1.0, 1.2, theta=-0.10)
+    thin = theta_leg(85, "P", -0.16, 1.0, 1.2, theta=-0.01)
+    thin_call = theta_leg(115, "C", 0.17, 1.0, 1.2, theta=-0.01)
+    fast = Proposal(cand("FAST"), cycle((rich, rich_call)),
+                    Strangle(rich, rich_call, target_delta=0.16))
+    slow = Proposal(cand("SLOW"), cycle((thin, thin_call)),
+                    Strangle(thin, thin_call, target_delta=0.16))
+    ranked = rank_proposals([slow, fast], key="theta_yield")
+    assert [p.symbol for p in ranked] == ["FAST", "SLOW"]

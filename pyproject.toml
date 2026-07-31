@@ -6,10 +6,15 @@ requires-python = ">=3.12"
 dependencies = [
     "tastytrade>=13.2",
     "python-dotenv>=1.0",
+    # `tau` with no subcommand launches the TUI, so these are not optional.
+    "textual>=0.80",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+# The TUI tests are async, so the plugin is not optional for `pytest` to
+# actually run them rather than silently erroring on the marker.
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 # The catalyst read is optional: without it the headlines still show.
 catalyst = ["anthropic>=0.117"]
 

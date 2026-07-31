@@ -91,13 +91,19 @@ def main() -> None:
     p.add_argument("--universe", help="path to a custom universe file")
     p.add_argument("--log", action="store_true", help="record this scan to the local scan log")
 
-    sub.add_parser("tui", help="interactive triage over the screen (default)")
+    t = sub.add_parser("tui", help="interactive triage over the screen (default)")
+    # Starting points, not limits — `d` and `D` move both inside the TUI.
+    t.add_argument("--delta", type=float, default=None, help="target delta per side (default 0.16)")
+    t.add_argument("--dte", type=int, default=None, help="target days to expiration (default 45)")
 
     args = parser.parse_args()
     if args.command in (None, "tui"):
         from tau.tui.app import run
 
-        run()
+        run(
+            target_delta=getattr(args, "delta", None),
+            target_dte=getattr(args, "dte", None),
+        )
         return
     asyncio.run(scan(args))
 

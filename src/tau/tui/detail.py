@@ -5,7 +5,7 @@ in memory and renders the instant the cursor moves; the chain costs ~1.2s and
 loads only on request. That split is why moving down the list stays free.
 """
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 from rich.markup import escape
 from textual.widgets import Static
@@ -13,12 +13,22 @@ from textual.widgets import Static
 from tau import catalyst as catalyst_mod
 from tau import chain as chain_mod
 from tau import history as history_mod
+from tau import portfolio as portfolio_mod
+from tau import propose as propose_mod
 from tau.screen import Candidate
 
 TERM_NEAR_DTE = 7
 TERM_FAR_DTE = 60
 TERM_FLAT_BAND = 2.0  # vol points; inside this the curve reads flat
 HEADLINE_LINES = 8  # shown only when there is no verdict to show instead
+# Past this the quote behind a priced structure is old enough that it should
+# be read as an indication rather than a price.
+STALE_QUOTE_MINUTES = 5
+# A ceiling to size against, not a recommendation. Undefined-risk positions
+# have no maximum loss to allocate against, so any such number is a
+# convention — this one is only here to turn a dollar estimate into a
+# sentence about the account.
+MAX_ALLOCATION = 0.05
 
 
 def _fmt(value, spec: str = ".2f", dash: str = "—") -> str:
@@ -45,6 +55,22 @@ def term_shape(term: tuple[tuple[date, float], ...], today: date) -> str | None:
     return f"{n[1]:.0f}% ({n[2]}d) → {f[1]:.0f}% ({f[2]}d)  {shape}"
 
 
+def quote_age(fetched_at: datetime, now: datetime | None = None) -> str:
+    """How long ago the chain behind these numbers was quoted.
+
+    The cycle has carried this timestamp since it was fetched, on the
+    principle that a stale quote must not pass as a live one — which only
+    holds if it is actually shown. Mids taken outside market hours or held
+    across a move are indications, and the age is the only cue the pane can
+    give that a credit is one."""
+    now = now or datetime.now(UTC)
+    minutes = int((now - fetched_at).total_seconds() // 60)
+    local = fetched_at.astimezone().strftime("%H:%M")
+    if minutes < 1:
+        return f"quoted {local}"
+    return f"quoted {local} ({minutes}m ago)"
+
+
 class DetailPane(Static):
     """Renders one candidate, optionally with a loaded cycle."""
 
@@ -57,12 +83,19 @@ class DetailPane(Static):
         history: history_mod.History | None = None,
         brief: catalyst_mod.Brief | None = None,
         why_status: str = "",
+        target_delta: float = chain_mod.TARGET_DELTA,
+        book: portfolio_mod.Book | None = None,
     ) -> None:
         if candidate is None:
             self.update("[dim]no selection[/dim]")
             return
         today = today or date.today()
         lines = self._context_lines(candidate, today)
+        # Existing exposure outranks everything else in the pane. Whether a
+        # trade is additive or concentrating changes what the numbers below
+        # mean, so it cannot sit under a fold.
+        if book is not None:
+            lines += self._holding_lines(book, candidate.symbol)
         # Price position sits with the vol context: both answer "what is
         # this name doing", and the verdict below reads against them.
         if history is not None:
@@ -74,8 +107,22 @@ class DetailPane(Static):
         if status:
             lines += ["", f"[dim]{status}[/dim]"]
         if cycle is not None:
-            lines += [""] + self._cycle_lines(candidate, cycle)
+            lines += [""] + self._cycle_lines(
+                candidate, cycle, target_delta=target_delta, book=book
+            )
         self.update("\n".join(lines))
+
+    def _holding_lines(self, book: portfolio_mod.Book, symbol: str) -> list[str]:
+        held = book.describe(symbol)
+        if held is None:
+            return []
+        lines = ["", f"[b]held[/b] {escape(held)}"]
+        if book.short_premium_in(symbol):
+            lines.append(
+                "[yellow]already short premium here — this adds to the "
+                "position, it does not diversify it[/yellow]"
+            )
+        return lines
 
     def _context_lines(self, c: Candidate, today: date) -> list[str]:
         dte = c.days_to_earnings(today)
@@ -155,9 +202,28 @@ class DetailPane(Static):
                 lines.append(f"[dim]{escape(h.render())}[/dim]")
         return lines
 
-    def _cycle_lines(self, c: Candidate, cy: chain_mod.Cycle) -> list[str]:
-        st = chain_mod.build_strangle(cy)
+    def _cycle_lines(
+        self,
+        c: Candidate,
+        cy: chain_mod.Cycle,
+        target_delta: float = chain_mod.TARGET_DELTA,
+        book: portfolio_mod.Book | None = None,
+    ) -> list[str]:
+        st = chain_mod.build_strangle(cy, target_delta)
         head = f"[b]{cy.expiration}[/b] · {cy.dte} DTE"
+        # Which cycle of the available monthlies this is, so `<`/`>` reads as
+        # navigation rather than a guess about what else exists.
+        idx = next(
+            (i for i, (d, _) in enumerate(cy.expirations) if d == cy.expiration),
+            None,
+        )
+        if idx is not None and len(cy.expirations) > 1:
+            head += f" [dim]({idx + 1}/{len(cy.expirations)}  < >)[/dim]"
+        age = quote_age(cy.fetched_at)
+        stale = (
+            datetime.now(UTC) - cy.fetched_at
+        ).total_seconds() >= STALE_QUOTE_MINUTES * 60
+        head += f"  [yellow]{age}[/yellow]" if stale else f"  [dim]{age}[/dim]"
         atm = cy.atm_iv
         # The fair comparison is metrics' own term-structure IV *at this
         # expiration*, not the fixed-tenor iv30 (shown separately in the
@@ -202,9 +268,53 @@ class DetailPane(Static):
                 f"BE/EM {tag}{ratio:.2f}{close}"
                 f" · worst spread {_fmt(st.worst_spread)}"
             )
+        lines += self._capital_lines(cy, st, book)
         if st.off_target and st.off_target > chain_mod.DELTA_TOLERANCE:
             lines.append(
                 f"[yellow]nearest strikes miss {st.target_delta:.2f}Δ "
                 f"by {st.off_target:.2f}[/yellow]"
+            )
+        return lines
+
+    def _capital_lines(
+        self,
+        cy: chain_mod.Cycle,
+        st: chain_mod.Strangle,
+        book: portfolio_mod.Book | None,
+    ) -> list[str]:
+        """What the trade earns per day and what it costs to hold.
+
+        Decay and capital belong on the same line: theta alone favours the
+        expensive underlying, and buying power alone favours the cheap one.
+        The ratio is the comparison, and the share of net liq is the sizing
+        decision — which only exists once the account is known."""
+        bpr = (
+            propose_mod.strangle_bpr(cy.underlying, st)
+            if cy.underlying is not None
+            else None
+        )
+        theta = st.theta
+        bits: list[str] = []
+        if theta is not None:
+            theta_day = theta * propose_mod.CONTRACT_MULTIPLIER
+            bits.append(f"θ {theta_day:+,.2f}/day")
+            if bpr:
+                bits.append(f"θ/BPR {theta_day / bpr * 100:.2f}%/day")
+        if bpr:
+            bits.append(f"BPR~ {bpr:,.0f}")
+        if not bits:
+            return []
+        lines = [" · ".join(bits)]
+        share = book.pct_of_net_liq(bpr) if book is not None else None
+        if share is not None:
+            # One contract as a share of the account, plus what the whole
+            # account could take. Sizing is the question the raw dollar
+            # estimate cannot answer on its own.
+            room = int(book.net_liq * MAX_ALLOCATION / bpr) if bpr else 0
+            note = f"{share:.1%} of net liq per contract"
+            if room >= 1:
+                note += f" · {room} at {MAX_ALLOCATION:.0%} max"
+            lines.append(
+                f"[yellow]{note}[/yellow]" if share > MAX_ALLOCATION else f"[dim]{note}[/dim]"
             )
         return lines
