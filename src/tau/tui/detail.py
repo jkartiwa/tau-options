@@ -18,6 +18,7 @@ from tau.screen import Candidate
 TERM_NEAR_DTE = 7
 TERM_FAR_DTE = 60
 TERM_FLAT_BAND = 2.0  # vol points; inside this the curve reads flat
+HEADLINE_LINES = 8  # shown only when there is no verdict to show instead
 
 
 def _fmt(value, spec: str = ".2f", dash: str = "—") -> str:
@@ -145,6 +146,13 @@ class DetailPane(Static):
         for k in b.key_dates:
             lines.append(f"[yellow]  {escape(k.day)} — {escape(k.event)}[/yellow]")
         lines.append(escape(b.note))
+        # With no verdict the headlines are all there is, so show them — that
+        # is the whole read when no API key is configured. A classified name
+        # doesn't need them; the verdict already stands for them.
+        if b.classification == catalyst_mod.UNKNOWN and b.headlines:
+            lines.append("")
+            for h in b.headlines[:HEADLINE_LINES]:
+                lines.append(f"[dim]{escape(h.render())}[/dim]")
         return lines
 
     def _cycle_lines(self, c: Candidate, cy: chain_mod.Cycle) -> list[str]:

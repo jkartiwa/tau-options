@@ -32,10 +32,13 @@ different names, strikes, and expirations.
 - **Price context** — how far a name's recent move sits outside its own
   normal (z-score against a baseline that excludes the move itself), and
   where it sits in its 52-week range.
-- **Catalyst read** — pulls recent headlines and asks an LLM to classify why
-  the vol is bid: a pending binary event, an already-resolved one, no
-  identifiable single-name catalyst, or insufficient signal to say. Biased
-  toward saying "not sure" over a false all-clear.
+- **Catalyst read** — pulls recent headlines for the name and, if an
+  Anthropic API key is configured, asks a model to classify why the vol is
+  bid: a pending binary event, an already-resolved one, no identifiable
+  single-name catalyst, or insufficient signal to say. Biased toward saying
+  "not sure" over a false all-clear. Triage, not clearance — there's no
+  measured accuracy behind it, so check the name before selling. Without a
+  key the headlines are shown unclassified.
 - **Scan log** (opt-in) — `tau scan --log` records the screen to a local
   SQLite database so picks can be compared against outcomes later. Off by
   default; tau writes nothing to disk unless you ask it to.
@@ -45,7 +48,8 @@ different names, strikes, and expirations.
 - Python 3.12+
 - A tastytrade account with API access (personal OAuth grant, read scope is
   enough — tau never places orders)
-- An Anthropic API key, only if you want the catalyst read (`w` in the TUI)
+- An Anthropic API key — optional. Without one, the catalyst read still
+  fetches and shows headlines; only the classification is skipped.
 
 ## Setup
 

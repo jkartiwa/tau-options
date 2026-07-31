@@ -244,10 +244,16 @@ def classify(
         )
 
     if client is None:
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            # No key is not an error: the headlines are the bulk of the value
+            # and they cost nothing, so hand them back unclassified rather
+            # than failing. insufficient_signal is the right verdict — nothing
+            # looked at these.
+            return _unreadable(
+                symbol, headlines, "no ANTHROPIC_API_KEY — headlines only"
+            )
         import anthropic
 
-        if not os.getenv("ANTHROPIC_API_KEY"):
-            raise RuntimeError("ANTHROPIC_API_KEY not set (.env)")
         client = anthropic.Anthropic()
 
     # Headlines are untrusted: anyone able to place an indexed article for a

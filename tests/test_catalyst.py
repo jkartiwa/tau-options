@@ -107,6 +107,17 @@ def test_a_refusal_becomes_insufficient_signal_not_an_all_clear():
     assert not brief.tradable
 
 
+def test_no_api_key_returns_the_headlines_instead_of_raising(monkeypatch):
+    """Classification is the optional half. Without a key the headlines still
+    come back, so the feature degrades instead of failing."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    hs = headlines()
+    brief = classify("X", hs)
+    assert brief.classification == UNKNOWN
+    assert not brief.tradable
+    assert brief.headlines == hs
+
+
 def test_empty_content_becomes_insufficient_signal():
     brief = classify("X", headlines(), client=FakeClient(None))
     assert brief.classification == UNKNOWN
