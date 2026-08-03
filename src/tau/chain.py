@@ -1,5 +1,5 @@
-"""Option-chain reads for one symbol, and the short-premium structures built
-over them.
+"""Option-chain reads for one symbol: the quoted ladder every structure is
+built over.
 
 Fetching is one DXLink pass per symbol, measured at ~1.4s all-in (0.4s chain
 metadata, 1.0s quotes+greeks over ~40 legs), which is what makes per-symbol
@@ -10,9 +10,9 @@ two-phase over a single connection: underlying quote first, then a strike
 window around it.
 
 Degradation follows the same rule as the rest of the stack: a leg missing a
-quote or greeks is dropped rather than defaulted, and a structure that loses
-either side reports itself incomplete rather than quoting a partial credit —
-half a strangle's credit is a wrong number, not an imprecise one.
+quote or greeks is dropped rather than defaulted. What gets built over the
+ladder lives in `build.py`, which applies the matching rule one level up — a
+structure missing any leg is invalid rather than partially credited.
 """
 
 import asyncio
@@ -24,9 +24,10 @@ from tastytrade import DXLinkStreamer, Session
 from tastytrade.dxfeed import Greeks, Quote
 from tastytrade.instruments import NestedOptionChain
 
+from tau.payoff import OptionType
+
 EVENT_TIMEOUT = 10.0
 TARGET_DTE = 45
-TARGET_DELTA = 0.16
 # The strike window is scaled by expected move, not by a fixed percentage:
 # a 16-delta wing sits near one standard deviation, so 2.5 sigma contains it
 # on any name. Capping by strike *count* instead was the original bug — on a
@@ -37,16 +38,25 @@ TARGET_DELTA = 0.16
 SIGMA_SPAN = 2.5
 MIN_WINDOW = 0.08  # floor, for a low-vol name or a missing IV hint
 FALLBACK_IV = 0.35
-# Raised from 26 once multi-leg structures existed. Measured live 2026-08-03:
-# the two-phase pass costs 1.1-1.4s whether it carries 106 legs or 242 — it is
-# dominated by connection setup, not leg count — while at 26 a strided SPY
-# ladder left gaps of 8 to 30 points and only 22 of 56 structure variants could
-# be built at all. At 45 that is 43, with no measurable extra latency.
-MAX_STRIKES_PER_SIDE = 45
+# Raised from 26 to 45 once multi-leg structures existed, then to 80 once the
+# rank view's concurrent load could be measured. Measured live 2026-08-03: the
+# two-phase pass costs 1.0-1.75s whether it carries 64 legs or 322, and six
+# symbols in flight finish in the time one takes — it is dominated by
+# connection setup, not by leg count, at every budget tried. Meanwhile the cap
+# decides how much of the ladder exists: on SPY, 45/30 built 33 of 56 variants
+# and 60/45 built 52, while 80/60 builds all 56. Sparse ladders (SMH, MU,
+# AAPL, TLT) are unaffected — the sigma window bounds them, not the count — so
+# the only thing a smaller budget bought was throttling the densely struck
+# names for nothing.
+MAX_STRIKES_PER_SIDE = 80
 # Strikes nearest spot are kept contiguous rather than strided, so that a
 # multi-leg structure placing a wing a fixed number of dollars from its short
-# leg has an unbroken ladder to land on near the money.
-UNSTRIDED_CORE = 30
+# leg has an unbroken ladder to land on. This has to reach past the short
+# strike, not just around the money: at 30 on SPY the 16-delta put sat 40
+# points out, in the strided region, and every 5-wide condor and vertical was
+# correctly refused for a ladder that only looked coarse because of the
+# thinning.
+UNSTRIDED_CORE = 60
 DELTA_TOLERANCE = 0.05  # beyond this, the pick is reported as off-target
 DAYS_PER_YEAR = 365.0
 
@@ -65,10 +75,14 @@ STRADDLE_ONLY_FACTOR = 0.85
 
 @dataclass(frozen=True)
 class Leg:
+    """One quoted contract. `LegSpec` in strategy.py is the other half of the
+    pair — a spec for *choosing* one of these — and the two are deliberately
+    not both called `Leg`."""
+
     occ: str
     streamer: str
     strike: float
-    right: str  # "C" or "P"
+    type: OptionType
     bid: float | None = None
     ask: float | None = None
     delta: float | None = None
@@ -103,11 +117,11 @@ class StrikeRow:
 
 
 def strike_ladder(legs: tuple[Leg, ...]) -> list[StrikeRow]:
-    by_strike: dict[float, dict[str, Leg]] = {}
+    by_strike: dict[float, dict[OptionType, Leg]] = {}
     for leg in legs:
-        by_strike.setdefault(leg.strike, {})[leg.right] = leg
+        by_strike.setdefault(leg.strike, {})[leg.type] = leg
     return [
-        StrikeRow(strike, sides.get("C"), sides.get("P"))
+        StrikeRow(strike, sides.get(OptionType.CALL), sides.get(OptionType.PUT))
         for strike, sides in sorted(by_strike.items())
     ]
 
@@ -189,85 +203,6 @@ class Cycle:
             a, b, c = EM_WEIGHTS
             return (a * straddle + b * w1 + c * w2, "weighted")
         return (straddle * STRADDLE_ONLY_FACTOR, "straddle×0.85")
-
-
-@dataclass(frozen=True)
-class Strangle:
-    put: Leg | None
-    call: Leg | None
-    reason: str | None = None  # set when the structure could not be completed
-    target_delta: float = TARGET_DELTA
-
-    @property
-    def complete(self) -> bool:
-        return self.reason is None and self.put is not None and self.call is not None
-
-    @property
-    def off_target(self) -> float | None:
-        """Worst absolute miss against the requested delta. The chain only
-        offers the strikes it offers, so a miss is normal on a coarse ladder —
-        but it must be shown, not folded into a number labelled 16 delta."""
-        if not self.complete:
-            return None
-        return max(
-            abs(abs(self.put.delta) - self.target_delta),
-            abs(abs(self.call.delta) - self.target_delta),
-        )
-
-    @property
-    def credit(self) -> float | None:
-        if not self.complete:
-            return None
-        return self.put.mid + self.call.mid
-
-    @property
-    def breakevens(self) -> tuple[float, float] | None:
-        if not self.complete:
-            return None
-        credit = self.credit
-        return (self.put.strike - credit, self.call.strike + credit)
-
-    @property
-    def worst_spread(self) -> float | None:
-        if not self.complete:
-            return None
-        return max(self.put.spread, self.call.spread)
-
-
-def pick_by_delta(
-    legs: tuple[Leg, ...], right: str, target: float = TARGET_DELTA
-) -> Leg | None:
-    """Nearest priced leg to the target absolute delta on one side."""
-    usable = [
-        leg
-        for leg in legs
-        if leg.right == right and leg.delta is not None and leg.priced
-    ]
-    if not usable:
-        return None
-    return min(usable, key=lambda leg: abs(abs(leg.delta) - target))
-
-
-def build_strangle(cycle: Cycle, target: float = TARGET_DELTA) -> Strangle:
-    put = pick_by_delta(cycle.legs, "P", target)
-    call = pick_by_delta(cycle.legs, "C", target)
-    if put is None or call is None:
-        missing = " and ".join(
-            side for side, leg in (("put", put), ("call", call)) if leg is None
-        )
-        return Strangle(put, call, reason=f"no priced {missing} leg with greeks")
-    return Strangle(put, call, target_delta=target)
-
-
-def be_vs_expected_move(cycle: Cycle, strangle: Strangle) -> float | None:
-    """How far the nearer breakeven sits in expected moves. Under 1.0 means
-    a single standard deviation reaches it."""
-    em = cycle.expected_move
-    bes = strangle.breakevens
-    if em is None or bes is None or cycle.underlying is None or em == 0:
-        return None
-    nearest = min(cycle.underlying - bes[0], bes[1] - cycle.underlying)
-    return nearest / em
 
 
 async def _collect(streamer, cls, want: set[str], out: dict, timeout: float) -> None:
@@ -424,9 +359,9 @@ async def fetch_cycle(
 
     legs: list[Leg] = []
     for strike in selected:
-        for right, occ, stream_sym in (
-            ("C", strike.call, strike.call_streamer_symbol),
-            ("P", strike.put, strike.put_streamer_symbol),
+        for option_type, occ, stream_sym in (
+            (OptionType.CALL, strike.call, strike.call_streamer_symbol),
+            (OptionType.PUT, strike.put, strike.put_streamer_symbol),
         ):
             quote = quotes.get(stream_sym)
             greek = greeks.get(stream_sym)
@@ -435,7 +370,7 @@ async def fetch_cycle(
                     occ=occ,
                     streamer=stream_sym,
                     strike=float(strike.strike_price),
-                    right=right,
+                    type=option_type,
                     bid=_f(quote.bid_price) if quote else None,
                     ask=_f(quote.ask_price) if quote else None,
                     delta=_f(greek.delta) if greek else None,

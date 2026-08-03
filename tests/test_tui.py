@@ -4,8 +4,11 @@ from datetime import date, timedelta
 
 import pytest
 
+from tau.payoff import OptionType
 from tau.screen import Candidate
 from tau.tui.app import TauApp
+
+C, P = OptionType.CALL, OptionType.PUT
 
 TODAY = date.today()
 
@@ -42,6 +45,13 @@ def app() -> TauApp:
 
 def symbols(a: TauApp) -> list[str]:
     return [c.symbol for c in a._rows]
+
+
+def _row_text(a: TauApp, index: int) -> str:
+    from textual.widgets import DataTable
+
+    table = a.query_one("#table", DataTable)
+    return " ".join(str(cell) for cell in table.get_row_at(index))
 
 
 @pytest.mark.asyncio
@@ -125,8 +135,8 @@ async def test_detail_pane_renders_and_chain_loads_on_enter():
         dte=40,
         underlying=100.0,
         legs=(
-            Leg("P85", "s1", 85.0, "P", bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
-            Leg("C115", "s2", 115.0, "C", bid=0.8, ask=1.0, delta=0.17, iv=0.30),
+            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
+            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
         ),
         fetched_at=datetime.now(UTC),
     )
@@ -153,9 +163,10 @@ async def test_detail_pane_renders_and_chain_loads_on_enter():
                 break
             await asyncio.sleep(0.05)
         assert calls == ["HIGH"]
-        assert a._cycles["HIGH"] is cycle
+        assert a._proposals["HIGH"].cycle is cycle
         rendered = str(a.query_one("#detail").content)
         assert "strangle" in rendered and "credit" in rendered
+        assert "variants passed" in rendered
 
 
 def _why_app(history=None, brief=None, calls=None):
@@ -253,8 +264,8 @@ async def test_why_does_not_cancel_an_in_flight_chain_load():
             dte=40,
             underlying=100.0,
             legs=(
-                Leg("P85", "s1", 85.0, "P", bid=1.0, ask=1.2, delta=-0.16, iv=0.3),
-                Leg("C115", "s2", 115.0, "C", bid=0.8, ask=1.0, delta=0.17, iv=0.3),
+                Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.3),
+                Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.3),
             ),
             fetched_at=datetime.now(UTC),
         )
@@ -267,7 +278,7 @@ async def test_why_does_not_cancel_an_in_flight_chain_load():
         await asyncio.wait_for(started.wait(), timeout=2)
         await pilot.press("w")  # must not cancel the chain worker
         assert await _settle(a, lambda: chain_calls == ["HIGH"])
-        assert "HIGH" in a._cycles
+        assert "HIGH" in a._proposals
 
 
 @pytest.mark.asyncio
@@ -294,58 +305,36 @@ def _proposal_loader_factory(proposals_by_symbol):
     return loader
 
 
-def _fake_proposal(symbol, dte=40, credit=5.0, bpr=2000.0, pop=0.75, spread_cost=0.10):
-    from tau.chain import Cycle, Leg, Strangle
+PUT_DELTAS = {80: -0.08, 85: -0.12, 90: -0.20, 95: -0.32, 100: -0.50}
+CALL_DELTAS = {100: 0.50, 105: 0.30, 110: 0.20, 115: 0.12, 120: 0.08}
+PUT_MIDS = {80: 0.50, 85: 0.80, 90: 1.20, 95: 2.00, 100: 3.50}
+CALL_MIDS = {100: 3.50, 105: 2.00, 110: 1.20, 115: 0.80, 120: 0.50}
 
-    put = Leg(f"P{symbol}", f"sP{symbol}", 90.0, "P", bid=credit / 2 - 0.05, ask=credit / 2 + 0.05, delta=-0.16, iv=0.3)
-    call = Leg(f"C{symbol}", f"sC{symbol}", 110.0, "C", bid=credit / 2 - 0.05, ask=credit / 2 + 0.05, delta=0.16, iv=0.3)
-    cy = Cycle(symbol=symbol, expiration=date(2026, 9, 4), dte=dte, underlying=100.0,
-               legs=(put, call), fetched_at=datetime.now(UTC))
-    st = Strangle(put, call, target_delta=0.16)
 
-    class FakeProposal:
-        candidate = None
-        cycle = cy
-        strangle = st
-        error = None
+def _proposal(symbol, dte=40):
+    """A real proposal off a real ladder, run through the real engine — the
+    rank view reads structures now, and a duck-typed stand-in would only prove
+    the stand-in works. Return on capital is identical across these, so `dte`
+    alone decides the annualized ordering."""
+    from tau.chain import Cycle, Leg
+    from tau.propose import propose_on
+    from tau.screen import Candidate as Cand
 
-        @property
-        def ok(self):
-            return True
+    def leg(strike, option_type, delta, mid):
+        return Leg(
+            occ=f"{option_type}{strike:g}{symbol}",
+            streamer=f"s{option_type}{strike:g}{symbol}",
+            strike=float(strike), type=option_type,
+            bid=mid - 0.01, ask=mid + 0.01, delta=delta, iv=0.30,
+        )
 
-        @property
-        def symbol(self):
-            return symbol
-
-        @property
-        def credit(self):
-            return round(put.mid + call.mid, 2)
-
-        @property
-        def bpr(self):
-            return bpr
-
-        @property
-        def roc(self):
-            return (self.credit * 100) / bpr
-
-        @property
-        def annualized_roc(self):
-            return self.roc * 365 / dte
-
-        @property
-        def pop(self):
-            return pop
-
-        @property
-        def spread_cost(self):
-            return spread_cost
-
-        @property
-        def be_over_em(self):
-            return 1.0
-
-    return FakeProposal()
+    legs = [leg(k, P, d, PUT_MIDS[k]) for k, d in PUT_DELTAS.items()]
+    legs += [leg(k, C, d, CALL_MIDS[k]) for k, d in CALL_DELTAS.items()]
+    cy = Cycle(symbol=symbol, expiration=date(2026, 9, 4), dte=dte,
+               underlying=100.0, legs=tuple(legs), fetched_at=datetime.now(UTC))
+    candidate = Cand(symbol=symbol, ivr=50.0, ivp=50.0, iv30=30.0, hv30=25.0,
+                     liquidity=4, beta=1.0, earnings_date=None)
+    return propose_on(candidate, cy)
 
 
 @pytest.mark.asyncio
@@ -354,9 +343,9 @@ async def test_rank_view_prices_the_passing_shortlist():
         return list(FIXTURE)  # HIGH, ERN(excluded by earnings), CHEAP pass by default
 
     proposals = {
-        "HIGH": _fake_proposal("HIGH", credit=10.0, bpr=5000.0),  # ROC 20%
-        "CHEAP": _fake_proposal("CHEAP", credit=1.0, bpr=200.0),  # ROC 50%, richer
-        "MID": _fake_proposal("MID", credit=1.0, bpr=500.0),
+        "HIGH": _proposal("HIGH", dte=80),
+        "CHEAP": _proposal("CHEAP", dte=20),  # same trade, annualizes higher
+        "MID": _proposal("MID", dte=40),
     }
     a = TauApp(loader=loader, proposal_loader=_proposal_loader_factory(proposals))
     async with a.run_test() as pilot:
@@ -365,9 +354,10 @@ async def test_rank_view_prices_the_passing_shortlist():
         await pilot.press("p")
         await pilot.pause()
         assert a.mode == "rank"
-        # CHEAP's credit/BPR beats HIGH's, so ANN% rank reorders them.
-        ranked = [c.symbol for c in a._rank_rows]
-        assert ranked.index("CHEAP") < ranked.index("HIGH")
+        # Same return on capital, shorter tenor — ANN% rank reorders them.
+        assert [c.symbol for c in a._rank_rows] == ["CHEAP", "MID", "HIGH"]
+        # the winning structure is named, not just its numbers
+        assert a._proposals["CHEAP"].best.strategy.name in _row_text(a, 0)
 
 
 @pytest.mark.asyncio
@@ -379,7 +369,7 @@ async def test_rank_view_reuses_cached_proposals_on_reentry():
 
     async def track_loader(candidates, on_done):
         calls.append([c.symbol for c in candidates])
-        on_done(_fake_proposal("HIGH"))
+        on_done(_proposal("HIGH"))
 
     a = TauApp(loader=loader, proposal_loader=track_loader)
     async with a.run_test() as pilot:
@@ -401,7 +391,7 @@ async def test_reprice_forces_a_refetch():
 
     async def track_loader(candidates, on_done):
         calls.append([c.symbol for c in candidates])
-        on_done(_fake_proposal("HIGH"))
+        on_done(_proposal("HIGH"))
 
     a = TauApp(loader=loader, proposal_loader=track_loader)
     async with a.run_test() as pilot:
@@ -419,7 +409,7 @@ async def test_escape_returns_to_screen_view():
         return list(FIXTURE)
 
     a = TauApp(loader=loader, proposal_loader=_proposal_loader_factory(
-        {"HIGH": _fake_proposal("HIGH"), "CHEAP": _fake_proposal("CHEAP"), "MID": _fake_proposal("MID")}
+        {"HIGH": _proposal("HIGH"), "CHEAP": _proposal("CHEAP"), "MID": _proposal("MID")}
     ))
     async with a.run_test() as pilot:
         await pilot.pause()
@@ -429,3 +419,89 @@ async def test_escape_returns_to_screen_view():
         await pilot.press("escape")
         assert a.mode == "screen"
         assert symbols(a) == ["HIGH", "CHEAP", "MID"]
+
+
+@pytest.mark.asyncio
+async def test_enter_in_the_rank_view_opens_every_variant_considered():
+    """The drill-in exists so a rejection can be read. Failures stay in the
+    list with their reasons rather than leaving a name looking empty."""
+    async def loader():
+        return [FIXTURE[0]]
+
+    a = TauApp(
+        loader=loader,
+        proposal_loader=_proposal_loader_factory({"HIGH": _proposal("HIGH")}),
+    )
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert a.mode == "variants"
+        assert a._variants_symbol == "HIGH"
+        rows = a._variant_rows
+        assert len(rows) == len(a._proposals["HIGH"].structures)
+        assert any(s.ok for s in rows) and any(not s.ok for s in rows)
+        # passing variants first, and a rejected one still carries its reason
+        assert rows[0].ok
+        rejected = next(s for s in rows if s.complete and not s.ok)
+        assert rejected.failures[0].reason
+
+
+@pytest.mark.asyncio
+async def test_escape_walks_back_one_view_at_a_time():
+    async def loader():
+        return [FIXTURE[0]]
+
+    a = TauApp(
+        loader=loader,
+        proposal_loader=_proposal_loader_factory({"HIGH": _proposal("HIGH")}),
+    )
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        await pilot.press("v")
+        await pilot.pause()
+        assert a.mode == "variants"
+        await pilot.press("escape")
+        assert a.mode == "rank"
+        await pilot.press("escape")
+        assert a.mode == "screen"
+
+
+@pytest.mark.asyncio
+async def test_variants_from_the_screen_view_loads_the_chain_first():
+    """`v` on an unpriced name has nothing to show, so it fetches rather than
+    opening an empty table — and the fetched cycle becomes a full proposal,
+    so ranking it afterwards costs nothing."""
+    from tau.chain import Cycle, Leg
+
+    calls = []
+
+    async def chain_loader(candidate):
+        calls.append(candidate.symbol)
+        return Cycle(
+            symbol=candidate.symbol, expiration=date(2026, 9, 4), dte=40,
+            underlying=100.0,
+            legs=(
+                Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.3),
+                Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.3),
+            ),
+            fetched_at=datetime.now(UTC),
+        )
+
+    async def loader():
+        return [FIXTURE[0]]
+
+    a = TauApp(loader=loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("v")
+        assert await _settle(a, lambda: "HIGH" in a._proposals)
+        assert a.mode == "screen"  # first press fetched; it did not open blank
+        await pilot.press("v")
+        await pilot.pause()
+        assert a.mode == "variants"
+        assert calls == ["HIGH"]

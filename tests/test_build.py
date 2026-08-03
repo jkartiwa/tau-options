@@ -20,12 +20,12 @@ CALL_MIDS = {100: 3.50, 105: 2.00, 110: 1.20, 115: 0.80, 120: 0.50}
 SPREAD = 0.02  # tight enough that the shipped spread_cost constraints pass
 
 
-def leg(strike, right, delta, mid, spread=SPREAD):
+def leg(strike, option_type, delta, mid, spread=SPREAD):
     return Leg(
-        occ=f"{right}{strike:g}",
-        streamer=f"s{right}{strike:g}",
+        occ=f"{option_type}{strike:g}",
+        streamer=f"s{option_type}{strike:g}",
         strike=float(strike),
-        right=right,
+        type=option_type,
         bid=mid - spread / 2,
         ask=mid + spread / 2,
         delta=delta,
@@ -34,8 +34,8 @@ def leg(strike, right, delta, mid, spread=SPREAD):
 
 
 def ladder():
-    legs = [leg(k, "P", d, PUT_MIDS[k]) for k, d in PUT_DELTAS.items()]
-    legs += [leg(k, "C", d, CALL_MIDS[k]) for k, d in CALL_DELTAS.items()]
+    legs = [leg(k, P, d, PUT_MIDS[k]) for k, d in PUT_DELTAS.items()]
+    legs += [leg(k, C, d, CALL_MIDS[k]) for k, d in CALL_DELTAS.items()]
     return tuple(legs)
 
 
@@ -79,7 +79,7 @@ def test_delta_selection_picks_the_nearest_strike_and_reports_no_miss():
 def test_delta_miss_is_reported_not_folded_into_the_label():
     """The original bug in this codebase: a 0.38-delta leg returned labelled
     16-delta. A coarse ladder must stay visible."""
-    coarse = (leg(70, "P", -0.40, 1.0), leg(130, "C", 0.38, 1.0))
+    coarse = (leg(70, P, -0.40, 1.0), leg(130, C, 0.38, 1.0))
     structure = one(STRANGLE_20, cycle(coarse), "20Δ/20Δ")
     assert structure.complete
     assert structure.worst_off_target == pytest.approx(0.20)
@@ -118,10 +118,10 @@ def test_a_coarse_ladder_kills_the_variant_rather_than_mislabelling_the_width():
     """Same failure shape as the delta bug: asking for a 5-wide wing and
     silently getting a 10-wide one changes the margin and the max loss."""
     wide = (
-        leg(80, "P", -0.08, 0.50),
-        leg(90, "P", -0.20, 1.20),
-        leg(100, "P", -0.50, 3.50),
-        leg(110, "C", 0.20, 1.20),
+        leg(80, P, -0.08, 0.50),
+        leg(90, P, -0.20, 1.20),
+        leg(100, P, -0.50, 3.50),
+        leg(110, C, 0.20, 1.20),
     )
     vertical = Strategy(
         name="t-vertical",
@@ -153,8 +153,8 @@ def test_reference_running_off_the_ladder_is_a_reason_not_a_crash():
 
 def test_an_unpriced_leg_never_yields_a_partial_credit():
     stripped = tuple(
-        Leg(occ=x.occ, streamer=x.streamer, strike=x.strike, right=x.right, delta=x.delta)
-        if x.right == "C"
+        Leg(occ=x.occ, streamer=x.streamer, strike=x.strike, type=x.type, delta=x.delta)
+        if x.type is C
         else x
         for x in ladder()
     )
@@ -166,9 +166,9 @@ def test_an_unpriced_leg_never_yields_a_partial_credit():
 
 def test_a_leg_without_greeks_is_not_selectable():
     no_greeks = tuple(
-        Leg(occ=x.occ, streamer=x.streamer, strike=x.strike, right=x.right,
+        Leg(occ=x.occ, streamer=x.streamer, strike=x.strike, type=x.type,
             bid=x.bid, ask=x.ask)
-        if x.right == "P"
+        if x.type is P
         else x
         for x in ladder()
     )
@@ -201,11 +201,11 @@ def test_a_failed_constraint_is_kept_with_its_reason():
 def test_a_lizard_passes_when_the_credit_actually_covers_the_wing():
     """The defining property is a pricing outcome: same legs, richer calls."""
     skewed = (
-        leg(90, "P", -0.20, 3.00),
-        leg(100, "P", -0.50, 6.00),
-        leg(100, "C", 0.50, 6.50),
-        leg(110, "C", 0.20, 3.00),
-        leg(115, "C", 0.12, 0.50),
+        leg(90, P, -0.20, 3.00),
+        leg(100, P, -0.50, 6.00),
+        leg(100, C, 0.50, 6.50),
+        leg(110, C, 0.20, 3.00),
+        leg(115, C, 0.12, 0.50),
     )
     structure = one(STRATEGIES["jade-lizard"], cycle(skewed), "20Δ/20Δ+5")
     assert structure.worst_loss_up == 0.0
@@ -241,7 +241,7 @@ def test_a_structure_that_costs_too_much_to_cross_is_failed_not_ranked():
     """The live AAPL case: two legs cost ~99% of the credit to cross. On a
     four-legger it is worse, and return on capital cannot see it."""
     wide = tuple(
-        leg(x.strike, x.right, x.delta, (x.bid + x.ask) / 2, spread=0.30)
+        leg(x.strike, x.type, x.delta, (x.bid + x.ask) / 2, spread=0.30)
         for x in ladder()
     )
     structure = one(STRATEGIES["iron-condor"], cycle(wide), "20Δ-5/20Δ+5")
@@ -326,3 +326,17 @@ def test_metrics_are_none_rather_than_wrong_without_a_spot():
 
 def test_max_ref_miss_is_a_fraction_of_the_requested_offset():
     assert 0 < MAX_REF_MISS < 1
+
+
+def test_be_over_em_measures_the_nearer_breakeven_in_expected_moves():
+    """Moved down from the strangle-era chain tests: the same read, now
+    derived from the payoff's breakevens rather than a structure that knew
+    it had exactly two."""
+    cy = cycle()
+    # straddle 7.00, 1st OTM strangle 4.00, 2nd 2.40, weighted 60/30/10
+    em = 0.6 * 7.00 + 0.3 * 4.00 + 0.1 * 2.40
+    assert cy.expected_move == pytest.approx(em)
+    structure = one(STRANGLE_20, cy, "20Δ/20Δ")
+    # 90/110 wings on a 2.40 credit break even at 87.60 and 112.40
+    assert structure.breakevens == pytest.approx([87.60, 112.40])
+    assert structure.be_over_em == pytest.approx(12.40 / em)

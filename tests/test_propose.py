@@ -2,15 +2,27 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from tau.chain import Cycle, Leg, Strangle
+from tau.build import evaluate, evaluate_all
+from tau.chain import Cycle, Leg
+from tau.payoff import OptionType, Side
 from tau.propose import (
     Proposal,
     naked_side_requirement,
     pop_between,
     rank_proposals,
-    strangle_bpr,
 )
 from tau.screen import Candidate
+from tau.strategies import STRATEGIES
+from tau.strategy import Bias, Delta, LegSpec, Require, Strategy
+
+C, P = OptionType.CALL, OptionType.PUT
+SHORT = Side.SHORT
+
+PUT_DELTAS = {80: -0.08, 85: -0.12, 90: -0.20, 95: -0.32, 100: -0.50}
+CALL_DELTAS = {100: 0.50, 105: 0.30, 110: 0.20, 115: 0.12, 120: 0.08}
+PUT_MIDS = {80: 0.50, 85: 0.80, 90: 1.20, 95: 2.00, 100: 3.50}
+CALL_MIDS = {100: 3.50, 105: 2.00, 110: 1.20, 115: 0.80, 120: 0.50}
+SPREAD = 0.02
 
 
 def cand(symbol="TEST", iv30=30.0):
@@ -20,24 +32,40 @@ def cand(symbol="TEST", iv30=30.0):
     )
 
 
-def leg(strike, right, delta, bid, ask, iv=0.30):
+def leg(strike, option_type, delta, mid, spread=SPREAD):
     return Leg(
-        occ=f"{right}{strike}", streamer=f"s{right}{strike}", strike=strike,
-        right=right, bid=bid, ask=ask, delta=delta, iv=iv,
+        occ=f"{option_type}{strike:g}",
+        streamer=f"s{option_type}{strike:g}",
+        strike=float(strike),
+        type=option_type,
+        bid=mid - spread / 2,
+        ask=mid + spread / 2,
+        delta=delta,
+        iv=0.30,
     )
 
 
-def cycle(legs, underlying=100.0, dte=45):
+def ladder():
+    legs = [leg(k, P, d, PUT_MIDS[k]) for k, d in PUT_DELTAS.items()]
+    legs += [leg(k, C, d, CALL_MIDS[k]) for k, d in CALL_DELTAS.items()]
+    return tuple(legs)
+
+
+def cycle(legs=None, underlying=100.0, dte=45):
     return Cycle(
-        symbol="TEST", expiration=date(2026, 9, 4), dte=dte,
-        underlying=underlying, legs=tuple(legs), fetched_at=datetime.now(UTC),
+        symbol="TEST", expiration=date(2026, 9, 18), dte=dte,
+        underlying=underlying,
+        legs=legs if legs is not None else ladder(),
+        fetched_at=datetime.now(UTC),
     )
 
 
-PUT = leg(85, "P", -0.16, 1.0, 1.2)
-CALL = leg(115, "C", 0.17, 0.8, 1.0)
-CY = cycle((PUT, CALL))
-STRANGLE = Strangle(PUT, CALL, target_delta=0.16)
+SHIPPED = tuple(STRATEGIES.values())
+
+
+def proposal(symbol="TEST", cy=None, strategies=SHIPPED):
+    cy = cy or cycle()
+    return Proposal(cand(symbol), cy, tuple(evaluate_all(strategies, cy)))
 
 
 def test_naked_requirement_uses_the_greater_of_two_formulas():
@@ -53,22 +81,6 @@ def test_naked_requirement_uses_the_greater_of_two_formulas():
 def test_naked_requirement_floor_applies_to_tiny_premium():
     req = naked_side_requirement(spot=10.0, strike=9.0, premium=0.01)
     assert req >= 50.0
-
-
-def test_strangle_bpr_charges_larger_side_plus_other_premium():
-    bpr = strangle_bpr(100.0, STRANGLE)
-    put_req = naked_side_requirement(100.0, 85, 1.1)  # put mid
-    call_req = naked_side_requirement(100.0, 115, 0.9)  # call mid
-    if put_req >= call_req:
-        expected = put_req + 0.9 * 100
-    else:
-        expected = call_req + 1.1 * 100
-    assert bpr == pytest.approx(expected)
-
-
-def test_bpr_none_when_strangle_incomplete():
-    incomplete = Strangle(None, CALL, reason="no priced put leg with greeks")
-    assert strangle_bpr(100.0, incomplete) is None
 
 
 def test_pop_symmetric_breakevens_near_half_with_slight_drift_correction():
@@ -92,48 +104,114 @@ def test_pop_handles_degenerate_inputs():
     assert pop_between(100.0, 90.0, 110.0, 0.3, 0) is None
 
 
-def test_proposal_roc_and_annualized():
-    p = Proposal(cand(), CY, STRANGLE)
+def test_proposal_searches_every_strategy_over_one_cycle():
+    p = proposal()
     assert p.ok
-    assert p.credit == pytest.approx(2.0)  # put mid 1.1 + call mid 0.9
-    bpr = strangle_bpr(100.0, STRANGLE)
-    assert p.bpr == pytest.approx(bpr)
-    assert p.roc == pytest.approx((2.0 * 100) / bpr)
-    assert p.annualized_roc == pytest.approx(p.roc * 365 / 45)
+    names = {s.strategy.name for s in p.structures}
+    assert names == set(STRATEGIES)
 
 
-def test_proposal_spread_cost_is_round_trip_over_credit():
-    p = Proposal(cand(), CY, STRANGLE)
-    total_spread = PUT.spread + CALL.spread
-    assert p.spread_cost == pytest.approx(total_spread / STRANGLE.credit)
+def test_best_is_the_highest_returning_structure_across_all_strategies():
+    p = proposal()
+    passing = [s for s in p.structures if s.ok]
+    assert p.best is not None
+    assert p.best.annualized_roc == pytest.approx(
+        max(s.annualized_roc for s in passing)
+    )
+    assert p.annualized_roc == pytest.approx(p.best.annualized_roc)
+    assert p.label.startswith(p.best.strategy.name)
+
+
+def test_a_strategy_picks_its_own_winner_before_the_cross_comparison():
+    """`rank` decides which of a strategy's own variants competes; the common
+    metric decides between families. A strategy ranking on POP must put its
+    highest-POP variant forward, not its highest-returning one."""
+    wide = Strategy(
+        name="t-pop-strangle",
+        bias=Bias.NEUTRAL,
+        legs=[
+            LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.32])),
+            LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.32])),
+        ],
+        rank="pop",
+    )
+    cy = cycle()
+    own = [s for s in evaluate(wide, cy) if s.ok]
+    p = Proposal(cand(), cy, tuple(own))
+    assert p.best.pop == pytest.approx(max(s.pop for s in own))
+    # and that is deliberately not the highest-returning variant
+    assert p.best.annualized_roc < max(s.annualized_roc for s in own)
+
+
+def test_delegated_figures_come_from_the_winning_structure():
+    p = proposal()
+    best = p.best
+    assert p.credit == best.credit
+    assert p.bpr == pytest.approx(best.bpr)
+    assert p.roc == pytest.approx(best.roc)
+    assert p.pop == pytest.approx(best.pop)
+    assert p.spread_cost == pytest.approx(best.spread_cost)
+    assert p.bias == str(best.strategy.bias)
+
+
+def test_variants_ranks_everything_considered_failures_included():
+    p = proposal()
+    ordered = p.variants()
+    assert len(ordered) == len(p.structures)
+    passing = [s for s in ordered if s.ok]
+    assert ordered[: len(passing)] == passing
+    # the whole search is kept, not just what passed
+    assert any(not s.ok for s in ordered)
 
 
 def test_proposal_reports_error_and_is_not_ok():
     p = Proposal(cand(), error="no option chain for XYZ")
     assert not p.ok
+    assert p.best is None
     assert p.credit is None
     assert p.bpr is None
     assert p.roc is None
 
 
-def test_proposal_incomplete_strangle_is_not_ok():
-    incomplete = Strangle(None, CALL, reason="no priced put leg with greeks")
-    p = Proposal(cand(), CY, incomplete, error=incomplete.reason)
-    assert not p.ok
-    assert p.roc is None
+def test_a_cycle_where_every_variant_fails_says_so_rather_than_going_blank():
+    """A market condition, not a data problem — and the two read differently
+    in the rank view, so they must not collapse into one silence."""
+    impossible = Strategy(
+        name="t-impossible",
+        bias=Bias.NEUTRAL,
+        legs=[LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20))],
+        require=[Require("credit", ">=", 1_000)],
+    )
+    cy = cycle()
+    structures = tuple(evaluate(impossible, cy))
+    p = Proposal(cand(), cy, structures)
+    assert p.best is None
+    assert all(s.complete for s in structures)
+    from tau.propose import _no_structure_reason
+
+    assert "failed a constraint" in _no_structure_reason(structures)
 
 
 def test_rank_orders_by_metric_descending_failed_last():
-    good_high = Proposal(cand("HIGH"), cycle((leg(85,"P",-0.16,1.0,1.2), leg(115,"C",0.17,3.0,3.2))),
-                          Strangle(leg(85,"P",-0.16,1.0,1.2), leg(115,"C",0.17,3.0,3.2), target_delta=0.16))
-    good_low = Proposal(cand("LOW"), CY, STRANGLE)
+    # One strategy only: across all six the credit-ranked winner may be a
+    # broken wing that priced as a debit and has no credit at all, which is a
+    # true reading of the structure and a useless one for ordering a test.
+    only = (STRATEGIES["strangle"],)
+    rich = cycle(
+        tuple(
+            leg(x.strike, x.type, x.delta, (x.bid + x.ask) / 2 * 3)
+            for x in ladder()
+        )
+    )
+    good_high = proposal("HIGH", rich, only)
+    good_low = proposal("LOW", strategies=only)
     failed = Proposal(cand("FAIL"), error="boom")
     ranked = rank_proposals([good_low, failed, good_high], key="credit")
     assert [p.symbol for p in ranked] == ["HIGH", "LOW", "FAIL"]
 
 
 def test_rank_default_key_is_annualized_roc():
-    fast = Proposal(cand("FAST"), cycle((PUT, CALL), dte=10), STRANGLE)
-    slow = Proposal(cand("SLOW"), cycle((PUT, CALL), dte=90), STRANGLE)
+    fast = proposal("FAST", cycle(dte=10))
+    slow = proposal("SLOW", cycle(dte=90))
     ranked = rank_proposals([slow, fast])
     assert ranked[0].symbol == "FAST"  # same ROC, shorter DTE annualizes higher

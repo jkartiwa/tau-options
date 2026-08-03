@@ -89,6 +89,9 @@ class Delta:
     def label(self) -> str:
         return f"{abs(float(self.value)) * 100:g}Δ"
 
+    def describe(self) -> str:
+        return "/".join(f"{abs(float(v)) * 100:g}Δ" for v in _as_list(self.value))
+
 
 @dataclass(frozen=True)
 class Moneyness:
@@ -102,6 +105,9 @@ class Moneyness:
     def label(self) -> str:
         return f"{float(self.value) * 100:+g}%"
 
+    def describe(self) -> str:
+        return "/".join(f"{float(v) * 100:+g}%" for v in _as_list(self.value))
+
 
 @dataclass(frozen=True)
 class Atm:
@@ -111,6 +117,9 @@ class Atm:
         return [self]
 
     def label(self) -> str:
+        return "ATM"
+
+    def describe(self) -> str:
         return "ATM"
 
 
@@ -137,6 +146,13 @@ class Ref:
         if self.offset is not None:
             return f"{float(self.offset):+g}"
         return f"{int(self.strikes):+d}k"
+
+    def describe(self) -> str:
+        if self.offset is not None:
+            moves = "/".join(f"{float(v):+g}" for v in _as_list(self.offset))
+        else:
+            moves = "/".join(f"{int(v):+d} strikes" for v in _as_list(self.strikes))
+        return f"{moves} from {self.leg}"
 
 
 Selector = Delta | Moneyness | Atm | Ref
@@ -184,12 +200,20 @@ class Require:
 
 @dataclass(frozen=True)
 class Strategy:
+    """One structure tau knows how to look for.
+
+    There is deliberately no expiration or target-DTE field. A scan makes one
+    chain fetch per symbol and every strategy is evaluated over that single
+    cycle, so the tenor is a property of the scan rather than of the strategy;
+    a per-strategy target would either multiply the fetches or be quietly
+    ignored, and quietly ignored is the worse of the two.
+    """
+
     name: str
     bias: Bias
     legs: tuple[LegSpec, ...] = ()
     require: tuple[Require, ...] = ()
     rank: Metric = "annualized_roc"
-    target_dte: int = 45
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "legs", tuple(self.legs))

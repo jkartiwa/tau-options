@@ -43,13 +43,22 @@ quantity rather than three separate features.
 
 - **Screen** — pulls tastytrade market metrics for the whole universe in one
   batch, filters by IV rank floor, liquidity rating, and earnings proximity.
-- **Price** — for any candidate, prices a ~45 DTE 16-delta strangle: credit,
+- **Price** — for any candidate, searches every shipped structure over one
+  ~45 DTE chain fetch — strangles, verticals, iron condors, jade lizards,
+  broken wing butterflies, cash-secured puts — and reports credit,
   breakevens, estimated buying-power reduction, annualized return on
   capital, probability of profit (driftless lognormal, not the 1-delta
-  shortcut), and spread cost as a share of credit.
+  shortcut), and spread cost as a share of the premium at stake. The fetch is
+  the only expensive part, so searching six structures costs what searching
+  one did.
 - **Rank** — prices a whole shortlist concurrently and ranks by any of the
   above, so trades across different names and prices are actually
-  comparable.
+  comparable. The best structure per name is shown by default; drilling into
+  a name lists every variant considered, including the ones that were
+  rejected and why.
+- **Scan log** — records which strategy definition and which variant produced
+  each pick, so an accumulating corpus can eventually answer "how did
+  16-delta strangles do against 30-delta jade lizards".
 - **Price context** — how far a name's recent move sits outside its own
   normal (z-score against a baseline that excludes the move itself), and
   where it sits in its 52-week range.
@@ -60,9 +69,8 @@ quantity rather than three separate features.
   "not sure" over a false all-clear. Triage, not clearance — there's no
   measured accuracy behind it, so check the name before selling. Without a
   key the headlines are shown unclassified.
-- **Scan log** (opt-in) — `tau scan --log` records the screen to a local
-  SQLite database (`~/.local/share/tau/tau.sqlite3`, override with
-  `TAU_DATA_DIR`) so picks can be compared against outcomes later. Off by
+- **Opt-in storage** — `--log` writes to a local SQLite database
+  (`~/.local/share/tau/tau.sqlite3`, override with `TAU_DATA_DIR`). Off by
   default; `tau` writes nothing to disk unless you ask it to.
 
 ## Requirements
@@ -176,11 +184,20 @@ tau scan --min-ivr 40         # tighter IV rank floor
 tau scan --all                # every symbol, with exclusion reasons
 tau scan --days 0             # keep symbols with upcoming earnings
 tau scan --universe PATH      # custom universe file, one symbol per line
+
+tau strategies                # the structures tau searches for
+tau rank --top 8              # price the shortlist, best structure per name
+tau rank --strategy iron-condor --strategy vertical-put
+tau variants SPY              # one name's whole search, rejections included
 ```
 
 `tau scan` flags: `--min-ivr` (default 30), `--min-liquidity` (1-4 scale,
 default 3), `--days` (earnings exclusion window, default 45; 0 disables),
 `--top N`, `--all`, `--universe PATH`, `--log`.
+
+`tau rank` takes the same screen filters plus `--strategy NAME` (repeatable,
+defaults to all), `--dte` (default 45), `--top N` (default 15 — each row
+costs a chain fetch), and `--log`.
 
 ### TUI
 
@@ -194,20 +211,23 @@ happen in memory with no refetch until you ask for one.
 | `e` | cycle earnings filter |
 | `s` | re-sort |
 | `x` | toggle excluded view (shows exclusion reasons) |
-| `c` / Enter | price the highlighted name's cycle, show the strangle |
+| `c` / Enter | price the highlighted name's cycle, show the best structure |
 | `w` | catalyst read for the highlighted name |
 | `p` | price the whole current shortlist, switch to ranked view |
+| `v` / Enter | every variant considered on the highlighted name |
 | `R` | force a re-price (rank view) |
 | `space` | star a name (session-only) |
 | `r` | refresh from the API |
-| `esc` | back to the screen |
+| `esc` | back one view |
 | `q` | quit |
 
-Proposals and chains are cached per symbol, so leaving a view with `esc` and
-coming back is instant — only `r`/`R` force a refetch.
+Proposals are cached per symbol, so leaving a view with `esc` and coming back
+is instant — only `r`/`R` force a refetch. A name inspected with `c` is
+already fully searched, so ranking it afterwards costs no second fetch.
 
-**`c` — the chain.** Term structure, price position, and the 16-delta
-strangle with credit, breakevens, and breakeven-vs-expected-move.
+**`c` — the chain.** Term structure, price position, and the best structure
+found on the cycle: its legs, credit, breakevens, and
+breakeven-vs-expected-move.
 
 ![Detail pane with a priced chain](docs/img/detail.svg)
 
@@ -223,6 +243,15 @@ expirations are comparable.
 
 ![Ranked proposals](docs/img/rank.svg)
 
+**`v` / Enter — the whole search.** Every variant of every strategy on that
+name, ranked, with the rejected ones greyed and carrying the constraint they
+broke. "No jade lizard here today, because the credit doesn't cover the call
+spread" is information; a missing row is not. Here 16 of 44 variants passed —
+every broken wing died on spread cost, since a three-legged structure on a
+$91 name crosses more market than the premium is worth.
+
+![Every variant considered on one name](docs/img/variants.svg)
+
 **`x` — what was excluded, and why.** Every symbol the screen dropped, with
 the reason, so a filter that's too tight is visible rather than silent.
 
@@ -230,36 +259,87 @@ the reason, so a filter that's too tight is visible rather than silent.
 
 ## Structures and parameters
 
-`tau` is a scanner, and the structure is the last step of it. Screening,
-pricing, and ranking are all structure-agnostic — return on capital,
-probability of profit, and spread cost as a share of credit are defined for
-anything that collects a credit against a margin requirement. Adding a
-structure means writing two things: a builder that picks its legs off the
-chain, and a margin model.
+A structure is data, not code. `src/tau/strategies/` holds one module per
+strategy — a flat list of legs, references between them, and constraints on
+what the pricing has to come out to:
 
-Today one structure is implemented: the **short strangle** — one short call
-and one short put, same expiration, naked, undefined risk on both sides.
+```python
+JADE_LIZARD = Strategy(
+    name="jade-lizard",
+    bias=Bias.BULLISH,
+    legs=[
+        LegSpec("short_put",  type=P, side=SHORT, strike=Delta([0.20, 0.30])),
+        LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.20, 0.25])),
+        LegSpec("long_call",  type=C, side=LONG,
+                strike=Ref("short_call", offset=[5, 10, 15])),
+    ],
+    require=[
+        Require("worst_loss_up", "<=", 0),          # what makes it a lizard
+        Require("spread_cost", "<=", MAX_SPREAD_COST),
+    ],
+)
+```
 
-Its parameters are fixed in code rather than exposed as flags. Change them by
-editing the constant:
+Any selector value may be a list, which turns a definition into a search: a
+scalar is simply a one-element search, so there is one code path. The twelve
+combinations above are all built and priced off the same chain fetch.
+
+Six ship: `strangle`, `vertical-put`, `iron-condor`, `jade-lizard`,
+`broken-wing-butterfly`, `cash-secured-put`. `tau strategies` prints them.
+
+**The central claim is that composition is the right model for legs and the
+wrong model for math.** An iron condor is "two verticals" in its leg list and
+in nothing else. Margin does not compose — two verticals charged separately
+is 2× the width, a condor is charged 1× because only one side can lose — so
+an engine that summed components would report roughly half the true return on
+every four-legger. Probabilities do not compose either; it is the same
+underlying variable in both spreads.
+
+So the universal representation is the **payoff function**. Given a signed leg
+list and quoted prices, breakevens, extrema, buying power, and probability of
+profit are all derived generically in `payoff.py`. The payoff is
+piecewise-linear with kinks exactly at the strikes, so everything is solved
+analytically rather than sampled. Nothing in the engine knows what family a
+structure belongs to.
+
+That is also why a jade lizard's defining property is a constraint rather
+than a shape. It is not "short put plus call credit spread" — it is that
+*plus* the credit covering the call spread's width, so there is no upside
+risk at all. That is a pricing outcome, and on a given day the requested
+deltas may simply not produce it. `Require("worst_loss_up", "<=", 0)` says so
+directly, which is why the constraint vocabulary needs no expression
+language.
+
+Scan-level parameters are constants rather than flags:
 
 | Parameter | Value | Constant |
 |---|---|---|
-| Target delta per side | 0.16 | `chain.TARGET_DELTA` |
-| Target days to expiration | 45 | `chain.TARGET_DTE` |
+| Target days to expiration | 45 (`--dte` overrides) | `chain.TARGET_DTE` |
 | Expirations considered | monthlies only | `chain.MONTHLY_EXPIRATION_TYPE` |
-| Strike window | ±2.5σ, max 26 per side | `chain.SIGMA_SPAN` |
-| Margin estimate | max(20% spot − OTM + premium, 10% strike + premium, $50) per contract | `propose.OTM_PERCENT`, `STRIKE_PERCENT`, `MIN_PER_CONTRACT` |
+| Strike window | ±2.5σ, max 80 per side, nearest 60 contiguous | `chain.SIGMA_SPAN`, `MAX_STRIKES_PER_SIDE`, `UNSTRIDED_CORE` |
+| Max spread cost | 25% of premium at stake | `strategies.defaults.MAX_SPREAD_COST` |
+| Max variants per strategy | 64, fails loudly at import | `strategy.MAX_VARIANTS` |
+| Margin estimate | max(20% spot − OTM + premium, 10% strike + premium, $50) per contract | `payoff.OTM_PERCENT`, `STRIKE_PERCENT`, `MIN_PER_CONTRACT` |
 
 Monthlies-only means a symbol with no monthly near 45 DTE has no usable
 cycle at all, rather than quietly falling back to a weekly with different
 liquidity.
 
-**Next up:** iron condor and cash-secured put, then verticals. Each needs a
-little more than a builder — defined-risk structures want a credit-to-width
-measure alongside return on capital, and single-sided ones reduce the
-probability calculation below from two terms to one. The ranking layer
-itself doesn't change.
+**Two things worth knowing about the numbers.** Return is `max_profit / bpr`,
+not `credit / bpr`: on a broken wing the best case sits at a strike well above
+the credit taken in, and the structure can legitimately price as a debit.
+And every shipped strategy constrains `spread_cost`, because a four-legger
+crosses four markets and would otherwise win every ranking on fills that
+never happen.
+
+**Buying power is an estimate**, not a broker quote — the read-only grant
+cannot dry-run an order. It reduces correctly to the naked formula on a
+strangle and to width-minus-credit on a condor, but check it against your
+broker's own figure the first time you trade a new structure family.
+
+**Calendars and diagonals are not supported.** Payoff-at-expiry is intrinsic
+arithmetic, and a back leg still holding extrinsic value needs a pricing
+model instead. Single expiration only.
 
 **Not surfaced:** ex-dividend dates. An ex-div inside the trade window is
 real early-assignment risk on the short call, and `tau` will not warn you.
@@ -287,7 +367,9 @@ below the upper breakeven and $N(d(B_{\text{low}}))$ of finishing below the
 lower one, so the difference is the probability of landing between them.
 That two-term form is for a structure with breakevens on both sides — a
 strangle, straddle, or condor. A one-sided structure such as a cash-secured
-put keeps a single term.
+put keeps a single term, and a broken wing with four breakevens sums two
+intervals. `tau` does not special-case any of them: it reads the profitable
+regions straight off the payoff function and integrates over each.
 
 Two deliberate choices. It uses the **breakevens**, not the strikes — the
 credit pushes the breakevens further out than the strikes, so the common

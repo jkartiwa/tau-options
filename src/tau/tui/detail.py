@@ -13,6 +13,8 @@ from textual.widgets import Static
 from tau import catalyst as catalyst_mod
 from tau import chain as chain_mod
 from tau import history as history_mod
+from tau.build import BuiltLeg, Structure
+from tau.propose import Proposal
 from tau.screen import Candidate
 
 TERM_NEAR_DTE = 7
@@ -22,7 +24,27 @@ HEADLINE_LINES = 8  # shown only when there is no verdict to show instead
 
 
 def _fmt(value, spec: str = ".2f", dash: str = "—") -> str:
-    return dash if value is None else format(value, spec)
+    if value is None:
+        return dash
+    if value in (float("inf"), float("-inf")):
+        return "∞" if value > 0 else "-∞"
+    return format(value, spec)
+
+
+def _pct(value, spec: str = ".0f", dash: str = "—") -> str:
+    return dash if value is None else _fmt(value * 100, spec) + "%"
+
+
+def _leg_line(b: BuiltLeg) -> str:
+    """One resolved leg: what was asked for on the left, what the chain had
+    on the right. The quantity is only shown when it isn't 1, so a ratio or a
+    butterfly body stands out instead of hiding in a column of ones."""
+    qty = f"{b.spec.qty}x " if b.spec.qty != 1 else ""
+    delta = "—" if b.leg.delta is None else f"{abs(b.leg.delta):.3f}Δ"
+    return (
+        f"{b.spec.side:<5} {qty}{b.spec.type} {b.leg.strike:<8g} {delta:>7}  "
+        f"{_fmt(b.leg.bid)}/{_fmt(b.leg.ask)}"
+    )
 
 
 def term_shape(term: tuple[tuple[date, float], ...], today: date) -> str | None:
@@ -51,7 +73,8 @@ class DetailPane(Static):
     def show(
         self,
         candidate: Candidate | None,
-        cycle: chain_mod.Cycle | None = None,
+        proposal: Proposal | None = None,
+        structure: Structure | None = None,
         status: str = "",
         today: date | None = None,
         history: history_mod.History | None = None,
@@ -62,6 +85,7 @@ class DetailPane(Static):
             self.update("[dim]no selection[/dim]")
             return
         today = today or date.today()
+        cycle = proposal.cycle if proposal is not None else None
         lines = self._context_lines(candidate, today)
         # Price position sits with the vol context: both answer "what is
         # this name doing", and the verdict below reads against them.
@@ -74,7 +98,7 @@ class DetailPane(Static):
         if status:
             lines += ["", f"[dim]{status}[/dim]"]
         if cycle is not None:
-            lines += [""] + self._cycle_lines(candidate, cycle)
+            lines += [""] + self._cycle_lines(candidate, proposal, structure)
         self.update("\n".join(lines))
 
     def _context_lines(self, c: Candidate, today: date) -> list[str]:
@@ -155,8 +179,10 @@ class DetailPane(Static):
                 lines.append(f"[dim]{escape(h.render())}[/dim]")
         return lines
 
-    def _cycle_lines(self, c: Candidate, cy: chain_mod.Cycle) -> list[str]:
-        st = chain_mod.build_strangle(cy)
+    def _cycle_lines(
+        self, c: Candidate, p: Proposal, chosen: Structure | None = None
+    ) -> list[str]:
+        cy = p.cycle
         head = f"[b]{cy.expiration}[/b] · {cy.dte} DTE"
         atm = cy.atm_iv
         # The fair comparison is metrics' own term-structure IV *at this
@@ -181,30 +207,62 @@ class DetailPane(Static):
             "",
         ]
 
-        if not st.complete:
-            lines.append(f"[yellow]no structure: {st.reason}[/yellow]")
+        # In the drill-in the highlighted variant is what the pane is for;
+        # everywhere else it is the winner across every strategy searched.
+        shown = chosen if chosen is not None else p.best
+        if shown is None:
+            lines.append(f"[yellow]no structure: {p.error or 'nothing passed'}[/yellow]")
+            return lines
+        if not shown.complete:
+            lines.append(f"[b]{shown.label}[/b]")
+            lines.append(f"[yellow]not built: {shown.reason}[/yellow]")
             return lines
 
-        be = st.breakevens
-        ratio = chain_mod.be_vs_expected_move(cy, st)
-        lines += [
-            f"[b]{st.target_delta:.2f}Δ strangle[/b]",
-            f"  put  {st.put.strike:g} @ {abs(st.put.delta):.3f}Δ   "
-            f"{_fmt(st.put.bid)}/{_fmt(st.put.ask)}",
-            f"  call {st.call.strike:g} @ {abs(st.call.delta):.3f}Δ   "
-            f"{_fmt(st.call.bid)}/{_fmt(st.call.ask)}",
-            f"credit {_fmt(st.credit)} · BE {_fmt(be[0])} / {_fmt(be[1])}",
-        ]
-        if ratio is not None:
-            tag = "[yellow]" if ratio < 1.0 else ""
-            close = "[/yellow]" if tag else ""
+        lines += self._structure_lines(shown)
+        if chosen is None:
+            # The winner is one of many, and how many were rejected is part of
+            # reading it — one passing variant out of twelve is a different
+            # market from twelve out of twelve.
+            considered = len(p.structures)
+            passing = sum(1 for s in p.structures if s.ok)
             lines.append(
-                f"BE/EM {tag}{ratio:.2f}{close}"
-                f" · worst spread {_fmt(st.worst_spread)}"
+                f"[dim]{passing} of {considered} variants passed · v for all[/dim]"
             )
-        if st.off_target and st.off_target > chain_mod.DELTA_TOLERANCE:
+        return lines
+
+    def _structure_lines(self, s: Structure) -> list[str]:
+        """The winning structure, leg by leg. Every figure here is per the
+        engine's generic derivation; nothing knows what family it is."""
+        lines = [f"[b]{s.label}[/b] [dim]{s.strategy.bias}[/dim]"]
+        lines += [f"  {_leg_line(b)}" for b in s.legs]
+        be = " / ".join(f"{value:g}" for value in s.breakevens) or "—"
+        premium = s.net_premium
+        taken = (
+            f"credit {_fmt(s.credit)}"
+            if s.credit is not None
+            else f"[yellow]debit {_fmt(abs(premium)) if premium else '—'}[/yellow]"
+        )
+        lines.append(f"{taken} · BE {be}")
+        # Premium is per share and the rest is per contract. Marking the
+        # dollar figures keeps two different units off adjacent lines wearing
+        # the same clothes.
+        lines.append(
+            f"max profit ${_fmt(s.max_profit, ',.0f')} · "
+            f"BPR~ ${_fmt(s.bpr, ',.0f')} · "
+            f"ANN {_pct(s.annualized_roc, '.0f')}"
+        )
+        ratio = s.be_over_em
+        risk = f"POP {_pct(s.pop, '.0f')} · spread {_pct(s.spread_cost, '.0f')}"
+        if ratio is not None:
+            tag, close = ("[yellow]", "[/yellow]") if ratio < 1.0 else ("", "")
+            risk += f" · BE/EM {tag}{ratio:.2f}{close}"
+        lines.append(risk)
+        for failure in s.failures:
+            lines.append(f"[yellow]{failure.reason}[/yellow]")
+        miss = s.worst_off_target
+        if miss is not None and miss > chain_mod.DELTA_TOLERANCE:
             lines.append(
-                f"[yellow]nearest strikes miss {st.target_delta:.2f}Δ "
-                f"by {st.off_target:.2f}[/yellow]"
+                f"[yellow]nearest strikes miss the requested delta "
+                f"by {miss:.2f}[/yellow]"
             )
         return lines

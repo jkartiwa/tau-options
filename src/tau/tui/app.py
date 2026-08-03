@@ -11,9 +11,9 @@ cached mode) can drive it without the network.
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
 from datetime import UTC, date, datetime
 
+from rich.text import Text
 from tastytrade.instruments import Equity
 from textual import work
 from textual.app import App, ComposeResult
@@ -27,9 +27,11 @@ from tau import chain as chain_mod
 from tau import history as history_mod
 from tau import propose as propose_mod
 from tau import screen
+from tau.build import Structure
 from tau.propose import Proposal
 from tau.screen import Candidate
 from tau.session import get_session
+from tau.strategies import ALL as ALL_STRATEGIES
 from tau.tui.detail import DetailPane
 
 ChainLoader = Callable[[Candidate], Awaitable[chain_mod.Cycle]]
@@ -51,10 +53,25 @@ SORTS = (
 
 COLUMNS = ("", "SYM", "IVR", "IVP", "IV/HV", "IV30", "HV30", "LIQ", "BETA", "ERN", "WHY")
 
-RANK_COLUMNS = ("", "SYM", "DTE", "CREDIT", "BPR~", "ROC%", "ANN%", "POP%", "SPRD%", "BE/EM")
-# (label, Proposal attribute, higher-is-better) — build_rank_rows() looks up
-# the attribute per candidate's cached Proposal; "symbol" is handled as a
-# literal case rather than a Proposal attribute.
+# One row per symbol: the best structure any strategy found on it. STRUCTURE
+# carries the strategy and the variant that won, because "SMH 480%" without
+# saying which trade earned it is not actionable.
+RANK_COLUMNS = (
+    "", "SYM", "STRUCTURE", "BIAS", "DTE", "CREDIT", "BPR~",
+    "ROC%", "ANN%", "POP%", "SPRD%", "BE/EM",
+)
+# The drill-in: every variant considered on one name, failures included.
+# Narrower than the rank view on purpose. Bias belongs to the strategy already
+# named in the label, and within one symbol the tenor is fixed, so ROC% and
+# ANN% order the rows identically — dropping both buys the width the failure
+# reason needs, and a clipped reason reads as no reason at all.
+VARIANT_COLUMNS = (
+    "", "STRUCTURE", "CREDIT", "BPR~", "ANN%", "POP%",
+    "SPRD%", "BE/EM", "WHY NOT",
+)
+# (label, metric attribute, higher-is-better) — read off the winning Structure
+# in rank mode and off each variant in the drill-in; "symbol" is handled as a
+# literal case rather than an attribute.
 RANK_SORTS = (
     ("ANN%", "annualized_roc", True),
     ("ROC%", "roc", True),
@@ -110,7 +127,17 @@ def _universe() -> list[str]:
 
 
 def _fmt(value, spec: str = ".1f") -> str:
-    return "—" if value is None else format(value, spec)
+    if value is None:
+        return "—"
+    if value in (float("inf"), float("-inf")):
+        return "∞" if value > 0 else "-∞"
+    return format(value, spec)
+
+
+def _pct(value, spec: str = ".0f") -> str:
+    """A rate stored as a fraction, shown as a percentage. The column headers
+    already carry the % sign, so this doesn't repeat it."""
+    return "—" if value is None else _fmt(value * 100, spec)
 
 
 class TauApp(App):
@@ -144,8 +171,9 @@ class TauApp(App):
         Binding("l", "cycle_liquidity", "liq"),
         Binding("e", "cycle_earnings", "ern"),
         Binding("p", "rank_shortlist", "rank"),
+        Binding("v", "show_variants", "variants"),
         Binding("R", "reprice", "re-price", show=False),
-        Binding("escape", "back_to_screen", "screen", show=False),
+        Binding("escape", "back", "back", show=False),
     ]
 
     min_ivr: reactive[float] = reactive(30.0)
@@ -153,7 +181,7 @@ class TauApp(App):
     earnings_days: reactive[int] = reactive(45)
     sort_index: reactive[int] = reactive(0)
     show_excluded: reactive[bool] = reactive(False)
-    mode: reactive[str] = reactive("screen")  # "screen" | "rank"
+    mode: reactive[str] = reactive("screen")  # "screen" | "rank" | "variants"
     rank_sort_index: reactive[int] = reactive(0)
 
     def __init__(
@@ -175,9 +203,6 @@ class TauApp(App):
         self._starred: set[str] = set()
         self._fetched_at: datetime | None = None
         self._status = "loading…"
-        # Cycles are kept per symbol so returning to a name is instant; the
-        # timestamp travels with them so a stale quote can't pass as live.
-        self._cycles: dict[str, chain_mod.Cycle] = {}
         self._detail_status = ""
         # Price context and the catalyst read, cached per symbol: the first
         # is a websocket round trip, the second costs a model call.
@@ -186,13 +211,22 @@ class TauApp(App):
         # Its own status line — one shared string would let the chain load
         # and this one overwrite each other's message.
         self._why_status = ""
-        # Proposals persist across a rank-mode exit/re-entry so toggling back
-        # and forth never re-fetches; only `R` forces a re-price.
+        # A proposal is a symbol's whole chain search — the cycle plus every
+        # structure the strategies found on it — so it is the only per-symbol
+        # cache there needs to be. Chain loads and the rank pricing both fill
+        # it, which is why a name inspected with `c` costs nothing to rank.
+        # They persist across a mode exit/re-entry; only `R` forces a
+        # re-price, and a refetch clears them so stale quotes can't pass as
+        # live.
         self._proposals: dict[str, Proposal] = {}
         self._passing: list[Candidate] = []  # this screen's pass set, unsorted by rank
         self._rank_rows: list[Candidate] = []
         self._pricing = False
         self._columns_mode = "screen"  # tracks which header row the table wears
+        self._strategies = ALL_STRATEGIES
+        # The drill-in: which name is open, and its variants in display order.
+        self._variants_symbol: str | None = None
+        self._variant_rows: list[Structure] = []
 
     def compose(self) -> ComposeResult:
         yield Static("", id="meta")
@@ -224,7 +258,6 @@ class TauApp(App):
         # A refetch invalidates prior quotes/greeks — stale numbers presented
         # as fresh would be worse than an empty rank view.
         self._proposals.clear()
-        self._cycles.clear()
         # Same reasoning for the price and catalyst reads: a brief taken
         # before the refresh describes the market as it was, and re-reading
         # costs nothing until the user asks for it again with `w`.
@@ -274,21 +307,44 @@ class TauApp(App):
 
         self._rank_rows = sorted(self._passing, key=keyfn)
 
+    def build_variant_rows(self) -> None:
+        """The open name's whole search, ranked by the active metric. Failed
+        and unbuildable variants stay in the list — "no lizard on MU today,
+        worst_loss_up 340 > 0" is information; a missing row is not."""
+        if self._variants_symbol is None:
+            self._variant_rows = []
+            return
+        proposal = self._proposals.get(self._variants_symbol)
+        if proposal is None:
+            self._variant_rows = []
+            return
+        _, attr, _ = RANK_SORTS[self.rank_sort_index]
+        key = "annualized_roc" if attr == "symbol" else attr
+        self._variant_rows = proposal.variants(key)
+
     def render_current_table(self) -> None:
         if self.mode == "rank":
             self.render_rank_table()
+        elif self.mode == "variants":
+            self.render_variant_table()
         else:
             self.render_screen_table()
 
-    def render_screen_table(self) -> None:
+    def _reset_columns(self, mode: str, columns: tuple[str, ...]):
+        """Empty the table for a repaint, returning it with the cursor row it
+        had. The cursor has to be read before the clear, which resets it."""
         table = self.query_one("#table", DataTable)
         cursor = table.cursor_row
-        if self._columns_mode != "screen":
+        if self._columns_mode != mode:
             table.clear(columns=True)
-            table.add_columns(*COLUMNS)
-            self._columns_mode = "screen"
+            table.add_columns(*columns)
+            self._columns_mode = mode
         else:
             table.clear()
+        return table, cursor
+
+    def render_screen_table(self) -> None:
+        table, cursor = self._reset_columns("screen", COLUMNS)
         today = date.today()
         for c in self._rows:
             dte = c.days_to_earnings(today)
@@ -311,54 +367,79 @@ class TauApp(App):
         self.render_detail()
 
     def render_rank_table(self) -> None:
-        table = self.query_one("#table", DataTable)
-        cursor = table.cursor_row
-        if self._columns_mode != "rank":
-            table.clear(columns=True)
-            table.add_columns(*RANK_COLUMNS)
-            self._columns_mode = "rank"
-        else:
-            table.clear()
+        table, cursor = self._reset_columns("rank", RANK_COLUMNS)
+        blanks = len(RANK_COLUMNS) - 2
         for c in self._rank_rows:
             p = self._proposals.get(c.symbol)
             star = c.symbol in self._starred
-            if p is None:
-                marker = "★" if star else "…"
-                table.add_row(marker, c.symbol, *(["—"] * 8), key=c.symbol)
+            best = p.best if p is not None else None
+            if best is None:
+                marker = "★" if star else ("…" if p is None else "✗")
+                table.add_row(marker, c.symbol, *(["—"] * blanks), key=c.symbol)
                 continue
-            if not p.ok:
-                marker = "★" if star else "✗"
-                table.add_row(marker, c.symbol, *(["—"] * 8), key=c.symbol)
-                continue
-            marker = "★" if star else "·"
             table.add_row(
-                marker,
+                "★" if star else "·",
                 c.symbol,
+                best.label,
+                str(best.strategy.bias),
                 f"{p.cycle.dte}d",
-                _fmt(p.credit),
-                _fmt(p.bpr, ",.0f"),
-                _fmt(p.roc * 100 if p.roc is not None else None, ".1f"),
-                _fmt(p.annualized_roc * 100 if p.annualized_roc is not None else None, ".0f"),
-                _fmt(p.pop * 100 if p.pop is not None else None, ".0f"),
-                _fmt(p.spread_cost * 100 if p.spread_cost is not None else None, ".0f"),
-                _fmt(p.be_over_em, ".2f"),
+                _fmt(best.credit, ".2f"),
+                _fmt(best.bpr, ",.0f"),
+                _pct(best.roc, ".1f"),
+                _pct(best.annualized_roc, ".0f"),
+                _pct(best.pop, ".0f"),
+                _pct(best.spread_cost, ".0f"),
+                _fmt(best.be_over_em, ".2f"),
                 key=c.symbol,
             )
         if self._rank_rows:
             table.move_cursor(row=min(cursor, len(self._rank_rows) - 1))
         self.render_detail()
 
+    def render_variant_table(self) -> None:
+        table, cursor = self._reset_columns("variants", VARIANT_COLUMNS)
+        for i, s in enumerate(self._variant_rows):
+            if not s.complete:
+                # Never built — no numbers to show. The reason is a sentence
+                # about the ladder, so it goes to the detail pane in full.
+                cells = ["✗", s.label] + ["—"] * 6 + ["not built"]
+                table.add_row(*(Text(str(x), style="dim") for x in cells), key=str(i))
+                continue
+            # Which constraint bit, not the whole sentence — the numbers behind
+            # it are in the detail pane for the highlighted row.
+            why = " ".join(dict.fromkeys(f.require.metric for f in s.failures))
+            cells = [
+                "·" if s.ok else "✗",
+                s.label,
+                _fmt(s.credit, ".2f"),
+                _fmt(s.bpr, ",.0f"),
+                _pct(s.annualized_roc, ".0f"),
+                _pct(s.pop, ".0f"),
+                _pct(s.spread_cost, ".0f"),
+                _fmt(s.be_over_em, ".2f"),
+                why,
+            ]
+            if s.ok:
+                table.add_row(*cells, key=str(i))
+            else:
+                # Greyed, not hidden: a rejected variant and its reason are
+                # the answer to "why is there no condor on this name today".
+                table.add_row(*(Text(str(x), style="dim") for x in cells), key=str(i))
+        if self._variant_rows:
+            table.move_cursor(row=min(cursor, len(self._variant_rows) - 1))
+        self.render_detail()
+
     def render_detail(self) -> None:
         c = self.selected
-        cycle = self._cycles.get(c.symbol) if c else None
+        p = self._proposals.get(c.symbol) if c else None
         status = self._detail_status
-        if not status and self.mode == "rank" and c is not None:
-            p = self._proposals.get(c.symbol)
-            if p is not None and not p.ok and p.error:
+        if not status and self.mode in ("rank", "variants") and p is not None:
+            if not p.ok and p.error:
                 status = f"pricing failed: {p.error}"
         self.query_one("#detail", DetailPane).show(
             c,
-            cycle,
+            p,
+            structure=self.selected_structure,
             status=status,
             history=self._history.get(c.symbol) if c else None,
             brief=self._briefs.get(c.symbol) if c else None,
@@ -372,8 +453,13 @@ class TauApp(App):
 
     def on_data_table_row_selected(self, _: DataTable.RowSelected) -> None:
         # Enter reaches the focused table as a row selection, never the
-        # app-level binding, so the chain load hangs off this instead.
-        self.action_load_chain()
+        # app-level binding, so these hang off this instead. In the rank view
+        # a name is already priced, so Enter drills into its variants rather
+        # than re-fetching the chain it already has.
+        if self.mode == "rank":
+            self.action_show_variants()
+        elif self.mode == "screen":
+            self.action_load_chain()
 
     @work(exclusive=True)
     async def load_chain(self, candidate: Candidate) -> None:
@@ -381,12 +467,17 @@ class TauApp(App):
         self.render_detail()
         try:
             cycle = await self._chain_loader(candidate)
-            self._cycles[candidate.symbol] = cycle
+            # Searching every strategy over the fetched cycle is in-memory
+            # arithmetic, so a chain load produces the same full proposal the
+            # rank view would — one cache, filled from either direction.
+            self._proposals[candidate.symbol] = propose_mod.propose_on(
+                candidate, cycle, self._strategies
+            )
             self._detail_status = ""
         except Exception as exc:
             self._detail_status = f"chain failed: {exc}"
         # The cursor may have moved on; only repaint what is selected now.
-        self.render_detail()
+        self.render_current_table()
 
     def action_load_chain(self) -> None:
         c = self.selected
@@ -445,11 +536,9 @@ class TauApp(App):
 
         def on_done(p: Proposal) -> None:
             self._proposals[p.symbol] = p
-            if p.ok:
-                # Reuses the same cache 'c' reads from, so a name priced
-                # here needs no separate chain fetch if you inspect it.
-                self._cycles[p.symbol] = p.cycle
             self.build_rank_rows()
+            if self.mode == "variants" and p.symbol == self._variants_symbol:
+                self.build_variant_rows()
             self.render_current_table()
             self.refresh_meta()
 
@@ -478,11 +567,35 @@ class TauApp(App):
         if not self._pricing:
             self.price_shortlist_worker(list(self._passing))
 
-    def action_back_to_screen(self) -> None:
-        if self.mode == "rank":
+    def action_show_variants(self) -> None:
+        """Open the highlighted name's full search. Needs a proposal, so from
+        the screen view it loads the chain first and the keypress is repeated
+        once the numbers exist rather than opening an empty table."""
+        c = self.selected
+        if c is None or self.mode == "variants":
+            return
+        if c.symbol not in self._proposals:
+            self.load_chain(c)
+            return
+        self._variants_symbol = c.symbol
+        self.mode = "variants"
+        self.build_variant_rows()
+        self.render_current_table()
+        self.refresh_meta()
+
+    def action_back(self) -> None:
+        """One step out: variants to the rank list it was opened from, rank to
+        the screen, screen nowhere."""
+        if self.mode == "variants":
+            self.mode = "rank" if self._passing else "screen"
+            self._variants_symbol = None
+            self._variant_rows = []
+        elif self.mode == "rank":
             self.mode = "screen"
-            self.render_current_table()
-            self.refresh_meta()
+        else:
+            return
+        self.render_current_table()
+        self.refresh_meta()
 
     # ---- chrome ----
 
@@ -493,7 +606,15 @@ class TauApp(App):
             else "—"
         )
         passed = getattr(self, "_passed", 0)
-        if self.mode == "rank":
+        if self.mode == "variants":
+            rows = self._variant_rows
+            passing = sum(1 for s in rows if s.ok)
+            bits = [
+                f"tau · {self._variants_symbol} · "
+                f"{passing}/{len(rows)} variants passed",
+                f"fetched {fetched}",
+            ]
+        elif self.mode == "rank":
             priced = sum(1 for c in self._passing if c.symbol in self._proposals)
             bits = [f"tau · rank view · {priced}/{len(self._passing)} priced"]
             if self._pricing:
@@ -511,10 +632,17 @@ class TauApp(App):
             bits.append(self._status)
         self.query_one("#meta", Static).update("  ·  ".join(bits))
 
-        if self.mode == "rank":
+        if self.mode == "variants":
             label = RANK_SORTS[self.rank_sort_index][0]
             self.query_one("#filters", Static).update(
-                f"sort {label}  ·  R force re-price all  ·  esc back to screen"
+                f"sort {label}  ·  greyed rows failed a constraint  "
+                f"·  esc back to rank"
+            )
+        elif self.mode == "rank":
+            label = RANK_SORTS[self.rank_sort_index][0]
+            self.query_one("#filters", Static).update(
+                f"sort {label}  ·  enter/v all variants  ·  "
+                f"R force re-price all  ·  esc back to screen"
             )
         else:
             self.query_one("#filters", Static).update(
@@ -528,9 +656,10 @@ class TauApp(App):
         self.load()
 
     def action_sort(self) -> None:
-        if self.mode == "rank":
+        if self.mode in ("rank", "variants"):
             self.rank_sort_index = (self.rank_sort_index + 1) % len(RANK_SORTS)
             self.build_rank_rows()
+            self.build_variant_rows()
             self.render_current_table()
             self.refresh_meta()
         else:
@@ -569,15 +698,37 @@ class TauApp(App):
 
     @property
     def current_rows(self) -> list[Candidate]:
-        return self._rank_rows if self.mode == "rank" else self._rows
+        """The candidate behind each visible row. In the drill-in every row
+        belongs to the one open name, so they are all the same candidate —
+        the row identity there is the variant, not the symbol."""
+        if self.mode == "variants":
+            here = [c for c in self._raw if c.symbol == self._variants_symbol]
+            return here * len(self._variant_rows)
+        if self.mode == "rank":
+            return self._rank_rows
+        return self._rows
+
+    def _cursor(self) -> int:
+        return self.query_one("#table", DataTable).cursor_row
 
     @property
     def selected(self) -> Candidate | None:
-        table = self.query_one("#table", DataTable)
         rows = self.current_rows
-        if not rows or table.cursor_row < 0:
+        cursor = self._cursor()
+        if not rows or cursor < 0:
             return None
-        return rows[min(table.cursor_row, len(rows) - 1)]
+        return rows[min(cursor, len(rows) - 1)]
+
+    @property
+    def selected_structure(self) -> Structure | None:
+        """The highlighted variant in the drill-in. Everywhere else the detail
+        pane shows the winner, so there is nothing to override."""
+        if self.mode != "variants" or not self._variant_rows:
+            return None
+        cursor = self._cursor()
+        if cursor < 0:
+            return None
+        return self._variant_rows[min(cursor, len(self._variant_rows) - 1)]
 
 
 def run() -> None:

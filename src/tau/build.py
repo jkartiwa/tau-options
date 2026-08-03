@@ -259,7 +259,7 @@ def _usable(cycle: Cycle, option_type: OptionType) -> list[Leg]:
         (
             leg
             for leg in cycle.legs
-            if leg.right == option_type and leg.priced and leg.delta is not None
+            if leg.type is option_type and leg.priced and leg.delta is not None
         ),
         key=lambda leg: leg.strike,
     )
