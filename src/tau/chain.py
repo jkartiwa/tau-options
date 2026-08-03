@@ -37,7 +37,16 @@ TARGET_DELTA = 0.16
 SIGMA_SPAN = 2.5
 MIN_WINDOW = 0.08  # floor, for a low-vol name or a missing IV hint
 FALLBACK_IV = 0.35
-MAX_STRIKES_PER_SIDE = 26
+# Raised from 26 once multi-leg structures existed. Measured live 2026-08-03:
+# the two-phase pass costs 1.1-1.4s whether it carries 106 legs or 242 — it is
+# dominated by connection setup, not leg count — while at 26 a strided SPY
+# ladder left gaps of 8 to 30 points and only 22 of 56 structure variants could
+# be built at all. At 45 that is 43, with no measurable extra latency.
+MAX_STRIKES_PER_SIDE = 45
+# Strikes nearest spot are kept contiguous rather than strided, so that a
+# multi-leg structure placing a wing a fixed number of dollars from its short
+# leg has an unbroken ladder to land on near the money.
+UNSTRIDED_CORE = 30
 DELTA_TOLERANCE = 0.05  # beyond this, the pick is reported as off-target
 DAYS_PER_YEAR = 365.0
 
@@ -276,17 +285,29 @@ def _f(value) -> float | None:
     return None if value is None else float(value)
 
 
-def _stride(items: list, cap: int) -> list:
+def _stride(items: list, cap: int, core: int = 0) -> list:
     """Thin a list to at most `cap` entries, keeping the outermost one so the
     window's edge survives. Delta moves smoothly across strikes, so a strided
-    sample still lands within a strike or two of the target."""
+    sample still lands within a strike or two of the target.
+
+    `core` entries at the head are kept contiguous. The caller orders each
+    side outward from spot, so the core is the near-the-money region — where
+    multi-leg structures resolve their wings by dollar offset. A strided
+    ladder can silently drop the strike a `ref + 10` leg points at, and the
+    resulting spread is narrower than the label says. Keeping the core intact
+    reduces that; `build.py` reports the residual miss rather than folding it
+    into a number that lies.
+    """
     if len(items) <= cap:
         return items
-    step = -(-len(items) // cap)  # ceil
-    thinned = items[::step]
-    if items[-1] not in thinned:
-        thinned.append(items[-1])
-    return thinned
+    core = max(0, min(core, cap - 1))
+    head, rest = items[:core], items[core:]
+    remaining = max(cap - len(head), 1)
+    step = -(-len(rest) // remaining)  # ceil
+    thinned = rest[::step]
+    if rest and rest[-1] not in thinned:
+        thinned.append(rest[-1])
+    return head + thinned
 
 
 def select_strikes(
@@ -310,7 +331,8 @@ def select_strikes(
     above = [s for s in window if float(s.strike_price) > underlying]
     # Reverse `below` so striding keeps the far strike, then restore order.
     return sorted(
-        _stride(below[::-1], MAX_STRIKES_PER_SIDE) + _stride(above, MAX_STRIKES_PER_SIDE),
+        _stride(below[::-1], MAX_STRIKES_PER_SIDE, UNSTRIDED_CORE)
+        + _stride(above, MAX_STRIKES_PER_SIDE, UNSTRIDED_CORE),
         key=lambda s: float(s.strike_price),
     )
 

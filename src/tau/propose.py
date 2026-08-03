@@ -18,12 +18,17 @@ labelled as an estimate everywhere it surfaces.
 
 import asyncio
 from dataclasses import dataclass
-from math import erf, log, sqrt
 
 from tastytrade import Session
 
 from tau import chain as chain_mod
 from tau.chain import Cycle, Strangle
+from tau.payoff import (
+    CONTRACT_MULTIPLIER,
+    DAYS_PER_YEAR,
+    naked_side_requirement,
+    pop_between,
+)
 from tau.screen import Candidate
 
 # Concurrency for batch pricing: each symbol's fetch_cycle makes two REST
@@ -37,8 +42,6 @@ MAX_CONCURRENT = 6
 STAGGER_SECONDS = 0.25
 RATE_LIMIT_RETRIES = 3
 RATE_LIMIT_BASE_BACKOFF = 1.0
-CONTRACT_MULTIPLIER = 100
-DAYS_PER_YEAR = 365.0
 
 
 def _is_rate_limited(exc: Exception) -> bool:
@@ -59,42 +62,9 @@ def _clean_error(exc: Exception) -> str:
     return text
 
 
-# Naked equity option margin, the standard broker formula. The requirement is
-# the greatest of these, per side, and a strangle is charged on the larger
-# side plus the other side's premium.
-OTM_PERCENT = 0.20
-STRIKE_PERCENT = 0.10
-MIN_PER_CONTRACT = 50.0
-
-
-def _norm_cdf(x: float) -> float:
-    return 0.5 * (1.0 + erf(x / sqrt(2.0)))
-
-
-def pop_between(
-    spot: float, lower: float, upper: float, iv: float, dte: int
-) -> float | None:
-    """Probability the underlying finishes between the two breakevens, under
-    a driftless lognormal at the given implied vol. This is deliberately not
-    the 1 - delta shortcut: delta measures finishing beyond the *strikes*,
-    while the trade is profitable out to the breakevens, which the credit
-    pushes further out. The shortcut understates every proposal's odds."""
-    if spot <= 0 or lower <= 0 or upper <= lower or iv <= 0 or dte <= 0:
-        return None
-    sigma = iv * sqrt(dte / DAYS_PER_YEAR)
-    # Driftless in log terms means a -sigma^2/2 median shift.
-    drift = -0.5 * sigma * sigma
-    d_up = (log(upper / spot) - drift) / sigma
-    d_low = (log(lower / spot) - drift) / sigma
-    return _norm_cdf(d_up) - _norm_cdf(d_low)
-
-
-def naked_side_requirement(spot: float, strike: float, premium: float) -> float:
-    """Margin for one naked short option, per contract, in dollars."""
-    otm = max(0.0, spot - strike) if strike < spot else max(0.0, strike - spot)
-    a = (OTM_PERCENT * spot - otm + premium) * CONTRACT_MULTIPLIER
-    b = (STRIKE_PERCENT * strike + premium) * CONTRACT_MULTIPLIER
-    return max(a, b, MIN_PER_CONTRACT)
+# The margin formula and the lognormal probability both live in payoff.py now,
+# where the generic engine needs them, and are re-exported here so this module
+# keeps its vocabulary. One copy of the margin arithmetic, not two.
 
 
 def strangle_bpr(spot: float, strangle: Strangle) -> float | None:

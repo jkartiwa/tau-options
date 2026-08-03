@@ -165,13 +165,27 @@ def test_strike_window_spans_the_wings_on_a_dense_ladder():
     # one sigma is ~45 points here; the window must reach well beyond it
     assert min(prices) <= 684 - 90
     assert max(prices) >= 684 + 90
-    assert len(sel) <= 55  # still thinned enough to keep the pass fast
+    assert len(sel) <= 95  # still thinned enough to keep the pass fast
+
+
+def test_strike_window_keeps_the_near_money_ladder_unbroken():
+    """Multi-leg structures place a wing a fixed number of dollars from their
+    short leg. Striding right through the money would delete the strike that
+    wing points at, and the spread would come back narrower than its label."""
+    from tau.chain import UNSTRIDED_CORE
+
+    strikes = [FakeStrike(s) for s in range(500, 900)]
+    sel = select_strikes(strikes, underlying=684.0, dte=40, iv_hint=0.194)
+    prices = sorted(s.strike_price for s in sel)
+    near = [p for p in prices if abs(p - 684) < UNSTRIDED_CORE]
+    gaps = {b - a for a, b in zip(near, near[1:])}
+    assert gaps == {1}, f"near-the-money ladder is not contiguous: {near}"
 
 
 def test_strike_window_without_spot_falls_back_to_the_middle():
     strikes = [FakeStrike(s) for s in range(50, 150)]
     sel = select_strikes(strikes, underlying=None, dte=40)
-    assert sel and len(sel) <= 52
+    assert sel and len(sel) <= 90
 
 
 @dataclass(frozen=True)
