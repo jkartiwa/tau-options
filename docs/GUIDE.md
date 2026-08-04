@@ -1,9 +1,11 @@
 # Using tau
 
-The [README](../README.md) covers installation and the design. This is the
-working guide: how a session actually goes, what every number means, and where
-each one will mislead you if you read it the obvious way.
+[Setup](SETUP.md) covers installation, [design notes](DESIGN.md) cover the
+reasoning. This is the working guide: how a session actually goes, what every
+number means, and where each one will mislead you if you read it the obvious
+way.
 
+- [Commands and keys](#commands-and-keys)
 - [A session](#a-session)
 - [Reading the screen](#reading-the-screen)
 - [Reading a structure](#reading-a-structure)
@@ -11,6 +13,60 @@ each one will mislead you if you read it the obvious way.
 - [Defining your own structure](#defining-your-own-structure)
 - [The scan log](#the-scan-log)
 - [What tau will not tell you](#what-tau-will-not-tell-you)
+
+---
+
+## Commands and keys
+
+```bash
+tau                           # interactive TUI (default)
+tau tui                       # same, explicit
+
+tau scan                      # the vol screen, text output
+tau strategies                # the structures tau searches for
+tau rank --top 8              # price the shortlist, best structure per name
+tau variants SPY              # one name's whole search, rejections included
+```
+
+`tau scan` — `--min-ivr` (default 30), `--min-liquidity` (1–4, default 3),
+`--days` (earnings exclusion window, default 45; 0 disables), `--top N`,
+`--all` (every symbol with exclusion reasons), `--universe PATH`, `--log`.
+
+`tau rank` — the same screen filters, plus `--strategy NAME` (repeatable,
+defaults to all), `--dte` (default 45), `--top N` (default 15, since each row
+costs a chain fetch), `--log`.
+
+`tau variants SYMBOL` — `--strategy NAME` (repeatable), `--dte`, `--sort
+METRIC`.
+
+An unknown `--strategy` is a hard error rather than an empty result. A typo'd
+flag that quietly returned nothing would read as "no trades today".
+
+### In the TUI
+
+One metrics pull feeds everything — filtering, sorting, and pricing all happen
+in memory with no refetch until you ask for one.
+
+| Key | Action |
+|---|---|
+| `[` / `]` | move the IV rank floor down / up |
+| `l` | cycle the liquidity filter |
+| `e` | cycle the earnings filter |
+| `s` | re-sort |
+| `x` | toggle the excluded view, with reasons |
+| `c` / Enter | price the highlighted name, show the best structure |
+| `w` | price context and catalyst read for the highlighted name |
+| `p` | price the whole current shortlist, switch to the rank view |
+| `v` / Enter | every variant considered on the highlighted name |
+| `R` | force a re-price (rank view) |
+| `space` | star a name (session-only) |
+| `r` | refresh from the API |
+| `esc` | back one view |
+| `q` | quit |
+
+Proposals are cached per symbol, so leaving a view with `esc` and coming back
+is instant — only `r` and `R` refetch. A name inspected with `c` has already
+been fully searched, so ranking it afterwards costs no second fetch.
 
 ---
 
