@@ -104,9 +104,13 @@ combinations above are all built and priced off a single chain fetch. For a
 broken wing the widths *are* the trade, and which one pays depends on today's
 skew, so searching them is more honest than pinning one.
 
-Six structures ship: `strangle`, `vertical-put`, `iron-condor`, `jade-lizard`,
-`broken-wing-butterfly`, `cash-secured-put`. `tau strategies` prints them; the
-[user guide](GUIDE.md#defining-your-own-structure) covers writing your own.
+What ships is a starting set, not the feature: `strangle`, `vertical-put`,
+`iron-condor`, `jade-lizard`, `broken-wing-butterfly`, `cash-secured-put`.
+`tau strategies` prints whatever is currently defined. Adding one is a module
+and a line in `ALL` — no engine changes, no math, and it is searched, ranked
+and logged with the rest from the next run. The
+[user guide](GUIDE.md#defining-your-own-structure) covers the selectors and
+constraints.
 
 ### Why Python and not a config file
 
