@@ -505,3 +505,65 @@ async def test_variants_from_the_screen_view_loads_the_chain_first():
         await pilot.pause()
         assert a.mode == "variants"
         assert calls == ["HIGH"]
+
+
+@pytest.mark.asyncio
+async def test_strategy_picker_toggles_without_refetching():
+    """Turning a strategy off is a view over structures already in hand, so it
+    must re-rank with no further calls to the pricing loader."""
+    async def loader():
+        return [FIXTURE[0]]
+
+    calls = []
+
+    async def track_loader(candidates, on_done):
+        calls.append([c.symbol for c in candidates])
+        on_done(_proposal("HIGH"))
+
+    a = TauApp(loader=loader, proposal_loader=track_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        before = a.proposal_for("HIGH").best.strategy.name
+        assert len(a._enabled) == 6
+
+        await pilot.press("S")
+        await pilot.pause()
+        # the picker opens on the first strategy; turn it off and close
+        first = a._strategies[0].name
+        await pilot.press("space")
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert first not in a._enabled
+        assert len(a._enabled) == 5
+        assert first not in {
+            s.strategy.name for s in a.proposal_for("HIGH").structures
+        }
+        assert calls == [["HIGH"]]  # no refetch
+        if before == first:
+            assert a.proposal_for("HIGH").best.strategy.name != first
+
+
+@pytest.mark.asyncio
+async def test_picker_will_not_leave_every_strategy_disabled():
+    """An empty rank view reads as a broken scan rather than a filter."""
+    async def loader():
+        return [FIXTURE[0]]
+
+    a = TauApp(loader=loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        picker = a.screen
+        picker.action_enable_none()
+        assert len(picker._enabled) == 1
+        picker.action_toggle()  # the last one must survive
+        assert len(picker._enabled) == 1
+        picker.action_enable_all()
+        assert len(picker._enabled) == 6
+        await pilot.press("escape")
+        await pilot.pause()
+        assert len(a._enabled) == 6

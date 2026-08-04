@@ -215,3 +215,35 @@ def test_rank_default_key_is_annualized_roc():
     slow = proposal("SLOW", cycle(dte=90))
     ranked = rank_proposals([slow, fast])
     assert ranked[0].symbol == "FAST"  # same ROC, shorter DTE annualizes higher
+
+
+def test_only_narrows_the_search_to_the_enabled_strategies():
+    p = proposal()
+    kept = p.only({"strangle", "iron-condor"})
+    assert {s.strategy.name for s in kept.structures} == {"strangle", "iron-condor"}
+    assert kept.best.strategy.name in {"strangle", "iron-condor"}
+    # the full proposal is untouched: re-enabling costs nothing
+    assert len(p.structures) > len(kept.structures)
+
+
+def test_disabling_the_winner_promotes_the_runner_up():
+    p = proposal()
+    winner = p.best.strategy.name
+    rest = {s.strategy.name for s in p.structures} - {winner}
+    narrowed = p.only(rest)
+    assert narrowed.best is not None
+    assert narrowed.best.strategy.name != winner
+    assert narrowed.annualized_roc <= p.annualized_roc
+
+
+def test_only_with_every_strategy_enabled_is_the_same_proposal():
+    p = proposal()
+    assert p.only({s.strategy.name for s in p.structures}) is p
+    assert p.only(None) is p
+
+
+def test_only_nothing_enabled_reports_a_reason_rather_than_going_blank():
+    p = proposal().only(set())
+    assert not p.ok
+    assert p.best is None
+    assert p.error == "no strategy enabled"

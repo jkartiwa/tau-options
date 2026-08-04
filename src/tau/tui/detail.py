@@ -220,6 +220,7 @@ class DetailPane(Static):
 
         lines += self._structure_lines(shown)
         if chosen is None:
+            lines += self._ladder_lines(p, shown)
             # The winner is one of many, and how many were rejected is part of
             # reading it — one passing variant out of twelve is a different
             # market from twelve out of twelve.
@@ -228,6 +229,36 @@ class DetailPane(Static):
             lines.append(
                 f"[dim]{passing} of {considered} variants passed · v for all[/dim]"
             )
+        return lines
+
+    def _ladder_lines(self, p: Proposal, best: Structure) -> list[str]:
+        """The winner's siblings: the same strategy's other variants, in ladder
+        order.
+
+        The rank view can only show one row per name, and on return alone the
+        widest delta almost always wins, so the cheaper strikes were only
+        visible by drilling in. Seeing what the extra credit costs in
+        probability is the actual decision, so it belongs beside the winner.
+        """
+        siblings = [
+            s
+            for s in p.structures
+            if s.strategy.name == best.strategy.name and s.complete
+        ]
+        if len(siblings) < 2:
+            return []
+        siblings.sort(key=lambda s: s.variant)
+        lines = [
+            "",
+            f"[b]{best.strategy.name}[/b] [dim]· credit / POP / ANN[/dim]",
+        ]
+        for s in siblings:
+            mark = "›" if s is best else " "
+            row = (
+                f"{mark} {s.variant:<12} {_fmt(s.credit):>6} "
+                f"{_pct(s.pop):>5} {_pct(s.annualized_roc):>6}"
+            )
+            lines.append(row if s.ok else f"[dim]{row}[/dim]")
         return lines
 
     def _structure_lines(self, s: Structure) -> list[str]:

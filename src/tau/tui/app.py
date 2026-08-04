@@ -33,6 +33,7 @@ from tau.screen import Candidate
 from tau.session import get_session
 from tau.strategies import ALL as ALL_STRATEGIES
 from tau.tui.detail import DetailPane
+from tau.tui.picker import StrategyPicker
 
 ChainLoader = Callable[[Candidate], Awaitable[chain_mod.Cycle]]
 Loader = Callable[[], Awaitable[list[Candidate]]]
@@ -172,6 +173,7 @@ class TauApp(App):
         Binding("e", "cycle_earnings", "ern"),
         Binding("p", "rank_shortlist", "rank"),
         Binding("v", "show_variants", "variants"),
+        Binding("S", "pick_strategies", "strategies"),
         Binding("R", "reprice", "re-price", show=False),
         Binding("escape", "back", "back", show=False),
     ]
@@ -224,6 +226,10 @@ class TauApp(App):
         self._pricing = False
         self._columns_mode = "screen"  # tracks which header row the table wears
         self._strategies = ALL_STRATEGIES
+        # Which strategies the views show. Every proposal is always searched
+        # over all of them, so this is a filter over results rather than over
+        # work — toggling one costs no fetch in either direction.
+        self._enabled: set[str] = {s.name for s in ALL_STRATEGIES}
         # The drill-in: which name is open, and its variants in display order.
         self._variants_symbol: str | None = None
         self._variant_rows: list[Structure] = []
@@ -287,6 +293,13 @@ class TauApp(App):
         self.render_current_table()
         self.refresh_meta()
 
+    def view(self, proposal: Proposal | None) -> Proposal | None:
+        """A proposal as the current strategy filter shows it."""
+        return None if proposal is None else proposal.only(self._enabled)
+
+    def proposal_for(self, symbol: str | None) -> Proposal | None:
+        return self.view(self._proposals.get(symbol)) if symbol else None
+
     def build_rank_rows(self) -> None:
         """Sort the current pass set by the active rank metric. A candidate
         with no proposal yet (or one that failed to price) sorts last rather
@@ -297,7 +310,7 @@ class TauApp(App):
         def keyfn(c: Candidate):
             if attr == "symbol":
                 return (False, c.symbol)
-            p = self._proposals.get(c.symbol)
+            p = self.proposal_for(c.symbol)
             if p is None or not p.ok:
                 return (True, 0.0)
             value = getattr(p, attr)
@@ -314,7 +327,7 @@ class TauApp(App):
         if self._variants_symbol is None:
             self._variant_rows = []
             return
-        proposal = self._proposals.get(self._variants_symbol)
+        proposal = self.proposal_for(self._variants_symbol)
         if proposal is None:
             self._variant_rows = []
             return
@@ -370,7 +383,7 @@ class TauApp(App):
         table, cursor = self._reset_columns("rank", RANK_COLUMNS)
         blanks = len(RANK_COLUMNS) - 2
         for c in self._rank_rows:
-            p = self._proposals.get(c.symbol)
+            p = self.proposal_for(c.symbol)
             star = c.symbol in self._starred
             best = p.best if p is not None else None
             if best is None:
@@ -431,7 +444,7 @@ class TauApp(App):
 
     def render_detail(self) -> None:
         c = self.selected
-        p = self._proposals.get(c.symbol) if c else None
+        p = self.proposal_for(c.symbol) if c else None
         status = self._detail_status
         if not status and self.mode in ("rank", "variants") and p is not None:
             if not p.ok and p.error:
@@ -583,6 +596,20 @@ class TauApp(App):
         self.render_current_table()
         self.refresh_meta()
 
+    def action_pick_strategies(self) -> None:
+        def applied(enabled: set[str] | None) -> None:
+            if enabled is None or enabled == self._enabled:
+                return
+            self._enabled = enabled
+            # No refetch: the structures are already in hand, so this only
+            # changes which of them the views consider.
+            self.build_rank_rows()
+            self.build_variant_rows()
+            self.render_current_table()
+            self.refresh_meta()
+
+        self.push_screen(StrategyPicker(self._strategies, self._enabled), applied)
+
     def action_back(self) -> None:
         """One step out: variants to the rank list it was opened from, rank to
         the screen, screen nowhere."""
@@ -599,6 +626,16 @@ class TauApp(App):
 
     # ---- chrome ----
 
+    def strategy_summary(self) -> str:
+        """Names the filter when one is on, so a short list never looks like a
+        thin market when it is really a setting."""
+        total = len(self._strategies)
+        if len(self._enabled) == total:
+            return f"all {total} strategies"
+        if len(self._enabled) == 1:
+            return next(iter(self._enabled)) + " only"
+        return f"{len(self._enabled)}/{total} strategies"
+
     def refresh_meta(self) -> None:
         fetched = (
             self._fetched_at.astimezone().strftime("%H:%M")
@@ -612,6 +649,7 @@ class TauApp(App):
             bits = [
                 f"tau · {self._variants_symbol} · "
                 f"{passing}/{len(rows)} variants passed",
+                self.strategy_summary(),
                 f"fetched {fetched}",
             ]
         elif self.mode == "rank":
@@ -619,6 +657,7 @@ class TauApp(App):
             bits = [f"tau · rank view · {priced}/{len(self._passing)} priced"]
             if self._pricing:
                 bits.append("pricing…")
+            bits.append(self.strategy_summary())
             bits += [f"★ {len(self._starred)}", f"fetched {fetched}"]
         else:
             bits = [

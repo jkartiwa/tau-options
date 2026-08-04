@@ -52,6 +52,7 @@ One metrics pull feeds every view. Filtering and sorting happen in memory.
 | `w` | price context and catalyst read for the highlighted name |
 | `p` | price the whole shortlist, switch to the rank view |
 | `v` / Enter | every variant considered on the highlighted name |
+| `S` | choose which strategies to search |
 | `R` | force a re-price (rank view) |
 | `space` | star a name (session only) |
 | `r` | refresh from the API |
@@ -61,6 +62,25 @@ One metrics pull feeds every view. Filtering and sorting happen in memory.
 Results are cached per symbol, so leaving a view and coming back is instant.
 Only `r` and `R` go back to the API. A name you looked at with `c` has already
 been searched in full, so ranking it later costs nothing extra.
+
+### Turning strategies on and off
+
+`S` opens a picker for the strategies the views search over. Space toggles the
+highlighted one, `a` turns everything back on, `n` isolates the highlighted one
+by itself, and `esc` closes.
+
+![Strategy picker](img/picker.svg)
+
+This is a filter over results rather than over work. Every name is always
+searched against every strategy, so turning one off simply re-ranks what is
+already in memory, and turning it back on costs nothing. Nothing is refetched
+either way, and the setting survives a refresh with `r`.
+
+The meta line at the top says how many strategies are active whenever some are
+off, so a short list is never mistaken for a thin market.
+
+You cannot turn all of them off. The last one stays on, because an empty rank
+view looks like a broken scan rather than a filter you set a moment ago.
 
 ## The screen
 
@@ -124,6 +144,13 @@ the first and second OTM strangles, weighted 60/30/10. It falls back to
 
 Return is `max_profit / bpr`, not `credit / bpr`. On a broken wing the best case
 sits at a strike above the credit, and the structure can price as a debit.
+
+Underneath the structure you get the rest of that strategy's ladder, with the
+winner marked. The rank view can only show one row per name, and on return
+alone the widest delta almost always wins, so this is where you see what the
+extra credit costs you in probability. On the example above, moving from
+16Δ/16Δ to 30Δ/30Δ roughly doubles the credit and takes the chance of profit
+from 74% down to 62%.
 
 ## Rejections
 

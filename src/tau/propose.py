@@ -137,6 +137,27 @@ class Proposal:
         first, then constraint failures, then what could not be built."""
         return build_mod.rank(list(self.structures), key)
 
+    def only(self, names: set[str] | None) -> "Proposal":
+        """This proposal narrowed to a subset of strategies.
+
+        Turning a strategy off is a view over what was already found, not a
+        reason to fetch anything: the chain was searched once and every
+        structure it produced is still here. Turning it back on costs nothing
+        either.
+        """
+        if names is None or self.cycle is None:
+            return self
+        kept = tuple(s for s in self.structures if s.strategy.name in names)
+        if len(kept) == len(self.structures):
+            return self
+        narrowed = Proposal(self.candidate, self.cycle, kept)
+        if narrowed.best is not None:
+            return narrowed
+        reason = (
+            "no strategy enabled" if not kept else _no_structure_reason(kept)
+        )
+        return Proposal(self.candidate, self.cycle, kept, error=reason)
+
     # Normalized figures, delegated to the winning structure. `rank_proposals`
     # and the rank table read these and never touch the structure itself.
 
