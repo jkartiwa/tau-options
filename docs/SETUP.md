@@ -1,8 +1,5 @@
 # Setup
 
-The [README](../README.md) has the three-line version. This is the full one,
-including the two things that reliably trip people up.
-
 ## Requirements
 
 - Python 3.12+
@@ -71,10 +68,9 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 `.env` is gitignored. Never commit it.
 
-**Real environment variables take precedence.** `tau` loads `.env` but will
-not override a variable already set in your shell. If a value looks like it
-isn't taking effect, check for a stale export — this is the most common
-configuration problem by a wide margin:
+Real environment variables take precedence: `tau` loads `.env` but will not
+override a variable already set in your shell. If a value looks like it isn't
+taking effect, check for a stale export:
 
 ```bash
 echo $TASTY_CLIENT_SECRET     # empty is what you want if you rely on .env
@@ -99,10 +95,8 @@ A table of five symbols means the credentials work. An error mentioning
 the shell supplied them.
 
 Market metrics are precomputed server-side, so this works outside market
-hours. Chain pricing (`tau rank`, `tau variants`, the TUI's `c` and `p`) also
-works after hours, but the quotes are wide, so more structures fail their
-spread-cost check than would during the session. That is the constraint
-working, not a fault — just don't read the pass rate as representative.
+hours. Chain pricing also works after hours, but the quotes are wide, so more
+structures fail their spread-cost check than would during the session.
 
 ## 5. Run the tests
 
@@ -111,6 +105,4 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The suite covers the payoff arithmetic, strategy validation, strike
-resolution, filtering, ranking, the scan log, and TUI behavior. Nothing in it
-touches the live API.
+Nothing in the suite touches the live API.
