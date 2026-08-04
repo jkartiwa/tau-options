@@ -9,6 +9,9 @@ Textual TUI for interactive triage.
 
 ![The screen](docs/img/screen.svg)
 
+**[→ User guide](docs/GUIDE.md)** — how a session goes, what every number
+means and where it misleads, how to define your own structure.
+
 ## Why
 
 High IV rank alone doesn't tell you whether premium is free money or fair
@@ -175,6 +178,9 @@ the shell supplied them. Market metrics are precomputed server-side, so this
 works outside market hours.
 
 ## Usage
+
+The [user guide](docs/GUIDE.md) is the working walkthrough. This section is
+the reference.
 
 ```bash
 tau                           # interactive TUI (default)
