@@ -105,4 +105,4 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Nothing in the suite touches the live API.
+None of the tests touch the live API.

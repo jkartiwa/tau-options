@@ -1,8 +1,9 @@
 # tau
 
-**An options scanner for premium sellers.** Finds where volatility is
+**An options scanner for premium sellers.** It finds where volatility is
 expensive, prices every option structure you have defined against the chain,
-and ranks what comes out. Terminal only, read-only, cannot place orders.
+and ranks what comes out. It runs in the terminal and only has read access to
+your account, so it cannot place orders.
 
 ![The screen](docs/img/screen.svg)
 
@@ -28,7 +29,7 @@ and ranks what comes out. Terminal only, read-only, cannot place orders.
 
 ## Quick start
 
-Needs Python 3.12+ and a tastytrade account (read scope).
+You will need Python 3.12 or newer, and a tastytrade account with read scope.
 
 ```bash
 git clone https://github.com/jkartiwa/tau-options.git
@@ -39,9 +40,13 @@ cp .env.example .env          # tastytrade client secret + refresh token
 tau
 ```
 
-[Setup](docs/SETUP.md) if that fails. [User guide](docs/GUIDE.md) for the
-commands, the keys, what the columns mean, and how to define your own
-structures.
+## Documentation
+
+- **[Setup](docs/SETUP.md)** — getting the tastytrade credentials, configuring
+  the environment, and what to check when the quick start above does not work.
+- **[User guide](docs/GUIDE.md)** — the commands and their flags, the keyboard
+  shortcuts, what every column and figure means, how to define your own
+  structures, and the scan log.
 
 ## Limits
 
@@ -50,8 +55,9 @@ Probability of profit assumes a driftless lognormal. Quotes are mid-based. The
 catalyst read is a language model's opinion of recent headlines with no
 measured accuracy.
 
-A personal research tool, not financial advice. Selling options carries
-uncapped risk. Verify every number against your broker before trading.
+This is a personal research tool and not financial advice. Selling options
+carries uncapped risk, so verify every number against your broker before you
+trade.
 
 ## License
 

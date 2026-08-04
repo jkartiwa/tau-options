@@ -1,7 +1,8 @@
 # User guide
 
-Commands, keys, what the numbers mean, and how to define your own structure.
-See [SETUP.md](SETUP.md) for credentials.
+This covers the commands, the keyboard shortcuts, what the numbers mean, and
+how to define your own structure. If you have not set up credentials yet, start
+with [SETUP.md](SETUP.md).
 
 - [Commands](#commands)
 - [TUI keys](#tui-keys)
@@ -57,9 +58,9 @@ One metrics pull feeds every view. Filtering and sorting happen in memory.
 | `esc` | back one view |
 | `q` | quit |
 
-Proposals are cached per symbol, so `esc` and back is instant. Only `r` and `R`
-refetch. A name inspected with `c` has already been fully searched, so ranking
-it afterwards costs no second fetch.
+Results are cached per symbol, so leaving a view and coming back is instant.
+Only `r` and `R` go back to the API. A name you looked at with `c` has already
+been searched in full, so ranking it later costs nothing extra.
 
 ## The screen
 
@@ -88,10 +89,12 @@ classification of why vol is bid — `pending_binary`, `resolved`,
 
 ![Why vol is bid](img/catalyst.svg)
 
-`no_idiosyncratic` asserts a finding. `insufficient_signal` asserts nothing.
-The read is biased toward the latter, and it is triage rather than clearance.
-It needs an Anthropic API key; without one the headlines are shown
-unclassified.
+Be careful with the last two. `no_idiosyncratic` means the model looked and
+found nothing specific to this name. `insufficient_signal` means it could not
+tell either way, and it leans toward saying that rather than giving a false
+all-clear. Either way this is a starting point for your own checking, not a
+verdict. It needs an Anthropic API key; without one you still get the headlines,
+just unclassified.
 
 ## A priced structure
 
@@ -126,8 +129,9 @@ sits at a strike above the credit, and the structure can price as a debit.
 
 ![Every variant considered](img/variants.svg)
 
-Greyed rows failed. The `WHY NOT` column names the constraint; the detail pane
-gives the numbers for the highlighted row.
+The greyed rows are the ones that failed. `WHY NOT` names the constraint they
+broke, and the detail pane shows the numbers behind whichever row you have
+highlighted.
 
 | Reason | Meaning |
 |---|---|
@@ -136,7 +140,7 @@ gives the numbers for the highlighted row.
 | `worst_loss_up` | Credit does not cover the call spread's width. Only on jade lizards |
 | `not built` | No legs to price, with the reason in the detail pane |
 
-Two reasons a variant cannot be built:
+There are two reasons a variant cannot be built at all.
 
 **ladder too coarse** — a referenced wing landed more than 25% away from the
 width it asked for. A 10-wide spread that resolves to 7 wide has different
@@ -154,9 +158,10 @@ cross. That is what the `spread_cost` constraint is for.
 
 ## Defining your own structure
 
-One module per structure in `src/tau/strategies/`, added to `ALL` in
-`__init__.py`. Importing that module validates every definition, so a malformed
-one fails at import rather than mid-scan.
+Each structure lives in its own module under `src/tau/strategies/`, and you
+register it by adding it to `ALL` in `__init__.py`. Every definition is
+validated on import, so a broken one fails immediately instead of halfway
+through a scan.
 
 ```python
 from tau.payoff import OptionType, Side
@@ -223,11 +228,12 @@ tau variants MU             # a coarse ladder
 pytest
 ```
 
-Most definition bugs show up on one and not the other.
+Most definition bugs only show up on one of the two.
 
-One trap: overlapping offset ladders let the search build a structure that is
-not the one you named. A broken wing with `near [5, 10]` and `far [-10, -15]`
-can produce a balanced 10/10 fly. Keep the ladders non-overlapping.
+Watch out for overlapping offset ladders, which let the search build something
+other than the structure you named. A broken wing with `near [5, 10]` and
+`far [-10, -15]` can come out as a balanced 10/10 fly. Keep the two ranges from
+overlapping.
 
 ## Reference
 
@@ -243,8 +249,9 @@ Scan parameters are constants rather than flags:
 | Max variants per strategy | 64 | `strategy.MAX_VARIANTS` |
 | Margin estimate | max(20% spot − OTM + premium, 10% strike + premium, $50) per contract | `payoff.OTM_PERCENT`, `STRIKE_PERCENT`, `MIN_PER_CONTRACT` |
 
-Monthlies only means a symbol with no monthly near the target DTE has no usable
-cycle, rather than falling back to a weekly.
+Because only monthlies are considered, a symbol with no monthly expiration near
+the target DTE simply has no usable cycle. It will not quietly fall back to a
+weekly.
 
 Probability of profit assumes a driftless lognormal:
 
@@ -263,7 +270,7 @@ past the strikes, so the common `1 − Δ` shortcut understates the real odds.
 
 ## The scan log
 
-Off by default.
+Logging is off by default.
 
 ```bash
 tau scan --log              # the screen only
