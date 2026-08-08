@@ -9,7 +9,7 @@ the constraint is on `worst_loss_up` rather than on the structure's name.
 
 from tau.payoff import OptionType, Side
 from tau.strategy import Bias, Delta, LegSpec, Ref, Require, Strategy
-from tau.strategies.defaults import MAX_SPREAD_COST
+from tau.strategies.defaults import MAX_SPREAD_COST, MIN_POP
 
 C, P = OptionType.CALL, OptionType.PUT
 LONG, SHORT = Side.LONG, Side.SHORT
@@ -26,5 +26,6 @@ JADE_LIZARD = Strategy(
         # the property that actually makes it a lizard
         Require("worst_loss_up", "<=", 0),
         Require("spread_cost", "<=", MAX_SPREAD_COST),
+        Require("pop", ">=", MIN_POP),
     ],
 )

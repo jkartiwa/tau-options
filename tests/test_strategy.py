@@ -12,6 +12,7 @@ from tau.strategy import (
     Ref,
     Require,
     Strategy,
+    with_min_pop,
 )
 
 C, P = OptionType.CALL, OptionType.PUT
@@ -38,6 +39,30 @@ def test_every_shipped_strategy_constrains_spread_cost():
         assert any(rule.metric == "spread_cost" for rule in strategy.require), (
             f"{strategy.name} has no spread_cost constraint"
         )
+
+
+def test_every_shipped_strategy_constrains_pop():
+    """Every strategy scans multiple deltas per leg, so a wider variant
+    always carries more credit and a higher annualized_roc at worse odds. A
+    pop floor is what stops that variant from winning `best` purely on
+    return."""
+    for strategy in ALL:
+        assert any(rule.metric == "pop" for rule in strategy.require), (
+            f"{strategy.name} has no pop constraint"
+        )
+
+
+def test_with_min_pop_overrides_every_selected_strategy_floor():
+    strategies = with_min_pop(ALL, 0.80)
+    for strategy in strategies:
+        pop_rules = [rule for rule in strategy.require if rule.metric == "pop"]
+        assert pop_rules == [Require("pop", ">=", 0.80)]
+
+
+def test_with_min_pop_appends_a_rule_when_a_strategy_has_none():
+    strategy = Strategy(name="s", bias=Bias.NEUTRAL, legs=[spec("a")])
+    (overridden,) = with_min_pop((strategy,), 0.65)
+    assert overridden.require == (Require("pop", ">=", 0.65),)
 
 
 def test_scalar_selector_is_a_one_element_search():

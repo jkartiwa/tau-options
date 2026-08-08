@@ -328,6 +328,30 @@ def test_max_ref_miss_is_a_fraction_of_the_requested_offset():
     assert 0 < MAX_REF_MISS < 1
 
 
+def test_best_never_returns_a_variant_that_fails_the_pop_floor():
+    """A wider/higher-delta strangle carries more credit and a higher
+    annualized_roc, but a lower pop. Ranked on annualized_roc alone, `best`
+    would pick the worse-odds variant; the pop floor must stop it."""
+    strategy = Strategy(
+        name="t-pop-gate",
+        bias=Bias.NEUTRAL,
+        legs=[
+            LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.32])),
+            LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.32])),
+        ],
+        require=[Require("pop", ">=", 0.70)],
+    )
+    structures = evaluate(strategy, cycle())
+    naive_top = max(structures, key=lambda s: s.annualized_roc)
+    assert naive_top.pop < 0.70  # the naive top-ann% pick fails the floor
+    assert not naive_top.ok
+
+    winner = best(structures)
+    assert winner is not None
+    assert winner.pop >= 0.70
+    assert winner.annualized_roc < naive_top.annualized_roc
+
+
 def test_be_over_em_measures_the_nearer_breakeven_in_expected_moves():
     """Moved down from the strangle-era chain tests: the same read, now
     derived from the payoff's breakevens rather than a structure that knew

@@ -30,10 +30,12 @@ tau variants SPY              # one name's whole search, rejections included
 `--all` (every symbol with exclusion reasons), `--universe PATH`, `--log`.
 
 `tau rank` — the same screen filters, plus `--strategy NAME` (repeatable,
-defaults to all), `--dte` (default 45), `--top N` (default 15, since each row
-costs a chain fetch), `--log`.
+defaults to all), `--dte` (default 45), `--min-pop` (probability-of-profit
+floor to be eligible as best, default 50%), `--top N` (default 15, since each
+row costs a chain fetch), `--log`.
 
-`tau variants SYMBOL` — `--strategy NAME` (repeatable), `--dte`, `--sort METRIC`.
+`tau variants SYMBOL` — `--strategy NAME` (repeatable), `--dte`, `--min-pop`,
+`--sort METRIC`.
 
 An unknown `--strategy` is an error rather than an empty result.
 
@@ -163,7 +165,7 @@ highlighted.
 | Reason | Meaning |
 |---|---|
 | `spread_cost` | Crossing the legs costs more than 25% of the premium at stake |
-| `pop` | Probability of profit under 50%. Only on broken wings |
+| `pop` | Probability of profit under the floor, default 50% (`--min-pop`). On every strategy |
 | `worst_loss_up` | Credit does not cover the call spread's width. Only on jade lizards |
 | `not built` | No legs to price, with the reason in the detail pane |
 
@@ -193,7 +195,7 @@ through a scan.
 ```python
 from tau.payoff import OptionType, Side
 from tau.strategy import Bias, Delta, LegSpec, Ref, Require, Strategy
-from tau.strategies.defaults import MAX_SPREAD_COST
+from tau.strategies.defaults import MAX_SPREAD_COST, MIN_POP
 
 C, P = OptionType.CALL, OptionType.PUT
 LONG, SHORT = Side.LONG, Side.SHORT
@@ -206,7 +208,10 @@ MY_STRUCTURE = Strategy(
         LegSpec("long_put",  type=P, side=LONG,
                 strike=Ref("short_put", offset=[-5, -10])),
     ],
-    require=[Require("spread_cost", "<=", MAX_SPREAD_COST)],
+    require=[
+        Require("spread_cost", "<=", MAX_SPREAD_COST),
+        Require("pop", ">=", MIN_POP),
+    ],
 )
 ```
 
@@ -246,6 +251,11 @@ not produce it.
 Ship a `spread_cost` constraint on everything. A four-legger crosses four
 markets and will otherwise win the ranking on fills that never happen.
 
+Ship a `pop` constraint on everything too, anchored on `MIN_POP`. Every
+delta in a search widens the credit and the return along with it, so
+without a probability-of-profit floor the widest variant always wins on
+`annualized_roc` alone.
+
 ### Checking it
 
 ```bash
@@ -272,6 +282,7 @@ Scan parameters are constants rather than flags:
 | Expirations | monthlies only | `chain.MONTHLY_EXPIRATION_TYPE` |
 | Strike window | ±2.5σ, max 80 per side, nearest 60 contiguous | `chain.SIGMA_SPAN`, `MAX_STRIKES_PER_SIDE`, `UNSTRIDED_CORE` |
 | Max spread cost | 25% of premium at stake | `strategies.defaults.MAX_SPREAD_COST` |
+| Min probability of profit | 50% (`--min-pop` overrides) | `strategies.defaults.MIN_POP` |
 | Max referenced-strike miss | 25% of the requested width | `build.MAX_REF_MISS` |
 | Max variants per strategy | 64 | `strategy.MAX_VARIANTS` |
 | Margin estimate | max(20% spot − OTM + premium, 10% strike + premium, $50) per contract | `payoff.OTM_PERCENT`, `STRIKE_PERCENT`, `MIN_PER_CONTRACT` |

@@ -143,6 +143,31 @@ def test_a_strategy_picks_its_own_winner_before_the_cross_comparison():
     assert p.best.annualized_roc < max(s.annualized_roc for s in own)
 
 
+def test_best_across_strategies_never_picks_a_pop_floor_failure():
+    """The cross-strategy comparison must not resurrect a variant a
+    strategy's own `best()` already rejected for its pop: the naive
+    highest-annualized_roc variant here fails the floor, so the winner has to
+    be a lower-returning, passing one instead."""
+    wide = Strategy(
+        name="t-pop-gate",
+        bias=Bias.NEUTRAL,
+        legs=[
+            LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.32])),
+            LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.32])),
+        ],
+        require=[Require("pop", ">=", 0.70)],
+    )
+    cy = cycle()
+    structures = tuple(evaluate(wide, cy))
+    naive_top = max(structures, key=lambda s: s.annualized_roc)
+    assert naive_top.pop < 0.70
+
+    p = Proposal(cand(), cy, structures)
+    assert p.best is not None
+    assert p.best.pop >= 0.70
+    assert p.best.annualized_roc < naive_top.annualized_roc
+
+
 def test_delegated_figures_come_from_the_winning_structure():
     p = proposal()
     best = p.best

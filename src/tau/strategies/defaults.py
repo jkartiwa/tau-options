@@ -10,3 +10,13 @@ package importing itself.
 # its credit to cross. Every strategy ships a spread_cost constraint for that
 # reason; this is the shared default.
 MAX_SPREAD_COST = 0.25
+
+# annualized_roc alone cannot see how it was bought: every structure scans
+# several deltas per leg, so a wider/higher-delta variant always carries more
+# credit and a higher annualized_roc at a lower probability of profit. This is
+# a premium-selling scanner, not a lottery-ticket one, so every strategy ships
+# a pop floor too. 0.50 already anchored the broken wing butterfly's own
+# constraint (a structure more likely to lose than win is not the trade); this
+# makes that floor the shared, CLI-overridable default (`--min-pop`, see
+# `strategy.with_min_pop` and `cli.py`).
+MIN_POP = 0.50

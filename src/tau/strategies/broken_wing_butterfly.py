@@ -11,7 +11,7 @@ credit taken in, and the structure can legitimately price as a debit.
 
 from tau.payoff import OptionType, Side
 from tau.strategy import Bias, Delta, LegSpec, Ref, Require, Strategy
-from tau.strategies.defaults import MAX_SPREAD_COST
+from tau.strategies.defaults import MAX_SPREAD_COST, MIN_POP
 
 P = OptionType.PUT
 LONG, SHORT = Side.LONG, Side.SHORT
@@ -34,6 +34,7 @@ BROKEN_WING_BUTTERFLY = Strategy(
         # The geometry of a fly allows cheap lottery tickets, and return on
         # capital alone ranks them first. This is a premium-selling scanner:
         # a structure that is more likely to lose than win is not the trade.
-        Require("pop", ">=", 0.50),
+        # (Now the shared floor every strategy carries — see defaults.py.)
+        Require("pop", ">=", MIN_POP),
     ],
 )

@@ -8,7 +8,7 @@ from the payoff rather than from the name.
 
 from tau.payoff import OptionType, Side
 from tau.strategy import Bias, Delta, LegSpec, Ref, Require, Strategy
-from tau.strategies.defaults import MAX_SPREAD_COST
+from tau.strategies.defaults import MAX_SPREAD_COST, MIN_POP
 
 C, P = OptionType.CALL, OptionType.PUT
 LONG, SHORT = Side.LONG, Side.SHORT
@@ -22,5 +22,8 @@ IRON_CONDOR = Strategy(
         LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.16, 0.20])),
         LegSpec("long_call", type=C, side=LONG, strike=Ref("short_call", offset=[5, 10])),
     ],
-    require=[Require("spread_cost", "<=", MAX_SPREAD_COST)],
+    require=[
+        Require("spread_cost", "<=", MAX_SPREAD_COST),
+        Require("pop", ">=", MIN_POP),
+    ],
 )
