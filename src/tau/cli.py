@@ -22,7 +22,8 @@ from tau import propose as propose_mod
 from tau import screen, store, universe
 from tau.session import get_session
 from tau.strategies import ALL as ALL_STRATEGIES
-from tau.strategies import STRATEGIES
+from tau.strategies import MIN_POP, STRATEGIES
+from tau.strategy import with_min_pop
 
 # A ranked row costs a chain fetch, so the default is a shortlist rather than
 # the whole pass set. The screen is free; pricing is not.
@@ -65,19 +66,25 @@ def _print_table(rows: list[screen.Candidate], show_reasons: bool) -> None:
         print(line)
 
 
-def _selected_strategies(names: list[str] | None):
+def _selected_strategies(names: list[str] | None, min_pop: float = MIN_POP):
     """The strategies to search, defaulting to all of them. An unknown name is
     a hard error rather than a silent empty search — a typo'd `--strategy`
-    that quietly returned nothing would read as "no trades today"."""
+    that quietly returned nothing would read as "no trades today".
+
+    `min_pop` overrides every selected strategy's shipped pop floor (default
+    `MIN_POP`), so `--min-pop` can tune the gate without a code change.
+    """
     if not names:
-        return ALL_STRATEGIES
-    unknown = [n for n in names if n not in STRATEGIES]
-    if unknown:
-        known = ", ".join(sorted(STRATEGIES))
-        raise SystemExit(
-            f"unknown strategy {', '.join(unknown)} — available: {known}"
-        )
-    return tuple(STRATEGIES[n] for n in names)
+        strategies = ALL_STRATEGIES
+    else:
+        unknown = [n for n in names if n not in STRATEGIES]
+        if unknown:
+            known = ", ".join(sorted(STRATEGIES))
+            raise SystemExit(
+                f"unknown strategy {', '.join(unknown)} — available: {known}"
+            )
+        strategies = tuple(STRATEGIES[n] for n in names)
+    return with_min_pop(strategies, min_pop)
 
 
 async def scan(args: argparse.Namespace) -> None:
@@ -137,7 +144,7 @@ def _label_width(labels) -> int:
 
 
 async def rank(args: argparse.Namespace) -> None:
-    strategies = _selected_strategies(args.strategy)
+    strategies = _selected_strategies(args.strategy, args.min_pop)
     candidates, passed = await _screened(args)
     shortlist = passed[: args.top] if args.top else passed
     if not shortlist:
@@ -189,7 +196,7 @@ async def variants(args: argparse.Namespace) -> None:
     """Everything considered on one name, rejections included. The point of
     keeping failures is that "no lizard on MU today, worst_loss_up 340 > 0" is
     a market condition worth reading, and a missing row says nothing."""
-    strategies = _selected_strategies(args.strategy)
+    strategies = _selected_strategies(args.strategy, args.min_pop)
     symbol = args.symbol.upper()
     cycle = await chain_mod.fetch_cycle(get_session(), symbol, target_dte=args.dte)
     # No metrics pull here: this command is about one name's chain, and the
@@ -250,6 +257,9 @@ def _add_strategy_selection(p: argparse.ArgumentParser) -> None:
                    help="strategy to search, repeatable (default: all; see `tau strategies`)")
     p.add_argument("--dte", type=int, default=chain_mod.TARGET_DTE,
                    help=f"target days to expiration, monthly cycles only (default {chain_mod.TARGET_DTE})")
+    p.add_argument("--min-pop", type=float, default=MIN_POP,
+                   help=f"minimum probability of profit to be eligible as best "
+                        f"(default {MIN_POP:.0%})".replace("%", "%%"))
 
 
 def main() -> None:

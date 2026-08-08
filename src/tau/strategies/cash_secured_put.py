@@ -8,7 +8,7 @@ strike x 100 instead, so read the return on capital accordingly.
 
 from tau.payoff import OptionType, Side
 from tau.strategy import Bias, Delta, LegSpec, Require, Strategy
-from tau.strategies.defaults import MAX_SPREAD_COST
+from tau.strategies.defaults import MAX_SPREAD_COST, MIN_POP
 
 P = OptionType.PUT
 SHORT = Side.SHORT
@@ -19,5 +19,8 @@ CASH_SECURED_PUT = Strategy(
     legs=[
         LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.16, 0.20, 0.30])),
     ],
-    require=[Require("spread_cost", "<=", MAX_SPREAD_COST)],
+    require=[
+        Require("spread_cost", "<=", MAX_SPREAD_COST),
+        Require("pop", ">=", MIN_POP),
+    ],
 )

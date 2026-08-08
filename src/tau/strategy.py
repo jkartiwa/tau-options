@@ -23,7 +23,7 @@ For a broken wing the widths *are* the trade, and which width pays depends on
 today's skew.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from itertools import product
 from typing import Literal, get_args
@@ -272,6 +272,27 @@ class Strategy:
         for combo in product(*(spec.variants() for spec in self.legs)):
             out.append((_label(combo), combo))
         return out
+
+
+def with_min_pop(strategies: tuple[Strategy, ...], min_pop: float) -> tuple[Strategy, ...]:
+    """`strategies`, each with its pop floor swapped to `min_pop`.
+
+    Every shipped strategy already carries a `pop >= ...` requirement (see
+    `strategies/defaults.py`); this is how `--min-pop` overrides that floor
+    for one CLI invocation without editing the definitions. A strategy
+    without one gets it appended, so a future definition that forgets the
+    floor is still gated rather than silently exempt.
+    """
+    out = []
+    for strategy in strategies:
+        require = tuple(
+            replace(rule, value=min_pop) if rule.metric == "pop" else rule
+            for rule in strategy.require
+        )
+        if not any(rule.metric == "pop" for rule in strategy.require):
+            require += (Require("pop", ">=", min_pop),)
+        out.append(replace(strategy, require=require))
+    return tuple(out)
 
 
 def _label(specs: tuple[LegSpec, ...]) -> str:

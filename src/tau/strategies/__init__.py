@@ -13,7 +13,7 @@ definition fails at import rather than mid-scan.
 
 from tau.strategies.broken_wing_butterfly import BROKEN_WING_BUTTERFLY
 from tau.strategies.cash_secured_put import CASH_SECURED_PUT
-from tau.strategies.defaults import MAX_SPREAD_COST
+from tau.strategies.defaults import MAX_SPREAD_COST, MIN_POP
 from tau.strategies.iron_condor import IRON_CONDOR
 from tau.strategies.jade_lizard import JADE_LIZARD
 from tau.strategies.strangle import STRANGLE
@@ -34,4 +34,4 @@ STRATEGIES: dict[str, Strategy] = {s.name: s for s in ALL}
 if len(STRATEGIES) != len(ALL):
     raise ValueError("duplicate strategy name among the shipped definitions")
 
-__all__ = ["ALL", "STRATEGIES", "MAX_SPREAD_COST"]
+__all__ = ["ALL", "STRATEGIES", "MAX_SPREAD_COST", "MIN_POP"]
