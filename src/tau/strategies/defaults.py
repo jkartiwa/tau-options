@@ -19,4 +19,4 @@ MAX_SPREAD_COST = 0.25
 # constraint (a structure more likely to lose than win is not the trade); this
 # makes that floor the shared, CLI-overridable default (`--min-pop`, see
 # `strategy.with_min_pop` and `cli.py`).
-MIN_POP = 0.50
+MIN_POP = 0.68
