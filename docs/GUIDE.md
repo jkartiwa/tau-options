@@ -31,7 +31,7 @@ tau variants SPY              # one name's whole search, rejections included
 
 `tau rank` — the same screen filters, plus `--strategy NAME` (repeatable,
 defaults to all), `--dte` (default 45), `--min-pop` (probability-of-profit
-floor to be eligible as best, default 50%), `--top N` (default 15, since each
+floor to be eligible as best, default 68%), `--top N` (default 15, since each
 row costs a chain fetch), `--log`.
 
 `tau variants SYMBOL` — `--strategy NAME` (repeatable), `--dte`, `--min-pop`,
@@ -165,7 +165,7 @@ highlighted.
 | Reason | Meaning |
 |---|---|
 | `spread_cost` | Crossing the legs costs more than 25% of the premium at stake |
-| `pop` | Probability of profit under the floor, default 50% (`--min-pop`). On every strategy |
+| `pop` | Probability of profit under the floor, default 68% (`--min-pop`). On every strategy |
 | `worst_loss_up` | Credit does not cover the call spread's width. Only on jade lizards |
 | `not built` | No legs to price, with the reason in the detail pane |
 
@@ -282,7 +282,7 @@ Scan parameters are constants rather than flags:
 | Expirations | monthlies only | `chain.MONTHLY_EXPIRATION_TYPE` |
 | Strike window | ±2.5σ, max 80 per side, nearest 60 contiguous | `chain.SIGMA_SPAN`, `MAX_STRIKES_PER_SIDE`, `UNSTRIDED_CORE` |
 | Max spread cost | 25% of premium at stake | `strategies.defaults.MAX_SPREAD_COST` |
-| Min probability of profit | 50% (`--min-pop` overrides) | `strategies.defaults.MIN_POP` |
+| Min probability of profit | 68% (`--min-pop` overrides) | `strategies.defaults.MIN_POP` |
 | Max referenced-strike miss | 25% of the requested width | `build.MAX_REF_MISS` |
 | Max variants per strategy | 64 | `strategy.MAX_VARIANTS` |
 | Margin estimate | max(20% spot − OTM + premium, 10% strike + premium, $50) per contract | `payoff.OTM_PERCENT`, `STRIKE_PERCENT`, `MIN_PER_CONTRACT` |
