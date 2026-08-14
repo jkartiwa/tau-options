@@ -5,6 +5,7 @@ from types import ModuleType
 
 import pytest
 
+from tau import catalyst
 from tau.catalyst import (
     NO_CATALYST,
     PENDING,
@@ -213,6 +214,25 @@ def test_a_failed_model_call_still_returns_the_headlines(
     assert expected in brief.note
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ApiError("invalid x-api-key", type="authentication_error", status_code=401),
+        ApiError("not permitted", type="permission_error", status_code=403),
+        ApiError("unauthorized", status_code=401),
+    ],
+)
+def test_a_rejected_key_is_named_rather_than_read_as_transient(
+    anthropic_installed, exc
+):
+    """Waiting does not fix a bad or revoked key, so it must not share the
+    generic wording whose whole point is that retrying may work."""
+    hs = headlines()
+    brief = classify("X", hs, client=RaisingClient(exc))
+    assert_degraded(brief, hs)
+    assert "key" in brief.note
+
+
 def test_a_connection_failure_returns_the_headlines():
     """Not every transport error arrives as an SDK exception."""
     hs = headlines()
@@ -240,6 +260,21 @@ def test_an_unreadable_payload_returns_the_headlines(text):
     brief = classify("X", hs, client=RawTextClient(text))
     assert_degraded(brief, hs)
     assert "unreadable" in brief.note
+
+
+@pytest.mark.parametrize("name", ["Brief", "KeyDate"])
+def test_a_renamed_field_is_not_reported_as_an_unreadable_verdict(monkeypatch, name):
+    """The guard covers the untrusted payload, not the dataclasses built from
+    it. A signature change here is a bug in this module, and reporting it to
+    every symbol as a bad model response would bury it."""
+
+    def renamed_field(**kwargs):
+        raise TypeError(f"{name}.__init__() got an unexpected keyword argument")
+
+    monkeypatch.setattr(catalyst, name, renamed_field)
+    payload = dict(VERDICT, key_dates=[{"date": "2026-08-14", "event": "FDA PDUFA"}])
+    with pytest.raises(TypeError):
+        classify("X", headlines(), client=FakeClient(payload))
 
 
 def test_a_programming_error_is_not_reported_as_headlines_only():

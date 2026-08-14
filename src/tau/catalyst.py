@@ -232,15 +232,18 @@ def _api_errors() -> tuple[type[BaseException], ...]:
 
 
 def _call_failed(exc: BaseException) -> str:
-    """A short, honest reason for a failed model call. Quota and rate limits
-    are called out separately from everything else because they tell the
-    reader something the generic case does not: wait and it may work."""
+    """A short, honest reason for a failed model call. Quota, rate limits and a
+    rejected key are called out separately from everything else because they
+    tell the reader what the generic case does not: whether waiting is the
+    remedy. For a rejected key it is not — that one needs a new key."""
     kind = getattr(exc, "type", None)
     status = getattr(exc, "status_code", None)
     if kind == "rate_limit_error" or status == 429:
         return "model rate-limited — headlines only"
     if kind == "billing_error" or "credit balance" in str(exc).lower():
         return "out of API credit — headlines only"
+    if kind in ("authentication_error", "permission_error") or status in (401, 403):
+        return "API key rejected — headlines only"
     return "model call failed — headlines only"
 
 
@@ -332,23 +335,29 @@ def classify(
     # The schema is enforced server-side, so a payload that does not parse or
     # does not have the shape asked for is a failure of the call, not of this
     # code. ValueError covers json.JSONDecodeError; KeyError and TypeError are
-    # what a wrong shape raises on the lookups below.
+    # what a wrong shape raises on the lookups below. Only the untrusted
+    # payload is read in here — the dataclasses are built afterwards, so a
+    # TypeError from their own signatures stays the programming error it is.
     try:
         data = json.loads(text)
-        return Brief(
-            symbol=symbol,
-            classification=data["classification"],
-            catalyst=data["catalyst"],
-            key_dates=tuple(
-                KeyDate(day=k["date"], event=k["event"]) for k in data["key_dates"]
-            ),
-            confidence=data["confidence"],
-            note=data["note"],
-            headlines=headlines,
-            fetched_at=datetime.now(UTC),
-        )
+        classification = data["classification"]
+        catalyst = data["catalyst"]
+        dates = [(k["date"], k["event"]) for k in data["key_dates"]]
+        confidence = data["confidence"]
+        note = data["note"]
     except (ValueError, KeyError, TypeError):
         return _unreadable(symbol, headlines, "model returned an unreadable verdict")
+
+    return Brief(
+        symbol=symbol,
+        classification=classification,
+        catalyst=catalyst,
+        key_dates=tuple(KeyDate(day=day, event=event) for day, event in dates),
+        confidence=confidence,
+        note=note,
+        headlines=headlines,
+        fetched_at=datetime.now(UTC),
+    )
 
 
 def news_query(symbol: str, description: str | None = None) -> str:
