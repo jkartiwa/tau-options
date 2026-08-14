@@ -213,6 +213,40 @@ def fetch_headlines(
     return tuple(out)
 
 
+def _api_errors() -> tuple[type[BaseException], ...]:
+    """What a model call can legitimately raise.
+
+    `anthropic.APIError` is the base of every provider-side failure the SDK
+    reports — auth, quota, rate limit, overload, and connection/timeout — so
+    the one entry covers them all without a blanket `except Exception` that
+    would also swallow a NameError or AttributeError from a future refactor.
+    The import is deliberately not cached: the package is optional, and a
+    caller may inject a client from somewhere else entirely. OSError covers a
+    transport failure raised by anything that is not the anthropic SDK.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        return (OSError,)
+    return (anthropic.APIError, OSError)
+
+
+def _call_failed(exc: BaseException) -> str:
+    """A short, honest reason for a failed model call. Quota, rate limits and a
+    rejected key are called out separately from everything else because they
+    tell the reader what the generic case does not: whether waiting is the
+    remedy. For a rejected key it is not — that one needs a new key."""
+    kind = getattr(exc, "type", None)
+    status = getattr(exc, "status_code", None)
+    if kind == "rate_limit_error" or status == 429:
+        return "model rate-limited — headlines only"
+    if kind == "billing_error" or "credit balance" in str(exc).lower():
+        return "out of API credit — headlines only"
+    if kind in ("authentication_error", "permission_error") or status in (401, 403):
+        return "API key rejected — headlines only"
+    return "model call failed — headlines only"
+
+
 def _unreadable(symbol: str, headlines: tuple[Headline, ...], why: str) -> Brief:
     return Brief(
         symbol=symbol,
@@ -278,29 +312,49 @@ def classify(
         f"<headlines>\n{rendered}\n</headlines>\n\n"
         "Classify the volatility driver from the headlines above."
     )
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=2000,
-        system=SYSTEM.format(today=today.isoformat()),
-        messages=[{"role": "user", "content": body}],
-        output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
-    )
+    # The headlines are already in hand and cost nothing, so a failed call
+    # degrades to them rather than taking the whole request down with it —
+    # the same bargain the no-key and no-package paths above strike.
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=2000,
+            system=SYSTEM.format(today=today.isoformat()),
+            messages=[{"role": "user", "content": body}],
+            output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
+        )
+    except _api_errors() as exc:
+        return _unreadable(symbol, headlines, _call_failed(exc))
+
     if response.stop_reason == "refusal":
         return _unreadable(symbol, headlines, "model declined to classify")
 
     text = next((b.text for b in response.content if b.type == "text"), None)
     if not text:
         return _unreadable(symbol, headlines, "model returned no verdict")
-    data = json.loads(text)
+    # The schema is enforced server-side, so a payload that does not parse or
+    # does not have the shape asked for is a failure of the call, not of this
+    # code. ValueError covers json.JSONDecodeError; KeyError and TypeError are
+    # what a wrong shape raises on the lookups below. Only the untrusted
+    # payload is read in here — the dataclasses are built afterwards, so a
+    # TypeError from their own signatures stays the programming error it is.
+    try:
+        data = json.loads(text)
+        classification = data["classification"]
+        catalyst = data["catalyst"]
+        dates = [(k["date"], k["event"]) for k in data["key_dates"]]
+        confidence = data["confidence"]
+        note = data["note"]
+    except (ValueError, KeyError, TypeError):
+        return _unreadable(symbol, headlines, "model returned an unreadable verdict")
+
     return Brief(
         symbol=symbol,
-        classification=data["classification"],
-        catalyst=data["catalyst"],
-        key_dates=tuple(
-            KeyDate(day=k["date"], event=k["event"]) for k in data["key_dates"]
-        ),
-        confidence=data["confidence"],
-        note=data["note"],
+        classification=classification,
+        catalyst=catalyst,
+        key_dates=tuple(KeyDate(day=day, event=event) for day, event in dates),
+        confidence=confidence,
+        note=note,
         headlines=headlines,
         fetched_at=datetime.now(UTC),
     )

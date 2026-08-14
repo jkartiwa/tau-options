@@ -115,8 +115,11 @@ Be careful with the last two. `no_idiosyncratic` means the model looked and
 found nothing specific to this name. `insufficient_signal` means it could not
 tell either way, and it leans toward saying that rather than giving a false
 all-clear. Either way this is a starting point for your own checking, not a
-verdict. It needs an Anthropic API key; without one you still get the headlines,
-just unclassified.
+verdict. The classification needs an Anthropic API key and a model call that
+goes through. When either is missing — no key, no credit, a rate limit, an
+unreadable answer — you still get the headlines, with `insufficient_signal` and
+a short reason such as `out of API credit — headlines only` where the verdict
+would be.
 
 ## A priced structure
 
