@@ -3,6 +3,9 @@
 This file is the project's committed home for project-intrinsic agent knowledge: build, test, release, architecture, and sharp-edge notes that should travel with the code.
 
 - Add durable project-specific notes here as they are discovered through real work.
+- The `dev` extra in `pyproject.toml` declares only pytest. A full `pytest` run also needs
+  `rich`, `textual`, and `pytest-asyncio` — without them `tests/test_tui.py` fails collection
+  or reports every async test as unsupported. Install those three alongside `.[dev]`.
 - This repo has no CI configured. `.no-mistakes.yaml` declares `no_ci: true` (the documented fix
   in no-mistakes' own SKILL.md), but the currently installed no-mistakes daemon does not honor it —
   confirmed across three real axion PRs, where the pipeline's `ci` step hung indefinitely instead of
