@@ -43,6 +43,23 @@ def app() -> TauApp:
     return TauApp(loader=loader)
 
 
+@pytest.fixture(autouse=True)
+def _no_broker_network(monkeypatch):
+    """The broker dry-run talks to the live account API; the test suite must
+    never. The enrichment falls back to the formula estimate when the account
+    is unreachable, and these stubs simulate exactly that."""
+    from tau import broker as broker_mod
+
+    async def no_account(session):
+        return None
+
+    async def no_bpr(session, account, structure):
+        return None
+
+    monkeypatch.setattr(broker_mod, "margin_account", no_account)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", no_bpr)
+
+
 def symbols(a: TauApp) -> list[str]:
     return [c.symbol for c in a._rows]
 
@@ -567,3 +584,95 @@ async def test_picker_will_not_leave_every_strategy_disabled():
         await pilot.press("escape")
         await pilot.pause()
         assert len(a._enabled) == 6
+
+
+@pytest.mark.asyncio
+async def test_chain_load_survives_missing_credentials(monkeypatch):
+    """No env, no broker dry-run, no crash: the chain load still caches the
+    proposal with its formula figures and the detail pane renders."""
+    from tau.chain import Cycle, Leg
+
+    cycle = Cycle(
+        symbol="HIGH",
+        expiration=date(2026, 9, 4),
+        dte=40,
+        underlying=100.0,
+        legs=(
+            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
+            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
+        ),
+        fetched_at=datetime.now(UTC),
+    )
+
+    async def chain_loader(candidate):
+        return cycle
+
+    async def loader():
+        return list(FIXTURE)
+
+    def no_session():
+        raise RuntimeError("TASTY_CLIENT_SECRET / TASTY_REFRESH_TOKEN not set (.env)")
+
+    monkeypatch.setattr("tau.tui.app.get_session", no_session)
+
+    a = TauApp(loader=loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        assert await _settle(a, lambda: "HIGH" in a._proposals)
+        p = a._proposals["HIGH"]
+        assert p.best is not None and p.best.bpr_source == "estimate"
+        rendered = str(a.query_one("#detail").content)
+        assert "strangle" in rendered and "BPR~" in rendered
+
+
+@pytest.mark.asyncio
+async def test_rank_table_marks_broker_and_formula_bpr_sources(monkeypatch):
+    """Broker-sourced buying power renders plain under the `BPR` header;
+    the formula estimate keeps the tilde the header used to carry. The row
+    itself has to say which model the number came from."""
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+    from tau.tui.app import _fmt
+    from textual.widgets import DataTable
+
+    async def loader():
+        return [FIXTURE[0]]  # just HIGH
+
+    base = _proposal("HIGH")
+    fake_account = object()
+
+    async def fake_margin(session):
+        return fake_account
+
+    async def fake_bpr(session, account, structure):
+        # a 10% haircut over the formula, applied to the whole shortlist:
+        # the top-ranked structure stays on top, so `best` is broker-priced
+        return structure.bpr * 0.9 if structure.bpr else None
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
+
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), base)
+    assert enriched.best.bpr_source == "broker"
+
+    a = TauApp(loader=loader, proposal_loader=_proposal_loader_factory({"HIGH": enriched}))
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        table = a.query_one("#table", DataTable)
+        assert "BPR" in [c.label.plain for c in table.columns.values()]
+        best = enriched.best
+        row = list(table.get_row_at(0))
+        assert row[6] == _fmt(best.bpr, ",.0f")  # plain: broker-sourced
+
+    # the same shortlist un-enriched falls back to the formula — tilde on
+    a2 = TauApp(loader=loader, proposal_loader=_proposal_loader_factory({"HIGH": base}))
+    async with a2.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        table = a2.query_one("#table", DataTable)
+        row = list(table.get_row_at(0))
+        assert row[6].endswith("~")

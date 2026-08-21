@@ -275,10 +275,14 @@ class DetailPane(Static):
         lines.append(f"{taken} · BE {be}")
         # Premium is per share and the rest is per contract. Marking the
         # dollar figures keeps two different units off adjacent lines wearing
-        # the same clothes.
+        # the same clothes. Buying power names its source outright: `BPR~` is
+        # the formula, `BPR` is the broker's own dry-run figure, and the two
+        # are different numbers from different models.
+        bpr_label = "BPR" if s.bpr_source == "broker" else "BPR~"
+        bpr_note = " (broker dry-run)" if s.bpr_source == "broker" else " (formula)"
         lines.append(
             f"max profit ${_fmt(s.max_profit, ',.0f')} · "
-            f"BPR~ ${_fmt(s.bpr, ',.0f')} · "
+            f"{bpr_label} ${_fmt(s.bpr, ',.0f')}{bpr_note} · "
             f"ANN {_pct(s.annualized_roc, '.0f')}"
         )
         ratio = s.be_over_em

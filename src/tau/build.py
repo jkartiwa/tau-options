@@ -114,6 +114,10 @@ class Structure:
     legs: tuple[BuiltLeg, ...] = ()
     reason: str | None = None
     failures: tuple[ConstraintResult, ...] = ()
+    # The broker's dry-run buying-power figure, when one was obtained. `None`
+    # means `bpr` falls back to the in-house formula estimate. Filled by
+    # `propose.enrich_with_broker_bpr`, never by the builder.
+    broker_bpr: float | None = None
 
     @property
     def symbol(self) -> str:
@@ -172,10 +176,20 @@ class Structure:
 
     @property
     def bpr(self) -> float | None:
-        """Estimated buying power reduction, not a broker quote."""
+        """Buying power reduction in dollars: the broker's dry-run figure
+        when one was obtained, otherwise the formula estimate."""
+        if self.broker_bpr is not None:
+            return self.broker_bpr
         if not self.complete or self.cycle.underlying is None:
             return None
         return bpr(self.payoff_legs, self.cycle.underlying)
+
+    @property
+    def bpr_source(self) -> str:
+        """`"broker"` when `bpr` came from the dry-run calculation,
+        `"estimate"` when it is the formula. The two are different numbers
+        from different models, and the display says which one it is."""
+        return "broker" if self.broker_bpr is not None else "estimate"
 
     @property
     def roc(self) -> float | None:

@@ -426,3 +426,113 @@ def test_a_cycle_that_mostly_could_not_be_priced_says_so_too():
     assert "failed a constraint" in reason
     assert "2 of 3 never priced" in reason
     assert "no strike near that delta" in reason
+# --- broker buying-power enrichment ---
+
+
+def test_bpr_defaults_to_the_formula_estimate():
+    p = proposal()
+    best = p.best
+    assert best.broker_bpr is None
+    assert best.bpr_source == "estimate"
+
+
+def test_broker_bpr_overrides_the_formula_figure_and_flows_into_roc():
+    from dataclasses import replace
+
+    p = proposal()
+    best = p.best
+    enriched = replace(best, broker_bpr=2500.0)
+    assert enriched.bpr == 2500.0
+    assert enriched.bpr_source == "broker"
+    # return on capital is computed from whichever figure `bpr` reports
+    assert enriched.roc == pytest.approx(enriched.max_profit / 2500.0)
+
+
+@pytest.mark.asyncio
+async def test_enrichment_uses_the_broker_figure_when_the_dry_run_succeeds(monkeypatch):
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    p = proposal()
+    fake_account = object()
+    calls = []
+
+    async def fake_margin(session):
+        return fake_account
+
+    async def fake_bpr(session, account, structure):
+        assert account is fake_account
+        calls.append(structure)
+        # a proportional figure keeps the ranked shortlist on top, so the
+        # re-ranked winner is verifiably broker-priced
+        return structure.bpr * 0.9 if structure.bpr else None
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
+
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), p)
+    assert enriched is not p
+    complete = [s for s in p.variants() if s.complete]
+    priced = min(propose_mod.BROKER_BPR_TOP, len(complete))
+    # exactly the top of the ranked shortlist got the broker figure
+    assert sum(1 for s in enriched.structures if s.bpr_source == "broker") == priced
+    assert len(calls) == priced
+    for s in enriched.structures:
+        if s.bpr_source == "broker":
+            assert s.bpr == pytest.approx(s.broker_bpr)
+    # the structure that ranked first on the formula is among them, and the
+    # untouched tail still reports the formula estimate
+    top = complete[0]
+    enriched_top = next(s for s in enriched.structures if s.label == top.label)
+    assert enriched_top.bpr_source == "broker"
+    assert enriched.best.bpr_source == "broker"
+
+
+@pytest.mark.asyncio
+async def test_enrichment_falls_back_when_the_account_cannot_be_read(monkeypatch):
+    """A 403-style failure resolving the account must leave the proposal
+    exactly as it was — same figures, same structure count, no crash."""
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    async def fake_margin(session):
+        raise RuntimeError("403: insufficient scopes")
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+
+    p = proposal()
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), p)
+    assert enriched is p
+    assert all(s.bpr_source == "estimate" for s in enriched.structures)
+
+
+@pytest.mark.asyncio
+async def test_enrichment_falls_back_on_a_generic_exception(monkeypatch):
+    """A dry-run that blows up mid-batch must not take the rest of the
+    proposal with it: every structure keeps the formula estimate."""
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    async def fake_margin(session):
+        return object()
+
+    async def fake_bpr(session, account, structure):
+        raise ValueError("connection reset")
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
+
+    p = proposal()
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), p)
+    assert all(s.bpr_source == "estimate" for s in enriched.structures)
+    assert len(enriched.structures) == len(p.structures)
+
+
+@pytest.mark.asyncio
+async def test_enrichment_with_no_session_is_a_noop():
+    """No credentials means no dry-run and no crash — the formula estimate
+    is the whole story."""
+    from tau import propose as propose_mod
+
+    p = proposal()
+    assert await propose_mod.enrich_with_broker_bpr(None, p) is p

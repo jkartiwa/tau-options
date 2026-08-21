@@ -141,7 +141,7 @@ the first and second OTM strangles, weighted 60/30/10. It falls back to
 | `credit` | Net premium per share. A debit structure shows `debit` in yellow instead |
 | `BE` | Every breakeven. A broken wing has four; a cash-secured put has one |
 | `max profit` | Best case in dollars per contract. `∞` when the upside is open |
-| `BPR~` | Estimated buying power in dollars. A formula, not a broker quote |
+| `BPR` | Buying power in dollars: the broker's own dry-run figure when the account answered, otherwise a formula estimate. The `~` suffix on the tables' values marks the estimate; the detail pane spells it out |
 | `ANN` | Annualized return on capital, which makes a 40-day trade comparable to a 60-day one |
 | `POP` | Probability of profit at expiry under a driftless lognormal, with each breakeven priced under the vol local to it — puts below, calls above. An approximation, not a smile-consistent density; see `payoff.pop_over_intervals` |
 | `spread` | Cost of crossing every leg, as a share of the premium at stake |
@@ -149,6 +149,26 @@ the first and second OTM strangles, weighted 60/30/10. It falls back to
 
 Return is `max_profit / bpr`, not `credit / bpr`. On a broken wing the best case
 sits at a strike above the credit, and the structure can price as a debit.
+
+### Where the buying-power figure comes from
+
+`BPR` is the broker's own number when tau can get it: for each symbol, the
+top-ranked structures are sent to your account's order **dry-run** endpoint —
+one POST per structure, a calculation preview that places, modifies, and
+cancels nothing — and the broker's isolated margin requirement replaces the
+in-house estimate. The real number matters because the formula is a standard
+naked-margin model and the account runs on portfolio margin; measured against
+the broker's figure on 2026-08-20, the formula was $3,980 where the broker
+said $3,651 on an AAPL strangle and $28,335 where it said $37,010 on MU.
+
+When the broker does not answer — read-scoped token, network error, timeout,
+rate limit, missing credentials — tau silently falls back to the formula and
+screens exactly as it always has. Nothing crashes and nothing changes shape;
+the fallback is automatic and there is no toggle. The detail pane and the
+rank tables label the source per figure: broker-sourced values are plain,
+formula estimates carry a trailing `~` (the tables' column header is `BPR`
+for both). `tau rank --top N` prices the top N names; within each name the
+top 10 structures get the broker figure.
 
 Underneath the structure you get the rest of that strategy's ladder, with the
 winner marked. The rank view can only show one row per name, and on return
@@ -300,6 +320,11 @@ Scan parameters are constants rather than flags:
 | Max delta-selected miss | 0.05 delta | `build.MAX_DELTA_MISS` |
 | Max variants per strategy | 64 | `strategy.MAX_VARIANTS` |
 | Margin estimate | max(20% spot − OTM + premium, 10% strike + premium, $50) per contract | `payoff.OTM_PERCENT`, `STRIKE_PERCENT`, `MIN_PER_CONTRACT` |
+
+Buying power is the broker's isolated margin requirement from the order
+**dry-run** when the account answers (see [Where the buying-power figure
+comes from](#where-the-buying-power-figure-comes-from)); the formula row above
+is the always-available fallback.
 
 Because only monthlies are considered, a symbol with no monthly expiration near
 the target DTE simply has no usable cycle. It will not quietly fall back to a

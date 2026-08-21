@@ -16,16 +16,19 @@ cycle, not a single hardcoded strangle. One chain fetch per symbol feeds all
 of them — everything after the fetch is in-memory arithmetic, so searching six
 strategies costs what searching one did.
 
-Buying power is an *estimate* from the standard naked-option margin formula,
-not a broker quote — the read-only grant cannot dry-run an order. It is
-labelled as an estimate everywhere it surfaces.
+Buying power is the broker's own figure when the account answered — one
+POST per structure to the order dry-run calculation, which places nothing —
+and the in-house formula estimate otherwise, labelled as such either way.
+The formula stays the always-available base figure; the broker call is the
+upgrade, and its every failure falls back to the formula.
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from tastytrade import Session
 
+from tau import broker as broker_mod
 from tau import build as build_mod
 from tau import chain as chain_mod
 from tau.build import Structure
@@ -58,6 +61,14 @@ RATE_LIMIT_BASE_BACKOFF = 1.0
 # single metric both are measured on, and return per day of capital tied up is
 # the one this tool is built around.
 CROSS_STRATEGY_METRIC = "annualized_roc"
+
+# Per symbol: how many of the ranked shortlist the broker prices. Rank with
+# the formula first (cheap, offline), then pull the broker figure for this
+# many of the top structures and let the real numbers re-rank within the
+# shortlist. Bounded on purpose — a full search is ~50 variants, and pricing
+# all of them against the live account is ~5x the API load for no change in
+# what the rank view shows.
+BROKER_BPR_TOP = 10
 
 
 def _is_rate_limited(exc: Exception) -> bool:
@@ -280,6 +291,51 @@ def propose_on(
     )
 
 
+async def enrich_with_broker_bpr(
+    session: Session | None,
+    proposal: Proposal,
+    top_n: int = BROKER_BPR_TOP,
+) -> Proposal:
+    """Attach the broker's dry-run buying-power figure to the proposal's
+    top-ranked structures.
+
+    Rank with the existing formula first — cheap, offline — then pull the
+    broker figure for the ranked shortlist and let the real numbers re-rank
+    it. Structures the broker did not answer for keep the formula estimate,
+    and any failure of the broker call — 403 insufficient scopes, network
+    error, timeout, rate limit, SDK exception, missing env (`session=None`)
+    — silently leaves the proposal as it was. The pipeline never changes
+    shape because the broker did not answer.
+    """
+    if session is None or not proposal.structures:
+        return proposal
+    try:
+        account = await broker_mod.margin_account(session)
+    except Exception:
+        return proposal
+    if account is None:
+        return proposal
+    shortlist = [s for s in proposal.variants() if s.complete][:top_n]
+    if not shortlist:
+        return proposal
+    sem = asyncio.Semaphore(broker_mod.MAX_CONCURRENT)
+
+    async def one(structure: Structure) -> Structure:
+        try:
+            async with sem:
+                value = await broker_mod.broker_bpr_for(session, account, structure)
+        except Exception:
+            return structure
+        if value is None:
+            return structure
+        return replace(structure, broker_bpr=value)
+
+    enriched = await asyncio.gather(*(one(s) for s in shortlist))
+    by_id = {id(s): e for s, e in zip(shortlist, enriched)}
+    structures = tuple(by_id.get(id(s), s) for s in proposal.structures)
+    return replace(proposal, structures=structures)
+
+
 async def price_candidate(
     session: Session,
     candidate: Candidate,
@@ -300,7 +356,9 @@ async def price_candidate(
                 await asyncio.sleep(RATE_LIMIT_BASE_BACKOFF * 2 ** (attempt - 1))
                 continue
             return Proposal(candidate, error=_clean_error(exc))
-    return propose_on(candidate, cycle, strategies)
+    return await enrich_with_broker_bpr(
+        session, propose_on(candidate, cycle, strategies)
+    )
 
 
 async def price_many(

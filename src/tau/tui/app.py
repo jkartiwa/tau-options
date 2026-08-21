@@ -58,7 +58,7 @@ COLUMNS = ("", "SYM", "IVR", "IVP", "IV/HV", "IV30", "HV30", "LIQ", "BETA", "ERN
 # carries the strategy and the variant that won, because "SMH 480%" without
 # saying which trade earned it is not actionable.
 RANK_COLUMNS = (
-    "", "SYM", "STRUCTURE", "BIAS", "DTE", "CREDIT", "BPR~",
+    "", "SYM", "STRUCTURE", "BIAS", "DTE", "CREDIT", "BPR",
     "ROC%", "ANN%", "POP%", "SPRD%", "BE/EM",
 )
 # The drill-in: every variant considered on one name, failures included.
@@ -67,7 +67,7 @@ RANK_COLUMNS = (
 # ANN% order the rows identically — dropping both buys the width the failure
 # reason needs, and a clipped reason reads as no reason at all.
 VARIANT_COLUMNS = (
-    "", "STRUCTURE", "CREDIT", "BPR~", "ANN%", "POP%",
+    "", "STRUCTURE", "CREDIT", "BPR", "ANN%", "POP%",
     "SPRD%", "BE/EM", "WHY NOT",
 )
 # (label, metric attribute, higher-is-better) — read off the winning Structure
@@ -139,6 +139,16 @@ def _pct(value, spec: str = ".0f") -> str:
     """A rate stored as a fraction, shown as a percentage. The column headers
     already carry the % sign, so this doesn't repeat it."""
     return "—" if value is None else _fmt(value * 100, spec)
+
+
+def _bpr(value, source: str) -> str:
+    """Buying power with the source readable per row: broker figures plain,
+    formula estimates carrying the tilde the column header used to. The
+    header is `BPR` for everyone, so the row itself has to say which model
+    the number came from."""
+    if value is None:
+        return "—"
+    return _fmt(value, ",.0f") if source == "broker" else _fmt(value, ",.0f") + "~"
 
 
 class TauApp(App):
@@ -397,7 +407,7 @@ class TauApp(App):
                 str(best.strategy.bias),
                 f"{p.cycle.dte}d",
                 _fmt(best.credit, ".2f"),
-                _fmt(best.bpr, ",.0f"),
+                _bpr(best.bpr, best.bpr_source),
                 _pct(best.roc, ".1f"),
                 _pct(best.annualized_roc, ".0f"),
                 _pct(best.pop, ".0f"),
@@ -425,7 +435,7 @@ class TauApp(App):
                 "·" if s.ok else "✗",
                 s.label,
                 _fmt(s.credit, ".2f"),
-                _fmt(s.bpr, ",.0f"),
+                _bpr(s.bpr, s.bpr_source),
                 _pct(s.annualized_roc, ".0f"),
                 _pct(s.pop, ".0f"),
                 _pct(s.spread_cost, ".0f"),
@@ -480,11 +490,17 @@ class TauApp(App):
         self.render_detail()
         try:
             cycle = await self._chain_loader(candidate)
-            # Searching every strategy over the fetched cycle is in-memory
-            # arithmetic, so a chain load produces the same full proposal the
-            # rank view would — one cache, filled from either direction.
-            self._proposals[candidate.symbol] = propose_mod.propose_on(
-                candidate, cycle, self._strategies
+            proposal = propose_mod.propose_on(candidate, cycle, self._strategies)
+            session = None
+            try:
+                session = get_session()
+            except Exception:
+                pass  # no credentials — the formula estimate is the whole story
+            # The broker dry-run is an upgrade, never a requirement: without a
+            # session, or with one that cannot reach the account API, the
+            # proposal keeps its formula figures untouched.
+            self._proposals[candidate.symbol] = await propose_mod.enrich_with_broker_bpr(
+                session, proposal
             )
             self._detail_status = ""
         except Exception as exc:

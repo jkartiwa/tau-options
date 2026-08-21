@@ -17,10 +17,12 @@ payoff is piecewise-linear with kinks exactly at the strikes, which is what
 lets breakevens, extrema and profitable regions be solved analytically rather
 than sampled.
 
-Buying power stays an *estimate* from the standard naked-margin formula, not
-a broker quote — the read-only grant cannot dry-run an order. It is the
-shakiest piece of the generalization and must be checked against tastytrade's
-own figure the first time each new structure family is traded.
+Buying power stays an *estimate* from the standard naked-margin formula —
+never a broker quote. The broker's own figure comes from a separate dry-run
+calculation (`tau/broker.py`) that overrides this formula when the account
+answers; this formula is what every offline and fallen-back read uses. The
+formula is not a portfolio-margin model, so it must be checked against
+tastytrade's own figure the first time each new structure family is traded.
 """
 
 from collections.abc import Callable
