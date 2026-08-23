@@ -11,7 +11,6 @@ from rich.markup import escape
 from textual.widgets import Static
 
 from tau import catalyst as catalyst_mod
-from tau import chain as chain_mod
 from tau import history as history_mod
 from tau.build import BuiltLeg, Structure
 from tau.propose import Proposal
@@ -290,10 +289,9 @@ class DetailPane(Static):
         lines.append(risk)
         for failure in s.failures:
             lines.append(f"[yellow]{failure.reason}[/yellow]")
-        miss = s.worst_off_target
-        if miss is not None and miss > chain_mod.DELTA_TOLERANCE:
-            lines.append(
-                f"[yellow]nearest strikes miss the requested delta "
-                f"by {miss:.2f}[/yellow]"
-            )
+        # No off-target warning here any more: `build.MAX_DELTA_MISS` refuses
+        # a variant that missed its requested delta before it is ever priced,
+        # so a structure that reaches this pane holds contracts its label
+        # describes. Those that did not appear as `not built`, with the miss
+        # in their reason.
         return lines

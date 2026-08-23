@@ -13,17 +13,22 @@ A variant missing any leg's quote or greeks is invalid with its reason kept,
 never a partial credit — half a structure's credit is a wrong number, not an
 imprecise one.
 
-A strike that misses what was asked for is reported, never folded into the
-label. That was the original bug in this codebase, where a 0.38-delta leg came
-back labelled 16-delta, and a referenced wing landing on the wrong strike is
-the same failure wearing a different hat: the spread is narrower than the name
-says and the margin figure is wrong with it.
+A strike that misses what was asked for by more than its tolerance is
+refused, never folded into the label. That was the original bug in this
+codebase, where a 0.38-delta leg came back labelled 16-delta, and a referenced
+wing landing on the wrong strike is the same failure wearing a different hat:
+the spread is narrower than the name says and the margin figure is wrong with
+it. Both selectors are gated the same way — see `MAX_DELTA_MISS` and
+`MAX_REF_MISS` — so a variant that survives to be priced is one whose label
+describes the contracts it holds. Fewer rows on a thin day is the price, and
+it is the right one: a row is a comparison, and a mislabelled row is a
+comparison against a trade that was never on offer.
 """
 
 from dataclasses import dataclass, replace
 from math import inf
 
-from tau.chain import Cycle, Leg
+from tau.chain import DELTA_TOLERANCE, Cycle, Leg
 from tau.payoff import (
     DAYS_PER_YEAR,
     OptionType,
@@ -45,6 +50,22 @@ from tau.strategy import Atm, Delta, LegSpec, Moneyness, Ref, Require, Strategy
 # spread that resolves to 7 wide is a different trade, and its margin and
 # maximum loss are different numbers — better to have no row than a wrong one.
 MAX_REF_MISS = 0.25
+
+# How far a delta-selected leg may land from the delta it asked for before the
+# variant is thrown out. The same rule as MAX_REF_MISS above, applied to the
+# other selector: a variant labelled 16Δ holding a 29.5-delta contract is a
+# different trade with a different probability of profit, and the label is the
+# thing a trader reads. On a partially quoted chain this is the routine
+# outcome rather than the rare one — the far wings are exactly the contracts
+# with no resting market, so they are the ones that never quote, and the
+# nearest surviving delta can be most of the way to the money.
+#
+# Gated here rather than in each strategy's `require` tuple on purpose. It
+# holds for every strategy including one with no delta leg at all, whose
+# `worst_off_target` is None and which a constraint would therefore auto-fail;
+# and it refuses before pricing, so no downstream number is ever derived from
+# a contract the label misdescribes.
+MAX_DELTA_MISS = DELTA_TOLERANCE
 
 
 @dataclass(frozen=True)
@@ -287,7 +308,18 @@ def _resolve_leg(
     if isinstance(selector, Delta):
         target = abs(float(selector.value))
         chosen = min(legs, key=lambda leg: abs(abs(leg.delta) - target))
-        return BuiltLeg(spec, chosen, off_target=abs(abs(chosen.delta) - target))
+        miss = abs(abs(chosen.delta) - target)
+        # Rounded before comparing: the miss is a difference of two floats, so
+        # a ladder sitting exactly on the tolerance lands either side of it
+        # depending on which operands produced it. A 0.15-delta contract
+        # against a 0.20 target is exactly on it and computes to
+        # 0.05000000000000002, which would otherwise be refused.
+        if round(miss, 6) > MAX_DELTA_MISS:
+            return (
+                f"{spec.id}: asked {target * 100:g}Δ, nearest quoted is "
+                f"{abs(chosen.delta) * 100:.1f}Δ — no strike near that delta"
+            )
+        return BuiltLeg(spec, chosen, off_target=miss)
 
     if isinstance(selector, (Atm, Moneyness)):
         if cycle.underlying is None:
@@ -377,6 +409,19 @@ def build(
     return replace(structure, failures=_check(structure))
 
 
+def _asked_miss(structure: Structure) -> tuple[float, float]:
+    """How far a variant's label sits from the contracts it actually got.
+
+    Two dimensions, ordered rather than summed: a delta miss is in delta and a
+    strike miss is in dollars, and there is no exchange rate between them.
+    Delta leads because it is what the label is named for on every shipped
+    strategy, and because `MAX_REF_MISS` already holds the strike miss
+    proportional to the width that was asked for. `None` means the variant has
+    no leg selected that way, which is no miss at all rather than a large one.
+    """
+    return (structure.worst_off_target or 0.0, structure.worst_strike_miss or 0.0)
+
+
 def _contracts(structure: Structure) -> tuple:
     return tuple(
         (b.leg.occ, b.spec.side, b.spec.qty) for b in structure.legs
@@ -388,11 +433,13 @@ def evaluate(strategy: Strategy, cycle: Cycle) -> list[Structure]:
     Failures are kept, with their reasons.
 
     Variants that resolve to the same contracts are collapsed to one, keeping
-    whichever asked for closest to what it got. A coarse ladder maps several
-    requested offsets onto a single strike, and showing a 25-wide wing and a
-    20-wide wing as two rows when they are the same three contracts is the
-    label-that-lies problem again — two rows, one trade, and one of the labels
-    wrong.
+    whichever asked for closest to what it got — measured on the delta it
+    asked for as well as the strike, since a coarse ladder collapses a delta
+    ladder onto one contract exactly as readily as it collapses two widths. A
+    coarse ladder maps several requested offsets onto a single strike, and
+    showing a 25-wide wing and a 20-wide wing as two rows when they are the
+    same three contracts is the label-that-lies problem again — two rows, one
+    trade, and one of the labels wrong.
     """
     seen: dict[tuple, int] = {}
     out: list[Structure] = []
@@ -407,7 +454,7 @@ def evaluate(strategy: Strategy, cycle: Cycle) -> list[Structure]:
             out.append(structure)
             continue
         kept = out[seen[key]]
-        if (structure.worst_strike_miss or 0) < (kept.worst_strike_miss or 0):
+        if _asked_miss(structure) < _asked_miss(kept):
             out[seen[key]] = structure
     return out
 
