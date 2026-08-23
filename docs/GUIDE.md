@@ -207,9 +207,9 @@ runs for hours must not lose broker pricing for good over one rough patch.
 When the two minutes are up a single call goes out to find out — if it answers,
 pricing resumes; if not, another two minutes. While it is paused the TUI meta
 line reads `broker BPR off`, so a screen full of `~` is never ambiguous between
-"the broker stopped answering" and "these were always estimates". In the TUI the drill-in never waits on the
-broker at all: the variants appear on the estimates immediately and upgrade in
-place when it answers.
+"the broker stopped answering" and "these were always estimates". In the TUI
+the drill-in never waits on the broker at all: the variants appear on the
+estimates immediately and upgrade in place when it answers.
 
 Underneath the structure you get the rest of that strategy's ladder, with the
 winner marked. The rank view can only show one row per name, and on return
