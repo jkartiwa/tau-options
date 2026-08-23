@@ -514,3 +514,69 @@ async def test_a_positively_resolved_absence_of_a_margin_account_is_final(monkey
     assert await margin_account(None) is None
     assert len(calls) == 1
     assert not broker_mod.dry_runs_disabled()
+
+
+@pytest.mark.asyncio
+async def test_the_trip_is_logged_once_when_the_failures_land_together(caplog):
+    """The sequential loop hides this. `_claim_probe` short-circuits calls
+    four and up, so only three failures are ever recorded there — but that is
+    not the shape production has. A shortlist starts every dry-run at once, so
+    all ten are past the breaker check before the first of them fails, and the
+    counter keeps climbing after the trip. tau calls no `basicConfig`, so a
+    line per failure goes to stderr through `logging.lastResort`, straight
+    into the middle of `tau rank`'s table — ten deep per symbol, and a rank
+    pass runs six symbols wide."""
+    import asyncio
+    import logging
+
+    from tau import broker as broker_mod
+
+    class DeadAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            # yields, so every caller is past `_claim_probe` before any of
+            # them fails — which is what makes them concurrent
+            await asyncio.sleep(0)
+            raise TimeoutError("read timeout")
+
+    account = DeadAccount()
+    with caplog.at_level(logging.WARNING, logger="tau.broker"):
+        results = await asyncio.gather(
+            *(broker_bpr_for(None, account, strangle()) for _ in range(10))
+        )
+
+    assert all(value is None for value in results)
+    assert broker_mod._consecutive_failures > broker_mod.MAX_CONSECUTIVE_FAILURES
+    assert broker_mod.dry_runs_disabled()
+    assert len(caplog.records) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_probe_after_the_cooldown_says_so_again(caplog):
+    """The trip is announced on the way in, and a probe that fails after the
+    cooldown is a new way in. Silencing that would leave a session with no
+    record of anything past the first two minutes."""
+    import asyncio
+    import logging
+
+    from tau import broker as broker_mod
+
+    monkey = broker_mod.BREAKER_COOLDOWN
+    broker_mod.BREAKER_COOLDOWN = 0.05
+    try:
+        class DeadAccount:
+            async def get_order_buying_power_effect(self, session, order):
+                raise TimeoutError("read timeout")
+
+        account = DeadAccount()
+        with caplog.at_level(logging.WARNING, logger="tau.broker"):
+            for _ in range(5):
+                assert await broker_bpr_for(None, account, strangle()) is None
+            assert len(caplog.records) == 1
+
+            await asyncio.sleep(0.06)
+            assert not broker_mod.dry_runs_disabled()
+            assert await broker_bpr_for(None, account, strangle()) is None
+            assert broker_mod.dry_runs_disabled()
+            assert len(caplog.records) == 2
+    finally:
+        broker_mod.BREAKER_COOLDOWN = monkey

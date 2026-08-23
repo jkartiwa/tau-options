@@ -153,8 +153,11 @@ def dry_runs_disabled() -> bool:
     False again once the cooldown is up, at which point the next call is the
     attempt that decides whether it stays that way.
     """
-    now = time.monotonic()
-    return (_tripped_until > 0.0 and now < _tripped_until) or now < _account_retry_at
+    return _breaker_holding() or time.monotonic() < _account_retry_at
+
+
+def _breaker_holding() -> bool:
+    return _tripped_until > 0.0 and time.monotonic() < _tripped_until
 
 
 def _claim_probe() -> bool | None:
@@ -170,10 +173,25 @@ def _claim_probe() -> bool | None:
 
 
 def _record_failure() -> None:
+    """One dry-run failure, counted.
+
+    The trip is announced on the way in and only on the way in. Failures
+    arrive concurrently in production — every structure in a shortlist is
+    past the breaker check before the first of them fails, so the counter
+    crosses the threshold and then keeps climbing through the rest of the
+    batch, ten deep per symbol and six symbols wide. A line per failure from
+    there on is the same sentence sixty times, and with no `basicConfig`
+    anywhere in tau it lands on stderr in the middle of `tau rank`'s table.
+    Once the cooldown has expired the next failure is a fresh trip and says
+    so again.
+    """
     global _consecutive_failures, _tripped_until
     _consecutive_failures += 1
-    if _consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-        _tripped_until = time.monotonic() + BREAKER_COOLDOWN
+    if _consecutive_failures < MAX_CONSECUTIVE_FAILURES:
+        return
+    tripping = not _breaker_holding()
+    _tripped_until = time.monotonic() + BREAKER_COOLDOWN
+    if tripping:
         log.warning(
             "broker dry-run failed %d times in a row; buying power falls back "
             "to the formula estimate for the next %.0fs",
