@@ -580,3 +580,69 @@ async def test_a_failed_probe_after_the_cooldown_says_so_again(caplog):
             assert len(caplog.records) == 2
     finally:
         broker_mod.BREAKER_COOLDOWN = monkey
+
+
+class OnlyDryRun:
+    """An account that answers the dry-run calculation and refuses everything
+    else — `place_order`, `delete_order`, `replace_order` and any other
+    attribute the SDK exposes all raise on the way in.
+
+    The grant carries trading scope so the dry-run works, which means an
+    accidental call really would reach the live order book. This account is
+    how that stays testable rather than reviewable-by-eye.
+    """
+
+    def __init__(self):
+        self.touched: list[str] = []
+
+    async def get_order_buying_power_effect(self, session, order):
+        self.touched.append("get_order_buying_power_effect")
+        return SimpleNamespace(isolated_order_margin_requirement=Decimal("-3651.00"))
+
+    def __getattr__(self, name):
+        raise AssertionError(
+            f"tau reached for Account.{name}; only the dry-run calculation "
+            "is allowed on this token"
+        )
+
+
+@pytest.mark.asyncio
+async def test_pricing_a_structure_touches_only_the_dry_run_calculation():
+    account = OnlyDryRun()
+    assert await broker_bpr_for(None, account, strangle()) == pytest.approx(3651.0)
+    assert account.touched == ["get_order_buying_power_effect"]
+
+
+@pytest.mark.asyncio
+async def test_a_whole_proposal_is_priced_without_touching_the_order_book(monkeypatch):
+    """The pipeline level: every structure in a proposal's shortlist gets a
+    broker figure, and the account never sees anything but the calculation."""
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+    from tau.screen import Candidate
+
+    cy = strangle().cycle
+    strategy = Strategy(
+        name="t-strangle",
+        bias=Bias.NEUTRAL,
+        legs=[
+            LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
+            LegSpec("short_call", type=C, side=SHORT, strike=Delta(0.20)),
+        ],
+    )
+    candidate = Candidate(
+        symbol="TEST", ivr=None, ivp=None, iv30=None, hv30=None,
+        liquidity=None, beta=None, earnings_date=None,
+    )
+    proposal = propose_mod.propose_on(candidate, cy, [strategy])
+    account = OnlyDryRun()
+
+    async def only_dry_run(session):
+        return account
+
+    monkeypatch.setattr(broker_mod, "margin_account", only_dry_run)
+
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), proposal)
+    priced = [s for s in enriched.structures if s.bpr_source == "broker"]
+    assert priced and all(s.bpr == pytest.approx(3651.0) for s in priced)
+    assert set(account.touched) == {"get_order_buying_power_effect"}
