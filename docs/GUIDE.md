@@ -307,10 +307,12 @@ S is spot and N is the standard normal CDF. σ(K, s) is the implied volatility
 quoted on side s of the chain at price K: the put side for the lower breakeven
 a, the call side for the upper breakeven b. It is linear in strike between the
 two bracketing quoted strikes and flat outside the quoted range, because the
-credit pushes a breakeven off the strike grid almost by construction. When that
-side carries no IV at that boundary, that boundary alone falls back to the
-chain's at-the-money implied volatility — a partially skewed estimate beats
-none. The intervals come from the payoff function, so one, two or four
+credit pushes a breakeven off the strike grid almost by construction. That
+boundary alone falls back to the chain's at-the-money implied volatility when,
+and only when, that side of the chain carries no usable IV at any strike — a
+partially skewed estimate beats none. A gap in the quotes around a breakeven is
+interpolated or flat-extrapolated across instead, never escalated to the ATM
+read. The intervals come from the payoff function, so one, two or four
 breakevens are handled the same way.
 
 Be clear about what that is. Reading a lower boundary off one lognormal and the

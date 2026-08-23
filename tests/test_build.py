@@ -393,9 +393,11 @@ def test_put_over_call_skew_pulls_pop_below_the_atm_only_number():
     assert atm_only == pytest.approx(0.7632, abs=5e-4)
 
 
-def test_pop_survives_a_chain_with_no_leg_level_ivs():
-    """Degrade, never fail: strip every leg's own IV but keep an ATM read,
-    and pop must still come back on the ATM number rather than None."""
+def test_pop_falls_back_to_atm_when_only_the_atm_strike_carries_iv():
+    """Degrade, never fail: strip every leg's own IV except the 100 strike,
+    so each side quotes a single point and flat-extrapolates it out to both
+    breakevens. That point is the ATM vol, so pop must still come back on the
+    ATM number rather than None."""
     legs = tuple(
         replace(built, iv=0.30) if built.strike == 100.0 else replace(built, iv=None)
         for built in ladder()
