@@ -181,3 +181,58 @@ async def test_margin_account_is_none_when_there_is_no_margin_account(monkeypatc
 
     monkeypatch.setattr(broker_mod.Account, "get", fake_get)
     assert await margin_account(None) is None
+
+
+def half_cent_put():
+    """A single short put on a 2.115/2.135 market. A two-cent-wide quote puts
+    the mid on a half cent, which is the ordinary case, not an exotic one."""
+    cy = Cycle(
+        symbol="TEST",
+        expiration=date(2026, 10, 16),
+        dte=45,
+        underlying=100.0,
+        legs=(leg(90, P, -0.20, 2.125),),
+        fetched_at=datetime.now(UTC),
+    )
+    strategy = Strategy(
+        name="t-csp",
+        bias=Bias.NEUTRAL,
+        legs=[LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20))],
+    )
+    label, specs = strategy.variants()[0]
+    structure = build(strategy, label, specs, cy)
+    assert structure.complete
+    return structure
+
+
+def test_order_price_is_rounded_to_the_broker_tick():
+    """A sub-penny limit price is rejected by the broker with no
+    buying-power body, which this module can only read as "no figure" — so
+    the price that goes out has to sit on a whole cent."""
+    structure = half_cent_put()
+    assert structure.net_premium == pytest.approx(2.125)
+    order = order_for(structure)
+    assert order.price == Decimal("2.13")
+    assert -order.price.as_tuple().exponent <= 2
+
+
+@pytest.mark.asyncio
+async def test_account_resolution_happens_once_under_concurrency(monkeypatch):
+    """Six pipelines start at once at the top of a scan. They must produce
+    one account-list request between them, not six."""
+    import asyncio
+
+    from tau import broker as broker_mod
+
+    margin = SimpleNamespace(is_closed=False, margin_or_cash="Margin")
+    calls = []
+
+    async def fake_get(session):
+        calls.append(session)
+        await asyncio.sleep(0.01)
+        return [margin]
+
+    monkeypatch.setattr(broker_mod.Account, "get", fake_get)
+    resolved = await asyncio.gather(*(margin_account(None) for _ in range(6)))
+    assert calls == [None]
+    assert all(a is margin for a in resolved)

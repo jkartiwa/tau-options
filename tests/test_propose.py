@@ -536,3 +536,51 @@ async def test_enrichment_with_no_session_is_a_noop():
 
     p = proposal()
     assert await propose_mod.enrich_with_broker_bpr(None, p) is p
+
+
+@pytest.mark.asyncio
+async def test_dry_runs_in_flight_are_capped_across_concurrent_batches(monkeypatch):
+    """A rank pass enriches several symbols at once. The cap on dry-run
+    POSTs in flight has to hold across those batches, not reset per batch —
+    otherwise the burst is a multiple of the cap and the account API
+    rate-limits it back down to the formula estimate."""
+    import asyncio
+
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    in_flight = 0
+    peak = 0
+
+    class FakeEffect:
+        isolated_order_margin_requirement = 2500.0
+
+    class FakeAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            try:
+                await asyncio.sleep(0.01)
+                return FakeEffect()
+            finally:
+                in_flight -= 1
+
+    account = FakeAccount()
+
+    async def fake_margin(session):
+        return account
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+
+    batches = [proposal(symbol=f"T{i}") for i in range(3)]
+    assert all(
+        len([s for s in p.variants() if s.complete]) > broker_mod.MAX_CONCURRENT
+        for p in batches
+    )
+    enriched = await asyncio.gather(
+        *(propose_mod.enrich_with_broker_bpr(object(), p) for p in batches)
+    )
+    assert peak <= broker_mod.MAX_CONCURRENT
+    # and the figures still landed
+    assert all(e.best.bpr_source == "broker" for e in enriched)

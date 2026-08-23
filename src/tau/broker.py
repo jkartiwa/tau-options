@@ -16,7 +16,9 @@ exception, missing env — silently lands back on the formula estimate. Nothing
 in tau crashes, stalls, or changes shape because the broker did not answer.
 """
 
-from decimal import Decimal
+import asyncio
+from decimal import ROUND_HALF_UP, Decimal
+from weakref import WeakKeyDictionary
 
 from tastytrade.account import Account
 from tastytrade.order import (
@@ -30,10 +32,47 @@ from tastytrade.order import (
 from tau.build import Structure
 from tau.payoff import Side
 
-# Dry-run POSTs in flight per enrichment batch. They are cheap calculation
-# calls, but the account API rate-limits, and the failure mode is a graceful
-# fallback anyway — the cap just keeps a rank pass from landing as a burst.
+# Dry-run POSTs in flight, counted across everything running on one event
+# loop rather than per batch: a rank pass prices six symbols concurrently, so
+# a per-batch cap would multiply out to six times this number. They are cheap
+# calculation calls, but the account API rate-limits, and the failure mode is
+# a graceful fallback anyway — the cap keeps a rank pass from landing as a
+# burst.
 MAX_CONCURRENT = 4
+
+# The smallest price increment the broker accepts on a limit order. The net
+# premium is a sum of `(bid + ask) / 2` floats, so half-cent mids and binary
+# noise are both routine; an order priced at 1.0749999999999997 comes back
+# rejected with no buying-power body, which reads here as "no broker figure"
+# for no reason the caller could ever see.
+TICK = Decimal("0.01")
+
+
+class _LoopGate:
+    """The asyncio primitives shared by everything running on one event loop.
+
+    Both belong to the loop that awaits them, so neither can be a module-level
+    singleton — a lock created under one loop and awaited under another is an
+    error. Keyed weakly by running loop they are process-wide in practice (one
+    loop per run) and still correct across tests.
+    """
+
+    def __init__(self) -> None:
+        self.dry_run = asyncio.Semaphore(MAX_CONCURRENT)
+        self.resolving = asyncio.Lock()
+
+
+_gates: WeakKeyDictionary = WeakKeyDictionary()
+
+
+def _gate() -> _LoopGate:
+    loop = asyncio.get_running_loop()
+    gate = _gates.get(loop)
+    if gate is None:
+        gate = _LoopGate()
+        _gates[loop] = gate
+    return gate
+
 
 # False = not resolved yet, None = resolved to no usable account. The account
 # list and the token are fixed for the lifetime of the process, so a failed
@@ -53,25 +92,29 @@ async def margin_account(session) -> Account | None:
     global _margin_account
     if _margin_account is not False:
         return _margin_account or None
-    try:
-        accounts = await Account.get(session)
-    except Exception:
-        _margin_account = None
-        return None
-    _margin_account = next(
-        (a for a in accounts if not a.is_closed and a.margin_or_cash == "Margin"),
-        None,
-    )
-    return _margin_account
+    async with _gate().resolving:
+        if _margin_account is not False:
+            return _margin_account or None
+        try:
+            accounts = await Account.get(session)
+        except Exception:
+            _margin_account = None
+            return None
+        _margin_account = next(
+            (a for a in accounts if not a.is_closed and a.margin_or_cash == "Margin"),
+            None,
+        )
+        return _margin_account
 
 
 def order_for(structure: Structure) -> LimitOrder | None:
     """The dry-run order whose buying-power effect answers for `structure`.
 
     `None` when there is no priced net premium (nothing a broker could price).
-    The limit price is the structure's net premium per share — positive for a
-    credit, negative for a debit — so the request is valid and the response
-    clean. The endpoint is a calculation preview either way.
+    The limit price is the structure's net premium per share, rounded to the
+    broker's tick — positive for a credit, negative for a debit — so the
+    request is valid and the response clean. The endpoint is a calculation
+    preview either way.
     """
     premium = structure.net_premium
     if premium is None or not structure.legs:
@@ -92,7 +135,7 @@ def order_for(structure: Structure) -> LimitOrder | None:
     return LimitOrder(
         time_in_force=OrderTimeInForce.DAY,
         legs=legs,
-        price=Decimal(str(premium)),
+        price=Decimal(str(premium)).quantize(TICK, rounding=ROUND_HALF_UP),
     )
 
 
@@ -110,7 +153,8 @@ async def broker_bpr_for(session, account, structure: Structure) -> float | None
     if order is None:
         return None
     try:
-        effect = await account.get_order_buying_power_effect(session, order)
+        async with _gate().dry_run:
+            effect = await account.get_order_buying_power_effect(session, order)
     except Exception:
         return None
     value = effect.isolated_order_margin_requirement

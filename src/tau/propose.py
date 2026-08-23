@@ -318,12 +318,13 @@ async def enrich_with_broker_bpr(
     shortlist = [s for s in proposal.variants() if s.complete][:top_n]
     if not shortlist:
         return proposal
-    sem = asyncio.Semaphore(broker_mod.MAX_CONCURRENT)
 
     async def one(structure: Structure) -> Structure:
+        # `broker_bpr_for` gates itself: a rank pass runs several of these
+        # batches at once, so the cap on dry-run POSTs in flight has to be
+        # shared across them rather than reset per batch.
         try:
-            async with sem:
-                value = await broker_mod.broker_bpr_for(session, account, structure)
+            value = await broker_mod.broker_bpr_for(session, account, structure)
         except Exception:
             return structure
         if value is None:
