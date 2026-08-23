@@ -322,12 +322,23 @@ async def enrich_with_broker_bpr(
     — silently leaves the proposal as it was. The pipeline never changes
     shape because the broker did not answer.
 
-    The whole pull is bounded by `budget` seconds. Running out is not an
-    error: the figures that arrived are kept, the rest stay on the formula,
-    and the caller is never told the difference beyond the source label each
-    row already carries.
+    The pull is all or nothing. A partial one would leave the winner chosen
+    from whichever POSTs happened to return — the shortlist's seventh-best
+    structure presented as the trade to do, with nothing saying the six above
+    it were simply never priced. Every candidate priced, or the proposal
+    stays on the formula across the board; both are one margin model, and
+    only the first is independent of network timing.
+
+    The whole pull is bounded by `budget` seconds, and running out is not an
+    error — it is one of the ways the pull comes back incomplete.
+
+    Only tradable structures are priced. A variant that failed a constraint
+    is not going to be traded, so a live call against a rate-limited endpoint
+    buys nothing for it.
     """
-    if session is None or not proposal.structures:
+    if session is None or proposal.error is not None or not proposal.structures:
+        return proposal
+    if broker_mod.dry_runs_disabled():
         return proposal
     try:
         account = await broker_mod.margin_account(session)
@@ -335,7 +346,7 @@ async def enrich_with_broker_bpr(
         return proposal
     if account is None:
         return proposal
-    shortlist = [s for s in proposal.variants() if s.complete][:top_n]
+    shortlist = [s for s in proposal.variants() if s.ok][:top_n]
     if not shortlist:
         return proposal
 
@@ -344,9 +355,7 @@ async def enrich_with_broker_bpr(
     async def one(structure: Structure) -> None:
         # `broker_bpr_for` gates itself: a rank pass runs several of these
         # batches at once, so the cap on dry-run POSTs in flight has to be
-        # shared across them rather than reset per batch. Each figure lands
-        # in `priced` as it arrives, so a deadline that cuts the pull short
-        # keeps everything that answered before it.
+        # shared across them rather than reset per batch.
         try:
             value = await broker_mod.broker_bpr_for(session, account, structure)
         except Exception:
@@ -363,7 +372,7 @@ async def enrich_with_broker_bpr(
         for task in tasks:
             if not task.done():
                 task.cancel()
-    if not priced:
+    if len(priced) != len(shortlist):
         return proposal
     structures = tuple(priced.get(id(s), s) for s in proposal.structures)
     return replace(proposal, structures=structures)

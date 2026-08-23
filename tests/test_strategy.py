@@ -169,3 +169,31 @@ def test_legs_are_frozen_into_tuples_for_a_stable_identity():
     strategy = Strategy(name="s", bias=Bias.NEUTRAL, legs=[spec("a")])
     assert isinstance(strategy.legs, tuple)
     assert isinstance(strategy.require, tuple)
+
+
+def test_a_constraint_cannot_be_built_on_a_buying_power_metric():
+    """`ok` is settled when the structure is built, off the formula estimate;
+    the broker's figure arrives afterwards and re-derives `bpr` and `roc`
+    without re-running the constraints. A rule on one of those would judge a
+    row on a number it no longer displays."""
+    for metric in ("bpr", "roc", "annualized_roc"):
+        with pytest.raises(ValueError, match="cannot be required"):
+            Strategy(
+                name="t", bias=Bias.NEUTRAL,
+                legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
+                require=[Require(metric, ">=", 0.05)],
+            )
+    # naming one as the comparison value is the same trap
+    with pytest.raises(ValueError, match="cannot be required"):
+        Strategy(
+            name="t", bias=Bias.NEUTRAL,
+            legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
+            require=[Require("credit", ">=", "bpr")],
+        )
+    # ranking on one is fine: nothing has been decided yet when it is read
+    ranked = Strategy(
+        name="t", bias=Bias.NEUTRAL,
+        legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
+        rank="annualized_roc",
+    )
+    assert ranked.rank == "annualized_roc"

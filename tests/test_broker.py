@@ -236,3 +236,103 @@ async def test_account_resolution_happens_once_under_concurrency(monkeypatch):
     resolved = await asyncio.gather(*(margin_account(None) for _ in range(6)))
     assert calls == [None]
     assert all(a is margin for a in resolved)
+
+
+def test_a_debit_signed_margin_requirement_is_read_as_the_requirement():
+    """The API sends a magnitude beside an `-effect` field and the SDK folds
+    the two together, rewriting the value to `-abs(value)` when the effect is
+    `Debit`. A margin requirement is a debit, so the ordinary successful
+    response arrives negative — reading that as garbage turns the whole
+    feature off with nothing to show for it."""
+    from tau.broker import margin_requirement
+
+    sdk_signed = SimpleNamespace(
+        isolated_order_margin_requirement=Decimal("-3651.00")
+    )
+    assert margin_requirement(sdk_signed) == pytest.approx(3651.0)
+
+    spelled_out = SimpleNamespace(
+        isolated_order_margin_requirement=Decimal("3651.00"),
+        isolated_order_margin_requirement_effect="Debit",
+    )
+    assert margin_requirement(spelled_out) == pytest.approx(3651.0)
+
+
+def test_a_missing_zero_or_unusable_margin_requirement_is_no_figure():
+    from tau.broker import margin_requirement
+
+    assert margin_requirement(SimpleNamespace()) is None
+    assert margin_requirement(
+        SimpleNamespace(isolated_order_margin_requirement=None)
+    ) is None
+    assert margin_requirement(
+        SimpleNamespace(isolated_order_margin_requirement=Decimal("0"))
+    ) is None
+    assert margin_requirement(
+        SimpleNamespace(isolated_order_margin_requirement="not a number")
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_a_debit_signed_dry_run_produces_a_broker_figure():
+    """End to end through the module's own entry point: the negative figure
+    the SDK hands back is what a live dry-run looks like."""
+    class FakeEffect:
+        isolated_order_margin_requirement = Decimal("-3651.00")
+
+    class FakeAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            return FakeEffect()
+
+    value = await broker_bpr_for(None, FakeAccount(), strangle())
+    assert value == pytest.approx(3651.0)
+
+
+@pytest.mark.asyncio
+async def test_the_breaker_stops_calling_after_consecutive_failures(caplog):
+    """Three failures in a row is a broker that is not answering. Every call
+    after that is skipped, and the reason is said once."""
+    import logging
+
+    from tau import broker as broker_mod
+
+    attempts = []
+
+    class DeadAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            attempts.append(order)
+            raise TimeoutError("read timeout")
+
+    account = DeadAccount()
+    with caplog.at_level(logging.WARNING, logger="tau.broker"):
+        for _ in range(10):
+            assert await broker_bpr_for(None, account, strangle()) is None
+
+    assert len(attempts) == broker_mod.MAX_CONSECUTIVE_FAILURES
+    assert broker_mod.dry_runs_disabled()
+    assert len(caplog.records) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_success_between_failures_keeps_the_breaker_closed():
+    """The breaker counts *consecutive* failures: an API that answers most of
+    the time is working, not broken."""
+    from tau import broker as broker_mod
+
+    class FakeEffect:
+        isolated_order_margin_requirement = Decimal("-3651.00")
+
+    outcomes = iter([None, None, FakeEffect(), None, None])
+
+    class FlakyAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            result = next(outcomes)
+            if result is None:
+                raise RuntimeError("connection reset")
+            return result
+
+    values = [
+        await broker_bpr_for(None, FlakyAccount(), strangle()) for _ in range(5)
+    ]
+    assert values == [None, None, pytest.approx(3651.0), None, None]
+    assert not broker_mod.dry_runs_disabled()

@@ -30,9 +30,9 @@ from typing import Literal, get_args
 
 from tau.payoff import OptionType, Side
 
-# Every metric a constraint may name, and the only names `rank` accepts. This
-# is a Literal rather than a plain str so a typo is a type error at author
-# time, which is the main thing a config format could not have given us.
+# Every metric the engine exposes, and the only names `rank` accepts. This is
+# a Literal rather than a plain str so a typo is a type error at author time,
+# which is the main thing a config format could not have given us.
 Metric = Literal[
     "credit",
     "net_premium",
@@ -52,6 +52,14 @@ Metric = Literal[
     "worst_off_target",
     "leg_count",
 ]
+
+# Metrics a `Require` may not name. They are computed from the buying-power
+# figure, and that figure can be replaced after the constraints have already
+# been decided: `build` settles `ok` and `failures` off the formula estimate,
+# and the broker's dry-run number arrives later. A rule on one of these would
+# judge a row on a figure it no longer displays. See
+# `build.MODEL_SENSITIVE_METRICS`, the same set for the same reason.
+UNCONSTRAINABLE_METRICS = frozenset({"bpr", "roc", "annualized_roc"})
 
 METRICS: frozenset[str] = frozenset(get_args(Metric))
 
@@ -252,6 +260,16 @@ class Strategy:
                 raise ValueError(f"{where}: unknown operator {rule.op!r}")
             if isinstance(rule.value, str) and rule.value not in METRICS:
                 raise ValueError(f"{where}: unknown metric {rule.value!r}")
+            for named in (rule.metric, rule.value):
+                if named in UNCONSTRAINABLE_METRICS:
+                    raise ValueError(
+                        f"{where}: {named!r} cannot be required. Constraints "
+                        "are decided when the structure is built, off the "
+                        "formula buying-power estimate; the broker's dry-run "
+                        "figure arrives afterwards and would leave the row "
+                        "judged on a number it no longer displays. Rank on "
+                        "it instead."
+                    )
         if self.variant_count > MAX_VARIANTS:
             raise ValueError(
                 f"{where}: {self.variant_count} variants exceeds the "

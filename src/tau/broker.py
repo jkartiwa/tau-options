@@ -17,6 +17,7 @@ in tau crashes, stalls, or changes shape because the broker did not answer.
 """
 
 import asyncio
+import logging
 from decimal import ROUND_HALF_UP, Decimal
 from weakref import WeakKeyDictionary
 
@@ -32,6 +33,8 @@ from tastytrade.order import (
 from tau.build import Structure
 from tau.payoff import Side
 
+log = logging.getLogger(__name__)
+
 # Dry-run POSTs in flight, counted across everything running on one event
 # loop rather than per batch: a rank pass prices six symbols concurrently, so
 # a per-batch cap would multiply out to six times this number. They are cheap
@@ -46,6 +49,14 @@ MAX_CONCURRENT = 4
 # rejected with no buying-power body, which reads here as "no broker figure"
 # for no reason the caller could ever see.
 TICK = Decimal("0.01")
+
+# Consecutive dry-run failures that stop the process trying again. The
+# account list resolving fine while every POST times out is the case the
+# per-symbol deadline cannot bound: nothing caches that outcome, so each
+# symbol pays the full read-timeout wait again and the stall grows with
+# `--top`. Three in a row is a broker that is not answering, not a blip, and
+# the formula estimate covers every symbol after it.
+MAX_CONSECUTIVE_FAILURES = 3
 
 
 class _LoopGate:
@@ -80,6 +91,39 @@ def _gate() -> _LoopGate:
 # re-calling the API on every batch would just stack 403s. One resolution per
 # process, success or failure; the formula estimate covers the gap.
 _margin_account: Account | None | bool = False
+
+# Consecutive dry-run failures so far, and whether the breaker has tripped.
+# Process-wide for the same reason the account is: the condition being
+# tracked — an account API that will not answer this token — does not vary by
+# symbol, so learning it once is the whole point.
+_consecutive_failures = 0
+_tripped = False
+
+
+def dry_runs_disabled() -> bool:
+    """Whether the circuit breaker has given up on the account API.
+
+    Callers skip the pull entirely rather than queue POSTs that will not be
+    made; `broker_bpr_for` enforces the same thing for anyone who does not.
+    """
+    return _tripped
+
+
+def _record_failure() -> None:
+    global _consecutive_failures, _tripped
+    _consecutive_failures += 1
+    if _consecutive_failures >= MAX_CONSECUTIVE_FAILURES and not _tripped:
+        _tripped = True
+        log.warning(
+            "broker dry-run failed %d times in a row; buying power falls back "
+            "to the formula estimate for the rest of this run",
+            _consecutive_failures,
+        )
+
+
+def _record_success() -> None:
+    global _consecutive_failures
+    _consecutive_failures = 0
 
 
 async def margin_account(session) -> Account | None:
@@ -139,6 +183,34 @@ def order_for(structure: Structure) -> LimitOrder | None:
     )
 
 
+def margin_requirement(effect) -> float | None:
+    """The isolated margin requirement as a positive dollar figure, or `None`
+    when the response carries no usable one.
+
+    The API does not send negative numbers; it sends a magnitude beside an
+    `-effect` field naming the direction, and the SDK folds the two together
+    — `set_sign_for` rewrites the value to `-abs(value)` when
+    `isolated-order-margin-requirement-effect` is `Debit`. A margin
+    requirement is a debit against buying power, so the ordinary successful
+    response arrives here *negative*, and reading that as garbage would
+    silently turn the whole feature off. The sign is the effect field, after
+    the SDK is done with it: negative means Debit and its magnitude is the
+    requirement. A credit-signed or zero requirement is not a margin figure
+    this can use, and neither is a value that will not compare.
+    """
+    value = getattr(effect, "isolated_order_margin_requirement", None)
+    if value is None:
+        return None
+    direction = getattr(effect, "isolated_order_margin_requirement_effect", None)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if str(direction) == "Debit" or number < 0:
+        number = abs(number)
+    return number if number > 0 else None
+
+
 async def broker_bpr_for(session, account, structure: Structure) -> float | None:
     """The broker's buying-power figure for one structure, or `None` on any
     failure.
@@ -149,6 +221,8 @@ async def broker_bpr_for(session, account, structure: Structure) -> float | None
     premium flow. The dry-run is a calculation; nothing here ever places an
     order.
     """
+    if _tripped:
+        return None
     order = order_for(structure)
     if order is None:
         return None
@@ -156,8 +230,7 @@ async def broker_bpr_for(session, account, structure: Structure) -> float | None
         async with _gate().dry_run:
             effect = await account.get_order_buying_power_effect(session, order)
     except Exception:
+        _record_failure()
         return None
-    value = effect.isolated_order_margin_requirement
-    if value is None or value < 0:
-        return None
-    return float(value)
+    _record_success()
+    return margin_requirement(effect)

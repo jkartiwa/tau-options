@@ -489,6 +489,13 @@ def evaluate_all(strategies, cycle: Cycle) -> list[Structure]:
 # it on AAPL, which is enough to hand the win to whichever structure happened
 # to be measured on the more generous model. Metrics that never read `bpr`
 # are unaffected and compare across sources as they always did.
+#
+# These are also the metrics a `Require` may not name. `ok` and `failures`
+# are decided here, at build time, off the formula estimate; the broker
+# figure is attached afterwards and re-derives `bpr`/`roc` without re-running
+# the constraints. A rule on one of these would be enforced against a number
+# the row no longer shows — a green row whose displayed ROC is below its own
+# floor. `Strategy._validate` refuses them for that reason.
 MODEL_SENSITIVE_METRICS = frozenset({"bpr", "roc", "annualized_roc"})
 
 

@@ -175,12 +175,21 @@ models at once. The two are not comparable — the same trade prices 30% apart
 between them — so the winning structure is picked within one model: whenever
 any candidate has a broker figure, only broker-priced candidates compete, and
 a name with none of them ranks exactly as it did before the dry-run existed.
-The whole broker pull is also bounded to 30 seconds per name. An account API
-that hangs rather than fails cannot stall a rank pass: whatever answered in
-time keeps its broker figure and the rest stay on the estimate, with the `~`
-saying so. In the TUI the drill-in never waits on it at all — the variants
-appear on the estimates immediately and upgrade in place when the broker
-answers.
+The pull is all or nothing for that reason. Which POSTs come back first is
+network timing, so a shortlist priced in part would hand the headline pick to
+whichever ones did — the seventh-best structure presented as the trade to do,
+with nothing saying the six above it were never priced. Either every candidate
+gets a broker figure or the name stays on the formula across the board. Only
+tradable structures are priced at all; a variant that failed a constraint keeps
+its estimate rather than costing a live call.
+
+Two bounds keep an unavailable broker from stalling a pass. The pull gets 30
+seconds per name, and after three dry-run failures in a row tau stops asking
+for the rest of the run and says so once — the case that needs it is an account
+API that hangs rather than fails, where nothing would otherwise be cached and
+every name would pay the wait again. In the TUI the drill-in never waits on the
+broker at all: the variants appear on the estimates immediately and upgrade in
+place when it answers.
 
 Underneath the structure you get the rest of that strategy's ladder, with the
 winner marked. The rank view can only show one row per name, and on return
@@ -287,6 +296,12 @@ Available metrics: `credit`, `net_premium`, `max_profit`, `max_loss`,
 `worst_loss_up`, `worst_loss_down`, `bpr`, `roc`, `annualized_roc`, `pop`,
 `spread_cost`, `dte`, `breakeven_low`, `breakeven_high`, `be_over_em`,
 `worst_off_target`, `leg_count`.
+
+`bpr`, `roc` and `annualized_roc` can be ranked on but not required, and a
+strategy that tries fails at load. Constraints are settled when the structure
+is built, off the formula estimate; the broker's dry-run figure arrives after
+that and replaces the buying-power number the row displays. A floor decided on
+one model and shown against the other is a green row failing its own rule.
 
 Constrain the pricing outcome rather than the shape where you can. A jade
 lizard is defined by its credit covering the call spread's width, which is
