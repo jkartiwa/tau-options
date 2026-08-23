@@ -6,10 +6,12 @@ requires-python = ">=3.12"
 dependencies = [
     "tastytrade>=13.2",
     "python-dotenv>=1.0",
+    "rich>=13",
+    "textual>=0.80",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 # The catalyst read is optional: without it the headlines still show.
 catalyst = ["anthropic>=0.117"]
 
