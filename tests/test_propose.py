@@ -9,6 +9,7 @@ from tau.payoff import OptionType, Side
 from tau.propose import (
     Proposal,
     naked_side_requirement,
+    ordering_value,
     pop_between,
     propose_on,
     rank_proposals,
@@ -818,3 +819,55 @@ async def test_enrichment_stops_after_the_broker_circuit_breaker_trips(monkeypat
         later = await propose_mod.enrich_with_broker_bpr(object(), proposal())
         assert all(s.bpr_source == "estimate" for s in later.structures)
     assert len(attempts) == spent  # no symbol after the trip pays the wait again
+
+
+def _priced(p, factor):
+    """`p` with every structure carrying a broker figure `factor` times its
+    formula estimate — the broker ran below the formula on one of the
+    author's measured names and above it on the other."""
+    from dataclasses import replace
+
+    return replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr * factor) if s.bpr else s
+            for s in p.structures
+        ),
+    )
+
+
+def test_a_whole_broker_priced_pass_ranks_on_the_broker_figures():
+    a = _priced(proposal("AAA"), 0.5)   # broker margin below the formula
+    b = _priced(proposal("BBB"), 2.0)   # broker margin above it
+    assert a.best.bpr_source == b.best.bpr_source == "broker"
+    assert a.annualized_roc > b.annualized_roc
+
+    assert [p.symbol for p in rank_proposals([b, a])] == ["AAA", "BBB"]
+
+
+def test_a_mixed_pass_ranks_every_symbol_on_the_formula():
+    """One timed-out POST flips a symbol back to the formula. Ordering the
+    rest against it would put a name on top for having been measured by the
+    more generous model, so the whole list drops to the yardstick every
+    symbol has."""
+    formula = proposal("AAA")
+    # the same name, broker-priced at half the formula margin: its return
+    # doubles and it would lead a mixed ranking on that alone
+    flattered = _priced(proposal("BBB"), 0.5)
+    assert flattered.annualized_roc > formula.annualized_roc
+
+    mixed = rank_proposals([flattered, formula])
+    assert [p.symbol for p in mixed] == ["AAA", "BBB"]
+    # the figures themselves are untouched: this governs the sort key only
+    assert flattered.best.bpr_source == "broker"
+    assert flattered.best.bpr == pytest.approx(flattered.best.on_formula.bpr * 0.5)
+
+
+def test_ordering_ignores_the_broker_when_the_metric_does():
+    """The rule is about margin models. A metric that never reads buying
+    power sorts the same either way."""
+    a = _priced(proposal("AAA"), 0.5)
+    b = proposal("BBB")
+    for on_broker in (True, False):
+        assert ordering_value(a, "credit", on_broker) == pytest.approx(a.credit)
+        assert ordering_value(b, "credit", on_broker) == pytest.approx(b.credit)

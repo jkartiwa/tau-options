@@ -435,11 +435,42 @@ async def price_many(
     )
 
 
+def broker_priced_pass(proposals) -> bool:
+    """Whether every priced proposal in a pass carries a broker figure.
+
+    The question an ordering has to ask before it picks a yardstick. Answered
+    across the whole pass rather than per row, because the ordering is what
+    the reader compares and one row measured on the other model corrupts the
+    comparison rather than just itself.
+    """
+    priced = [p for p in proposals if p.best is not None]
+    return bool(priced) and all(p.best.bpr_source == "broker" for p in priced)
+
+
+def ordering_value(proposal: Proposal, key: str, on_broker: bool) -> float | None:
+    """The figure `proposal` sorts on, given what the rest of its pass got.
+
+    A whole pass priced by the broker orders on the broker's numbers. The
+    moment one symbol is missing them the whole list drops to the formula —
+    the broker figure ran 8% below the formula on AAPL and 30% above it on
+    MU, so a mixed sort puts a name on top for having been measured by the
+    more generous model. Comparability across the list beats precision on
+    the rows that happened to answer, and the rows still display and label
+    their own figure either way.
+    """
+    best = proposal.best
+    if best is None:
+        return None
+    return best.metric(key) if on_broker else best.on_formula.metric(key)
+
+
 def rank_proposals(proposals: list[Proposal], key: str = CROSS_STRATEGY_METRIC):
     """Priced proposals first, ordered by the chosen metric descending;
     unpriced ones keep their place at the back rather than vanishing."""
+    on_broker = broker_priced_pass(proposals)
+
     def sort_key(p: Proposal):
-        value = getattr(p, key, None)
+        value = ordering_value(p, key, on_broker)
         return (not p.ok, -(value or 0), p.symbol)
 
     return sorted(proposals, key=sort_key)

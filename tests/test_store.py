@@ -171,11 +171,13 @@ def test_a_log_written_before_the_column_existed_still_opens_and_appends():
 
     path = store.db_path()
     legacy_columns = [c for c in store._PICK_COLUMNS if c != "bpr_source"]
+    legacy_schema = store._SCHEMA.replace("    bpr_source TEXT,\n", "")
+    # without this the fixture would build a table that already has the
+    # column, and the test would pass while exercising no migration at all
+    assert "bpr_source" not in legacy_schema
     conn = sqlite3.connect(path)
     with conn:
-        conn.executescript(
-            store._SCHEMA.replace("    bpr_source TEXT,\n", "")
-        )
+        conn.executescript(legacy_schema)
         conn.execute("INSERT INTO scan (ts, params_json) VALUES ('t', '{}')")
         conn.execute(
             f"INSERT INTO pick ({', '.join(legacy_columns)}) "

@@ -175,6 +175,12 @@ models at once. The two are not comparable — the same trade prices 30% apart
 between them — so the winning structure is picked within one model: whenever
 any candidate has a broker figure, only broker-priced candidates compete, and
 a name with none of them ranks exactly as it did before the dry-run existed.
+The same rule governs the ordering one level up. `tau rank` sorts symbols
+against each other on the broker figures only when every name in the pass got
+them; one name missing them drops the whole list back to the formula, which is
+the yardstick every name always has. Each row still shows and labels its own
+figure — this decides the sort key, not the display.
+
 The pull is all or nothing for that reason. Which POSTs come back first is
 network timing, so a shortlist priced in part would hand the headline pick to
 whichever ones did — the seventh-best structure presented as the trade to do,

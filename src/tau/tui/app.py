@@ -316,6 +316,9 @@ class TauApp(App):
         than vanishing — the rank view is the same shortlist, just ordered
         differently once numbers exist."""
         label, attr, desc = RANK_SORTS[self.rank_sort_index]
+        on_broker = propose_mod.broker_priced_pass(
+            p for c in self._passing if (p := self.proposal_for(c.symbol))
+        )
 
         def keyfn(c: Candidate):
             if attr == "symbol":
@@ -323,12 +326,26 @@ class TauApp(App):
             p = self.proposal_for(c.symbol)
             if p is None or not p.ok:
                 return (True, 0.0)
-            value = getattr(p, attr)
+            value = propose_mod.ordering_value(p, attr, on_broker)
             if value is None:
                 return (True, 0.0)
             return (False, -value if desc else value)
 
         self._rank_rows = sorted(self._passing, key=keyfn)
+
+    def cache_proposal(self, proposal: Proposal) -> None:
+        """Store a symbol's proposal and rebuild whatever was derived from the
+        one it replaces.
+
+        Both row lists are snapshots — `_variant_rows` holds `Structure`
+        objects, not a live view — so a proposal swapped in behind them
+        repaints the old numbers. Anything that caches a proposal goes through
+        here for that reason.
+        """
+        self._proposals[proposal.symbol] = proposal
+        self.build_rank_rows()
+        if self.mode == "variants" and proposal.symbol == self._variants_symbol:
+            self.build_variant_rows()
 
     def build_variant_rows(self) -> None:
         """The open name's whole search, ranked by the active metric. Failed
@@ -504,7 +521,7 @@ class TauApp(App):
         # API — which can hang for as long as its read timeout allows —
         # upgrades the rows it answers for afterwards. The drill-in never
         # waits on it.
-        self._proposals[candidate.symbol] = proposal
+        self.cache_proposal(proposal)
         self._detail_status = ""
         self.render_current_table()
         session = None
@@ -518,7 +535,7 @@ class TauApp(App):
         enriched = await propose_mod.enrich_with_broker_bpr(session, proposal)
         if enriched is proposal:
             return
-        self._proposals[candidate.symbol] = enriched
+        self.cache_proposal(enriched)
         self.render_current_table()
 
     def action_load_chain(self) -> None:
@@ -577,10 +594,7 @@ class TauApp(App):
         self.refresh_meta()
 
         def on_done(p: Proposal) -> None:
-            self._proposals[p.symbol] = p
-            self.build_rank_rows()
-            if self.mode == "variants" and p.symbol == self._variants_symbol:
-                self.build_variant_rows()
+            self.cache_proposal(p)
             self.render_current_table()
             self.refresh_meta()
 

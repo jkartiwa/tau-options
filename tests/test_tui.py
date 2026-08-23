@@ -738,3 +738,67 @@ async def test_chain_load_renders_before_the_broker_answers(monkeypatch):
             a, lambda: a._proposals["HIGH"].best.bpr_source == "broker"
         )
         assert a._proposals["HIGH"].best.bpr == pytest.approx(2500.0)
+
+
+@pytest.mark.asyncio
+async def test_the_variants_drill_in_upgrades_when_the_broker_answers(monkeypatch):
+    """Opening the drill-in before enrichment returns freezes a snapshot of
+    the formula structures. The broker figures landing behind it must reach
+    the rendered rows, not just the proposal cache."""
+    from dataclasses import replace
+
+    from tau import propose as propose_mod
+    from tau.chain import Cycle, Leg
+
+    cycle = Cycle(
+        symbol="HIGH",
+        expiration=date(2026, 9, 4),
+        dte=40,
+        underlying=100.0,
+        legs=(
+            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
+            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
+        ),
+        fetched_at=datetime.now(UTC),
+    )
+    release = asyncio.Event()
+
+    async def chain_loader(candidate):
+        return cycle
+
+    async def loader():
+        return list(FIXTURE)
+
+    async def slow_enrich(session, proposal, *args, **kwargs):
+        await release.wait()
+        return replace(
+            proposal,
+            structures=tuple(
+                replace(s, broker_bpr=2500.0) if s.ok else s
+                for s in proposal.structures
+            ),
+        )
+
+    monkeypatch.setattr("tau.tui.app.get_session", lambda: object())
+    monkeypatch.setattr(propose_mod, "enrich_with_broker_bpr", slow_enrich)
+
+    a = TauApp(loader=loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        assert await _settle(a, lambda: "HIGH" in a._proposals)
+
+        # drill in while the account API is still hanging
+        await pilot.press("v")
+        await pilot.pause()
+        assert a.mode == "variants"
+        assert not release.is_set()
+        assert "~" in _row_text(a, 0)
+
+        release.set()
+        assert await _settle(
+            a, lambda: a._proposals["HIGH"].best.bpr_source == "broker"
+        )
+        assert await _settle(a, lambda: "~" not in _row_text(a, 0))
+        assert "2,500" in _row_text(a, 0)
+        assert "BPR~" not in str(a.query_one("#detail").content)

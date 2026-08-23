@@ -185,6 +185,18 @@ class Structure:
         return bpr(self.payoff_legs, self.cycle.underlying)
 
     @property
+    def on_formula(self) -> "Structure":
+        """This structure as the formula alone measures it.
+
+        Every structure always has a formula figure, so a comparison built on
+        this one is available whatever the broker did or did not answer. That
+        is what makes it the fallback for an *ordering*: a list sorted on it
+        is complete and homogeneous, where one sorted on the broker figure is
+        only homogeneous when the broker answered for all of it.
+        """
+        return self if self.broker_bpr is None else replace(self, broker_bpr=None)
+
+    @property
     def bpr_source(self) -> str:
         """`"broker"` when `bpr` came from the dry-run calculation,
         `"estimate"` when it is the formula. The two are different numbers
