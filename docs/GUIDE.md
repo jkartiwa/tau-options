@@ -294,17 +294,33 @@ Because only monthlies are considered, a symbol with no monthly expiration near
 the target DTE simply has no usable cycle. It will not quietly fall back to a
 weekly.
 
-Probability of profit assumes a driftless lognormal:
+Probability of profit assumes a driftless lognormal, with each boundary of a
+profitable interval priced under the implied volatility local to it:
 
-$$\sigma_\tau = \sigma\sqrt{\tau}, \quad \tau = \text{DTE}/365$$
+$$\sigma_\tau(K, s) = \sigma(K, s)\sqrt{\tau}, \quad \tau = \text{DTE}/365$$
 
-$$d(K) = \frac{\ln(K/S) + \sigma_\tau^{2}/2}{\sigma_\tau}$$
+$$d(K, s) = \frac{\ln(K/S) + \sigma_\tau(K, s)^{2}/2}{\sigma_\tau(K, s)}$$
 
-$$P(\text{profit}) = \sum_{\text{profitable } (a,b)} N\big(d(b)\big) - N\big(d(a)\big)$$
+$$P(\text{profit}) = \sum_{\text{profitable } (a,b)} N\big(d(b, \text{call})\big) - N\big(d(a, \text{put})\big)$$
 
-σ is the chain's at-the-money implied volatility, S is spot, N is the standard
-normal CDF. The intervals come from the payoff function, so one, two or four
+S is spot and N is the standard normal CDF. σ(K, s) is the implied volatility
+quoted on side s of the chain at price K: the put side for the lower breakeven
+a, the call side for the upper breakeven b. It is linear in strike between the
+two bracketing quoted strikes and flat outside the quoted range, because the
+credit pushes a breakeven off the strike grid almost by construction. When that
+side carries no IV at that boundary, that boundary alone falls back to the
+chain's at-the-money implied volatility — a partially skewed estimate beats
+none. The intervals come from the payoff function, so one, two or four
 breakevens are handled the same way.
+
+Be clear about what that is. Reading a lower boundary off one lognormal and the
+upper boundary off another is a practitioner approximation, not a distribution:
+the two CDFs subtracted here do not belong to the same random variable, and
+nothing constrains the result to be monotone in the skew (a call side quoted
+far under ATM can push the number back *up*). It is strictly better than
+ATM-for-everything and it is what a desk would do; it is not a correct POP. The
+rigorous version recovers the risk-neutral density from the whole smile
+(Breeden-Litzenberger across the chain) and is not implemented here.
 
 It uses the breakevens rather than the strikes. Credit pushes the breakevens
 past the strikes, so the common `1 − Δ` shortcut understates the real odds.
