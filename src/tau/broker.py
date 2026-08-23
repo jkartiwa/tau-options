@@ -69,6 +69,24 @@ MAX_CONSECUTIVE_FAILURES = 3
 # decides whether to re-enable or trip again.
 BREAKER_COOLDOWN = 120.0
 
+# The reason a caller's phase budget cancels a dry-run task with. A dry run
+# the budget cut off is a broker that did not answer in time — the same
+# outcome as the read timeout the breaker already counts, and the one failure
+# mode that never reached the counter, because `CancelledError` is not an
+# `Exception`. Uncounted, it is exactly the stall the breaker exists to stop:
+# a slow-but-healthy broker drains the shared gate, every symbol after the
+# first times out on queueing alone, and nothing ever trips.
+#
+# A cancellation that carries no such reason — Ctrl-C, a TUI tearing down its
+# worker — is somebody else's, and is re-raised untouched rather than turned
+# into a silent formula fallback.
+BUDGET_EXPIRED = "tau: broker pull budget expired"
+
+
+def cancel_for_budget(task) -> None:
+    """Cancel a dry-run task so its failure counts toward the breaker."""
+    task.cancel(BUDGET_EXPIRED)
+
 
 class _LoopGate:
     """The asyncio primitives shared by everything running on one event loop.
@@ -96,12 +114,22 @@ def _gate() -> _LoopGate:
     return gate
 
 
-# False = not resolved yet, None = resolved to no usable account. The account
-# list and the token are fixed for the lifetime of the process, so a failed
-# resolution (scoped-down token, network down) cannot recover in-process, and
-# re-calling the API on every batch would just stack 403s. One resolution per
-# process, success or failure; the formula estimate covers the gap.
+# False = not resolved yet, an Account or None = resolved. An answer the API
+# actually gave is final: the account list and the token are fixed for the
+# lifetime of the process, so an account list that came back with nothing but
+# cash and closed accounts will not grow a margin account later, and
+# re-calling on every batch would just stack requests.
+#
+# A resolution that *failed* is not an answer. A 429 or a read timeout says
+# nothing about the token, and caching it as "no account" ends broker pricing
+# for the rest of the process with nothing on screen to say why — over a blip,
+# on the one path that a rank pass hits six-wide at its most concurrent
+# moment. So a failure is held for `BREAKER_COOLDOWN` and then tried once
+# more: the same time-boxed recovery the dry-run breaker gets, on the same
+# clock, for the same reason — a TUI session runs for hours and one rough
+# patch must not end broker pricing for the rest of it.
 _margin_account: Account | None | bool = False
+_account_retry_at = 0.0
 
 # Consecutive dry-run failures so far, when the current trip expires (0.0 =
 # not tripped), and whether the one post-cooldown probe is already out.
@@ -114,14 +142,19 @@ _probing = False
 
 
 def dry_runs_disabled() -> bool:
-    """Whether the circuit breaker is currently holding dry-runs back.
+    """Whether broker pricing is currently held back, for either reason.
 
-    Callers skip the pull entirely rather than queue POSTs that will not be
-    made; `broker_bpr_for` enforces the same thing for anyone who does not.
+    The breaker tripping and the account failing to resolve disable the same
+    thing on the same clock, and the on-screen marker reads off this one
+    answer — a session where the account list 429'd once has to look different
+    from one where the figures were always estimates. Callers skip the pull
+    entirely rather than queue POSTs that will not be made; `broker_bpr_for`
+    and `margin_account` enforce their own halves for anyone who does not.
     False again once the cooldown is up, at which point the next call is the
-    probe that decides whether it stays that way.
+    attempt that decides whether it stays that way.
     """
-    return _tripped_until > 0.0 and time.monotonic() < _tripped_until
+    now = time.monotonic()
+    return (_tripped_until > 0.0 and now < _tripped_until) or now < _account_retry_at
 
 
 def _claim_probe() -> bool | None:
@@ -159,20 +192,32 @@ async def margin_account(session) -> Account | None:
     """The account the dry-run prices against: the open margin account.
 
     `None` when there is no such account or the account list cannot be read
-    — callers fall back to the formula estimate. Resolved once per process;
-    see `_margin_account` for why.
+    — callers fall back to the formula estimate either way. An answer is
+    cached for the life of the process; a failure is only held for
+    `BREAKER_COOLDOWN` and then retried once. See `_margin_account` for why
+    the two are not the same thing.
     """
-    global _margin_account
+    global _margin_account, _account_retry_at
     if _margin_account is not False:
         return _margin_account or None
+    if time.monotonic() < _account_retry_at:
+        return None
     async with _gate().resolving:
         if _margin_account is not False:
             return _margin_account or None
+        if time.monotonic() < _account_retry_at:
+            return None
         try:
             accounts = await Account.get(session)
         except Exception:
-            _margin_account = None
+            _account_retry_at = time.monotonic() + BREAKER_COOLDOWN
+            log.warning(
+                "broker account list could not be read; buying power falls "
+                "back to the formula estimate for the next %.0fs",
+                BREAKER_COOLDOWN,
+            )
             return None
+        _account_retry_at = 0.0
         _margin_account = next(
             (a for a in accounts if not a.is_closed and a.margin_or_cash == "Margin"),
             None,
@@ -217,26 +262,26 @@ def margin_requirement(effect) -> float | None:
     when the response carries no usable one.
 
     The API does not send negative numbers; it sends a magnitude beside an
-    `-effect` field naming the direction, and the SDK folds the two together
-    — `set_sign_for` rewrites the value to `-abs(value)` when
-    `isolated-order-margin-requirement-effect` is `Debit`. A margin
-    requirement is a debit against buying power, so the ordinary successful
-    response arrives here *negative*, and reading that as garbage would
-    silently turn the whole feature off. The sign is the effect field, after
-    the SDK is done with it: negative means Debit and its magnitude is the
-    requirement. A credit-signed or zero requirement is not a margin figure
-    this can use, and neither is a value that will not compare.
+    `isolated-order-margin-requirement-effect` field naming the direction,
+    and the SDK folds the two together before anything here sees them —
+    `set_sign_for` rewrites the value to `-abs(value)` when that effect is
+    `Debit` and then drops the field, which `BuyingPowerEffect` does not
+    declare and pydantic will not keep. The sign the SDK left behind is the
+    only surviving record of the direction, so that is what this reads: a
+    margin requirement is a debit against buying power, the ordinary
+    successful response therefore arrives here *negative*, and reading that
+    as garbage would silently turn the whole feature off.
+
+    The magnitude is the requirement whichever way it is signed. A zero or
+    non-numeric value is not a figure this can use.
     """
     value = getattr(effect, "isolated_order_margin_requirement", None)
     if value is None:
         return None
-    direction = getattr(effect, "isolated_order_margin_requirement_effect", None)
     try:
-        number = float(value)
+        number = abs(float(value))
     except (TypeError, ValueError):
         return None
-    if str(direction) == "Debit" or number < 0:
-        number = abs(number)
     return number if number > 0 else None
 
 
@@ -252,7 +297,9 @@ async def broker_bpr_for(session, account, structure: Structure) -> float | None
 
     Every failure counts against the breaker, and a success clears it — the
     endpoint gives this module no way to tell one failure from another, and
-    the cooldown recovers from all of them alike.
+    the cooldown recovers from all of them alike. A caller's phase budget
+    cutting the call short is one of those failures: see `BUDGET_EXPIRED`.
+    Any other cancellation belongs to whoever raised it and is re-raised.
     """
     global _probing
     order = order_for(structure)
@@ -264,6 +311,11 @@ async def broker_bpr_for(session, account, structure: Structure) -> float | None
     try:
         async with _gate().dry_run:
             effect = await account.get_order_buying_power_effect(session, order)
+    except asyncio.CancelledError as exc:
+        if BUDGET_EXPIRED not in exc.args:
+            raise
+        _record_failure()
+        return None
     except Exception:
         _record_failure()
         return None

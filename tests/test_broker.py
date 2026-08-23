@@ -23,8 +23,10 @@ def _reset_account_cache():
     from tau import broker as broker_mod
 
     broker_mod._margin_account = False
+    broker_mod._account_retry_at = 0.0
     yield
     broker_mod._margin_account = False
+    broker_mod._account_retry_at = 0.0
 
 
 def leg(strike, option_type, delta, mid):
@@ -241,9 +243,10 @@ async def test_account_resolution_happens_once_under_concurrency(monkeypatch):
 def test_a_debit_signed_margin_requirement_is_read_as_the_requirement():
     """The API sends a magnitude beside an `-effect` field and the SDK folds
     the two together, rewriting the value to `-abs(value)` when the effect is
-    `Debit`. A margin requirement is a debit, so the ordinary successful
-    response arrives negative — reading that as garbage turns the whole
-    feature off with nothing to show for it."""
+    `Debit` and dropping the field itself. A margin requirement is a debit, so
+    the ordinary successful response arrives negative — reading that as
+    garbage turns the whole feature off with nothing to show for it. The
+    magnitude is the requirement whichever way it is signed."""
     from tau.broker import margin_requirement
 
     sdk_signed = SimpleNamespace(
@@ -251,11 +254,10 @@ def test_a_debit_signed_margin_requirement_is_read_as_the_requirement():
     )
     assert margin_requirement(sdk_signed) == pytest.approx(3651.0)
 
-    spelled_out = SimpleNamespace(
-        isolated_order_margin_requirement=Decimal("3651.00"),
-        isolated_order_margin_requirement_effect="Debit",
+    unsigned = SimpleNamespace(
+        isolated_order_margin_requirement=Decimal("3651.00")
     )
-    assert margin_requirement(spelled_out) == pytest.approx(3651.0)
+    assert margin_requirement(unsigned) == pytest.approx(3651.0)
 
 
 def test_a_missing_zero_or_unusable_margin_requirement_is_no_figure():
@@ -455,3 +457,60 @@ async def test_only_one_probe_goes_out_after_a_cooldown(monkeypatch):
 
     release.set()
     assert await probe is None
+
+
+@pytest.mark.asyncio
+async def test_a_transient_account_failure_is_retried_after_the_cooldown(monkeypatch):
+    """A 429 or a read timeout on the account list says nothing about the
+    token. Caching it as "no account" would end broker pricing for the rest of
+    an hours-long session over a blip, on the one path a rank pass hits
+    six-wide at its most concurrent moment — so the failure is time-boxed on
+    the breaker's clock and then tried once more."""
+    import asyncio
+
+    from tau import broker as broker_mod
+
+    monkeypatch.setattr(broker_mod, "BREAKER_COOLDOWN", 0.05)
+    margin = SimpleNamespace(is_closed=False, margin_or_cash="Margin")
+    calls = []
+
+    async def flaky(session):
+        calls.append(session)
+        if len(calls) == 1:
+            raise TimeoutError("read timeout")
+        return [margin]
+
+    monkeypatch.setattr(broker_mod.Account, "get", flaky)
+
+    assert await margin_account(None) is None
+    # and it says so: the marker the rank view reads is the same one answer
+    assert broker_mod.dry_runs_disabled()
+
+    # inside the cooldown the failure is remembered rather than re-attempted
+    assert await margin_account(None) is None
+    assert len(calls) == 1
+
+    await asyncio.sleep(0.06)
+    assert not broker_mod.dry_runs_disabled()
+    assert await margin_account(None) is margin
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_positively_resolved_absence_of_a_margin_account_is_final(monkeypatch):
+    """The account list answering with no open margin account is an answer,
+    not a failure: the token and the account list are fixed for the process,
+    so re-asking every batch would only stack requests."""
+    from tau import broker as broker_mod
+
+    calls = []
+
+    async def fake_get(session):
+        calls.append(session)
+        return [SimpleNamespace(is_closed=False, margin_or_cash="Cash")]
+
+    monkeypatch.setattr(broker_mod.Account, "get", fake_get)
+    assert await margin_account(None) is None
+    assert await margin_account(None) is None
+    assert len(calls) == 1
+    assert not broker_mod.dry_runs_disabled()

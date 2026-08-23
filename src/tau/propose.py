@@ -71,12 +71,19 @@ CROSS_STRATEGY_METRIC = "annualized_roc"
 BROKER_BPR_TOP = 10
 
 # Seconds the whole broker pull gets before the proposal ships on whatever
-# came back. A dry-run that fails is free — `margin_account` caches the
-# failure and enrichment is skipped — but one that merely hangs costs a read
-# timeout per POST, and a rank pass drains them through one shared gate. The
-# requirement is that an unavailable broker never stalls the pipeline, and a
-# deadline is the only thing that actually enforces it: whatever answered in
-# time is kept, everything else stays on the formula estimate and says so.
+# came back. A dry-run that fails is cheap — the breaker learns it and the
+# rest of the pass skips — but one that merely hangs costs a read timeout per
+# POST, and a rank pass drains them through one shared gate. The requirement
+# is that an unavailable broker never stalls the pipeline, and a deadline is
+# the only thing that actually enforces it: whatever answered in time is
+# kept, everything else stays on the formula estimate and says so.
+#
+# The deadline is per symbol while the gate is process-wide, so a broker that
+# is slow rather than broken can expire this budget on queueing alone. That
+# is not something to tune the budget around — it is a broker failing to
+# answer in time, and `broker.cancel_for_budget` reports it as one, so the
+# breaker trips on it like any other timeout and the pass stops paying the
+# stall instead of repeating it symbol after symbol.
 BROKER_BPR_BUDGET = 30.0
 
 
@@ -329,8 +336,11 @@ async def enrich_with_broker_bpr(
     stays on the formula across the board; both are one margin model, and
     only the first is independent of network timing.
 
-    The whole pull is bounded by `budget` seconds, and running out is not an
-    error — it is one of the ways the pull comes back incomplete.
+    The whole pull is bounded by `budget` seconds. Running out is not an
+    error for the proposal — it is one of the ways the pull comes back
+    incomplete — but it is a broker failure, and it is counted as one, so a
+    broker slow enough to expire the budget trips the breaker instead of
+    charging the same stall to every symbol behind it.
 
     Only tradable structures are priced. A variant that failed a constraint
     is not going to be traded, so a live call against a rate-limited endpoint
@@ -365,13 +375,25 @@ async def enrich_with_broker_bpr(
 
     tasks = [asyncio.ensure_future(one(s)) for s in shortlist]
     try:
-        await asyncio.wait_for(asyncio.gather(*tasks), budget)
-    except Exception:
-        pass
-    finally:
+        _, pending = await asyncio.wait(tasks, timeout=budget)
+    except BaseException:
+        # Somebody else's cancellation (Ctrl-C, a TUI tearing down its
+        # worker). These tasks are ours to clean up, but the broker did not
+        # fail — cancel them plainly so `broker_bpr_for` re-raises rather
+        # than counting it, and let the cancellation through.
         for task in tasks:
             if not task.done():
                 task.cancel()
+        raise
+    # Running out of budget is a broker that did not answer in time, which is
+    # the failure the breaker exists to catch and the only one that used to
+    # escape it: `CancelledError` is not an `Exception`, so a cut-off dry run
+    # never reached the counter and a slow broker could starve every symbol
+    # in a pass without ever tripping anything.
+    for task in pending:
+        broker_mod.cancel_for_budget(task)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
     if len(priced) != len(shortlist):
         return proposal
     structures = tuple(priced.get(id(s), s) for s in proposal.structures)

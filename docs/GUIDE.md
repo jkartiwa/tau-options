@@ -196,6 +196,11 @@ Two bounds keep an unavailable broker from stalling a pass. The pull gets 30
 seconds per name, and after three dry-run failures in a row tau stops asking —
 the case that needs it is an account API that hangs rather than fails, where
 nothing would otherwise be cached and every name would pay the wait again.
+Running out of those 30 seconds counts as one of the three: a broker slow
+enough to burn the deadline did not answer, and the pass stops paying the
+stall rather than repeating it name after name. So does failing to read the
+account list at all, which gets the same two-minute pause rather than being
+taken as a permanent verdict on the token.
 That pause lasts two minutes, not the rest of the run: the dry-run endpoint
 gives tau no way to tell a rate limit from a real failure, and a session that
 runs for hours must not lose broker pricing for good over one rough patch.

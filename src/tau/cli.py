@@ -20,6 +20,9 @@ from dotenv import load_dotenv
 from tau import chain as chain_mod
 from tau import propose as propose_mod
 from tau import screen, store, universe
+from tau.fmt import bpr as _bpr
+from tau.fmt import fmt as _fmt
+from tau.fmt import pct as _pct
 from tau.session import get_session
 from tau.strategies import ALL as ALL_STRATEGIES
 from tau.strategies import MIN_POP, STRATEGIES
@@ -36,28 +39,6 @@ def _load_env() -> None:
         load_dotenv(repo_env)
     else:
         load_dotenv()
-
-
-def _fmt(value, spec: str = ".1f") -> str:
-    if value is None:
-        return "—"
-    if value in (float("inf"), float("-inf")):
-        return "∞" if value > 0 else "-∞"
-    return format(value, spec)
-
-
-def _pct(value, spec: str = ".0f") -> str:
-    return "—" if value is None else _fmt(value * 100, spec)
-
-
-def _bpr(value, source: str) -> str:
-    """Buying power with the source readable per row: broker figures plain,
-    formula estimates carrying the tilde the column header used to. A bare
-    number next to a `BPR` header would silently be either, and this column
-    is exactly the one place a guess is not acceptable."""
-    if value is None:
-        return "—"
-    return _fmt(value, ",.0f") if source == "broker" else _fmt(value, ",.0f") + "~"
 
 
 def _print_table(rows: list[screen.Candidate], show_reasons: bool) -> None:

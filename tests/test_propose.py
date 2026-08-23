@@ -871,3 +871,75 @@ def test_ordering_ignores_the_broker_when_the_metric_does():
     for on_broker in (True, False):
         assert ordering_value(a, "credit", on_broker) == pytest.approx(a.credit)
         assert ordering_value(b, "credit", on_broker) == pytest.approx(b.credit)
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_the_budget_cuts_off_counts_toward_the_breaker(monkeypatch):
+    """A broker that is slow rather than broken is the case the breaker could
+    never see. The per-symbol deadline drains through a process-wide gate, so
+    the later symbols in a pass expire on queueing alone — and the
+    cancellation that ends those POSTs is not an `Exception`, so it reached no
+    counter at all. Uncounted, every wave repeats the full stall in silence.
+    """
+    import asyncio
+
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    started = []
+
+    class SlowAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            started.append(order)
+            await asyncio.sleep(60)
+
+    async def fake_margin(session):
+        return SlowAccount()
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+
+    enriched = await propose_mod.enrich_with_broker_bpr(
+        object(), proposal(), budget=0.05
+    )
+    # the structures still ship on the formula estimate, as they always did
+    assert all(s.bpr_source == "estimate" for s in enriched.structures)
+    assert started  # POSTs really were in flight when the budget expired
+    # ...but now the pass knows it, so it stops paying the stall and says so
+    assert broker_mod.dry_runs_disabled()
+
+    spent = len(started)
+    later = await propose_mod.enrich_with_broker_bpr(
+        object(), proposal(), budget=0.05
+    )
+    assert all(s.bpr_source == "estimate" for s in later.structures)
+    assert len(started) == spent
+
+
+@pytest.mark.asyncio
+async def test_an_outer_cancellation_is_never_read_as_a_broker_failure(monkeypatch):
+    """Ctrl-C, or the TUI tearing down a re-price worker, is not the broker
+    failing. Counting it would trip the breaker on a keystroke, and swallowing
+    it would turn a stop request into a silent formula fallback."""
+    import asyncio
+
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    class SlowAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            await asyncio.sleep(60)
+
+    async def fake_margin(session):
+        return SlowAccount()
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+
+    task = asyncio.ensure_future(
+        propose_mod.enrich_with_broker_bpr(object(), proposal(), budget=30.0)
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.05)
+    assert not broker_mod.dry_runs_disabled()
