@@ -10,6 +10,7 @@ from datetime import date
 from rich.markup import escape
 from textual.widgets import Static
 
+from tau import build as build_mod
 from tau import catalyst as catalyst_mod
 from tau import history as history_mod
 from tau.build import BuiltLeg, Structure
@@ -238,6 +239,13 @@ class DetailPane(Static):
         widest delta almost always wins, so the cheaper strikes were only
         visible by drilling in. Seeing what the extra credit costs in
         probability is the actual decision, so it belongs beside the winner.
+
+        The broker prices a bounded shortlist, so a strategy's ladder can
+        straddle the cut. `ANN` is read off the buying-power figure, and this
+        column carries no source marker of its own — so when the ladder is
+        not uniformly broker-priced every row is shown on the formula. A
+        marker would tell the reader these rows are incomparable; the formula
+        makes them comparable, which is what the column is for.
         """
         siblings = [
             s
@@ -247,15 +255,19 @@ class DetailPane(Static):
         if len(siblings) < 2:
             return []
         siblings.sort(key=lambda s: s.variant)
+        on_formula = not build_mod.uniformly_broker_priced(
+            siblings, "annualized_roc"
+        )
         lines = [
             "",
             f"[b]{best.strategy.name}[/b] [dim]· credit / POP / ANN[/dim]",
         ]
         for s in siblings:
             mark = "›" if s is best else " "
+            measured = s.on_formula if on_formula else s
             row = (
                 f"{mark} {s.variant:<12} {_fmt(s.credit):>6} "
-                f"{_pct(s.pop):>5} {_pct(s.annualized_roc):>6}"
+                f"{_pct(s.pop):>5} {_pct(measured.annualized_roc):>6}"
             )
             lines.append(row if s.ok else f"[dim]{row}[/dim]")
         return lines

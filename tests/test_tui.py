@@ -228,6 +228,16 @@ def _why_app(history=None, brief=None, calls=None):
     ), calls
 
 
+def _trip_broker_breaker() -> None:
+    """Put the breaker in the state consecutive dry-run failures put it in.
+    What counts as a failure and how it recovers is covered in test_broker;
+    these tests are about what the screen says once it has tripped."""
+    from tau import broker as broker_mod
+
+    for _ in range(broker_mod.MAX_CONSECUTIVE_FAILURES):
+        broker_mod._record_failure()
+
+
 async def _settle(a, predicate, tries=60):
     for _ in range(tries):
         if predicate():
@@ -817,7 +827,102 @@ async def test_the_meta_line_says_when_the_broker_stopped_pricing(monkeypatch):
         await pilot.pause()
         assert "broker BPR off" not in str(a.query_one("#meta").content)
 
-        broker_mod._tripped = True
+        _trip_broker_breaker()
+        assert broker_mod.dry_runs_disabled()
         a.refresh_meta()
         await pilot.pause()
         assert "broker BPR off" in str(a.query_one("#meta").content)
+
+
+def test_the_detail_ladder_compares_siblings_on_one_margin_model():
+    """The broker prices a bounded shortlist, so a strategy's ladder can
+    straddle the cut. `ANN` is read off the buying-power figure and this
+    column carries no source marker, so a mixed ladder would read as though
+    the unpriced strikes pay more when the whole gap is the margin model."""
+    from dataclasses import replace
+
+    from tau.tui.detail import DetailPane
+
+    p = _proposal("HIGH")
+    best = p.best
+    family = [
+        s for s in p.structures
+        if s.strategy.name == best.strategy.name and s.complete
+    ]
+    assert len(family) > 2
+
+    def ann_column(proposal):
+        lines = DetailPane()._ladder_lines(proposal, proposal.best)
+        return [line.split()[-1] for line in lines[2:]]
+
+    formula_column = ann_column(p)
+
+    # every sibling priced 30% higher by the broker, as measured on MU: a
+    # uniform ladder moves together and stays the broker's
+    uniform = replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr * 1.30) if s in family else s
+            for s in p.structures
+        ),
+    )
+    assert ann_column(uniform) != formula_column
+
+    # one sibling left on the formula: the ladder is no longer comparable on
+    # the broker's numbers, so every row falls back to the one they share
+    mixed = replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr * 1.30)
+            if s in family and s is not family[-1]
+            else s
+            for s in p.structures
+        ),
+    )
+    assert ann_column(mixed) == formula_column
+
+
+@pytest.mark.asyncio
+async def test_a_breaker_trip_on_the_drill_in_path_reaches_the_meta_line(monkeypatch):
+    """Working from screen mode, a user presses `c` on one name after
+    another. That is a path the breaker can trip on, and nothing else
+    repaints the chrome."""
+    from tau import broker as broker_mod
+    from tau.chain import Cycle, Leg
+
+    cycle = Cycle(
+        symbol="HIGH",
+        expiration=date(2026, 9, 4),
+        dte=40,
+        underlying=100.0,
+        legs=(
+            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
+            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
+        ),
+        fetched_at=datetime.now(UTC),
+    )
+
+    async def chain_loader(candidate):
+        return cycle
+
+    async def loader():
+        return list(FIXTURE)
+
+    async def trip_the_breaker(session, proposal, *args, **kwargs):
+        _trip_broker_breaker()
+        return proposal
+
+    monkeypatch.setattr("tau.tui.app.get_session", lambda: object())
+    monkeypatch.setattr(
+        "tau.propose.enrich_with_broker_bpr", trip_the_breaker
+    )
+
+    a = TauApp(loader=loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert "broker BPR off" not in str(a.query_one("#meta").content)
+        await pilot.press("c")
+        assert await _settle(a, lambda: broker_mod.dry_runs_disabled())
+        assert await _settle(
+            a, lambda: "broker BPR off" in str(a.query_one("#meta").content)
+        )

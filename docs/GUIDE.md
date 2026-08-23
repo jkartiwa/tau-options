@@ -193,15 +193,16 @@ tradable structures are priced at all; a variant that failed a constraint keeps
 its estimate rather than costing a live call.
 
 Two bounds keep an unavailable broker from stalling a pass. The pull gets 30
-seconds per name, and after three dry-run failures in a row tau stops asking
-for the rest of the run and says so once — the case that needs it is an account
-API that hangs rather than fails, where nothing would otherwise be cached and
-every name would pay the wait again. A rate limit does not count towards that:
-a 429 is the API asking for less load, not declining to answer, so it backs off
-and retries like every other rate-limited call. When the breaker has tripped
-the TUI meta line reads `broker BPR off`, so a screen full of `~` is never
-ambiguous between "the broker stopped answering" and "these were always
-estimates". In the TUI the drill-in never waits on the
+seconds per name, and after three dry-run failures in a row tau stops asking —
+the case that needs it is an account API that hangs rather than fails, where
+nothing would otherwise be cached and every name would pay the wait again.
+That pause lasts two minutes, not the rest of the run: the dry-run endpoint
+gives tau no way to tell a rate limit from a real failure, and a session that
+runs for hours must not lose broker pricing for good over one rough patch.
+When the two minutes are up a single call goes out to find out — if it answers,
+pricing resumes; if not, another two minutes. While it is paused the TUI meta
+line reads `broker BPR off`, so a screen full of `~` is never ambiguous between
+"the broker stopped answering" and "these were always estimates". In the TUI the drill-in never waits on the
 broker at all: the variants appear on the estimates immediately and upgrade in
 place when it answers.
 

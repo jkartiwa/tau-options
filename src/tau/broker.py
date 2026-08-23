@@ -18,6 +18,7 @@ in tau crashes, stalls, or changes shape because the broker did not answer.
 
 import asyncio
 import logging
+import time
 from decimal import ROUND_HALF_UP, Decimal
 from weakref import WeakKeyDictionary
 
@@ -50,7 +51,7 @@ MAX_CONCURRENT = 4
 # for no reason the caller could ever see.
 TICK = Decimal("0.01")
 
-# Consecutive dry-run failures that stop the process trying again. The
+# Consecutive dry-run failures that stop tau trying again for a while. The
 # account list resolving fine while every POST times out is the case the
 # per-symbol deadline cannot bound: nothing caches that outcome, so each
 # symbol pays the full read-timeout wait again and the stall grows with
@@ -58,14 +59,15 @@ TICK = Decimal("0.01")
 # the formula estimate covers every symbol after it.
 MAX_CONSECUTIVE_FAILURES = 3
 
-# A rate-limited dry-run is the API answering and asking for less load, so it
-# is retried on the same exponential backoff the chain fetch uses and never
-# counted against the breaker. The breaker is for an account API that will
-# not answer this token at all; letting a burst of 429s latch it would turn
-# the whole feature off for the run over transient load — the one thing the
-# graceful fallback must not be mistaken for.
-RATE_LIMIT_RETRIES = 3
-RATE_LIMIT_BASE_BACKOFF = 1.0
+# How long a trip lasts. The dry-run endpoint is the one account method the
+# SDK reads without `validate_response`, so a rate limit reaches this module
+# as `KeyError('data')` or a JSON decode error — indistinguishable from any
+# other failure, and not worth guessing at. Recovering on a clock instead of
+# classifying the error costs nothing and covers the case that actually
+# matters: a TUI session runs for hours, and one rough patch must not end
+# broker pricing for the rest of it. After the cooldown a single probe
+# decides whether to re-enable or trip again.
+BREAKER_COOLDOWN = 120.0
 
 
 class _LoopGate:
@@ -101,44 +103,56 @@ def _gate() -> _LoopGate:
 # process, success or failure; the formula estimate covers the gap.
 _margin_account: Account | None | bool = False
 
-# Consecutive dry-run failures so far, and whether the breaker has tripped.
+# Consecutive dry-run failures so far, when the current trip expires (0.0 =
+# not tripped), and whether the one post-cooldown probe is already out.
 # Process-wide for the same reason the account is: the condition being
 # tracked — an account API that will not answer this token — does not vary by
 # symbol, so learning it once is the whole point.
 _consecutive_failures = 0
-_tripped = False
+_tripped_until = 0.0
+_probing = False
 
 
 def dry_runs_disabled() -> bool:
-    """Whether the circuit breaker has given up on the account API.
+    """Whether the circuit breaker is currently holding dry-runs back.
 
     Callers skip the pull entirely rather than queue POSTs that will not be
     made; `broker_bpr_for` enforces the same thing for anyone who does not.
+    False again once the cooldown is up, at which point the next call is the
+    probe that decides whether it stays that way.
     """
-    return _tripped
+    return _tripped_until > 0.0 and time.monotonic() < _tripped_until
 
 
-def is_rate_limited(exc: Exception) -> bool:
-    """Whether a failed call was backpressure rather than a refusal."""
-    text = str(exc).lower()
-    return "429" in text or "too many requests" in text
+def _claim_probe() -> bool | None:
+    """`None` when the breaker is holding, `True` for the one caller allowed
+    to probe after a cooldown, `False` for an ordinary call."""
+    global _probing
+    if _tripped_until <= 0.0:
+        return False
+    if time.monotonic() < _tripped_until or _probing:
+        return None
+    _probing = True
+    return True
 
 
 def _record_failure() -> None:
-    global _consecutive_failures, _tripped
+    global _consecutive_failures, _tripped_until
     _consecutive_failures += 1
-    if _consecutive_failures >= MAX_CONSECUTIVE_FAILURES and not _tripped:
-        _tripped = True
+    if _consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+        _tripped_until = time.monotonic() + BREAKER_COOLDOWN
         log.warning(
             "broker dry-run failed %d times in a row; buying power falls back "
-            "to the formula estimate for the rest of this run",
+            "to the formula estimate for the next %.0fs",
             _consecutive_failures,
+            BREAKER_COOLDOWN,
         )
 
 
 def _record_success() -> None:
-    global _consecutive_failures
+    global _consecutive_failures, _tripped_until
     _consecutive_failures = 0
+    _tripped_until = 0.0
 
 
 async def margin_account(session) -> Account | None:
@@ -236,28 +250,25 @@ async def broker_bpr_for(session, account, structure: Structure) -> float | None
     premium flow. The dry-run is a calculation; nothing here ever places an
     order.
 
-    A rate-limited attempt backs off and tries again without counting against
-    the breaker; anything else counts once and gives up.
+    Every failure counts against the breaker, and a success clears it — the
+    endpoint gives this module no way to tell one failure from another, and
+    the cooldown recovers from all of them alike.
     """
+    global _probing
     order = order_for(structure)
     if order is None:
         return None
-    for attempt in range(RATE_LIMIT_RETRIES + 1):
-        if _tripped:
-            return None
-        try:
-            async with _gate().dry_run:
-                effect = await account.get_order_buying_power_effect(session, order)
-        except Exception as exc:
-            if not is_rate_limited(exc):
-                _record_failure()
-                return None
-            if attempt == RATE_LIMIT_RETRIES:
-                return None
-            # outside the gate on purpose: a backing-off call holding a slot
-            # would throttle the calls that are not being rate-limited
-            await asyncio.sleep(RATE_LIMIT_BASE_BACKOFF * 2**attempt)
-            continue
-        _record_success()
-        return margin_requirement(effect)
-    return None
+    probe = _claim_probe()
+    if probe is None:
+        return None
+    try:
+        async with _gate().dry_run:
+            effect = await account.get_order_buying_power_effect(session, order)
+    except Exception:
+        _record_failure()
+        return None
+    finally:
+        if probe:
+            _probing = False
+    _record_success()
+    return margin_requirement(effect)

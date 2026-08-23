@@ -534,6 +534,10 @@ class TauApp(App):
         # session, or with one that cannot reach the account API, the
         # proposal keeps its formula figures untouched.
         enriched = await propose_mod.enrich_with_broker_bpr(session, proposal)
+        # Even when nothing came back the chrome may have news: this is the
+        # path a breaker trip happens on, and its marker lives on the meta
+        # line.
+        self.refresh_meta()
         if enriched is proposal:
             return
         self.cache_proposal(enriched)

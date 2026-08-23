@@ -339,70 +339,119 @@ async def test_a_success_between_failures_keeps_the_breaker_closed():
 
 
 @pytest.mark.asyncio
-async def test_a_rate_limited_dry_run_backs_off_and_retries(monkeypatch):
-    """A 429 is the API answering and asking for less load. Retrying it is
-    the convention the chain fetch already follows."""
+async def test_the_breaker_re_enables_itself_after_the_cooldown(monkeypatch):
+    """A TUI session runs for hours. One rough patch must not end broker
+    pricing for the rest of it, so the trip is time-boxed and a single probe
+    decides whether it stays."""
     import asyncio
 
     from tau import broker as broker_mod
 
-    slept = []
-
-    async def no_sleep(seconds):
-        slept.append(seconds)
-
-    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(broker_mod, "BREAKER_COOLDOWN", 0.05)
 
     class FakeEffect:
         isolated_order_margin_requirement = Decimal("-3651.00")
 
+    failing = True
     attempts = []
 
-    class BusyAccount:
+    class FlakyAccount:
         async def get_order_buying_power_effect(self, session, order):
             attempts.append(order)
-            if len(attempts) < 3:
-                raise RuntimeError("429 Too Many Requests")
+            if failing:
+                raise RuntimeError("read timeout")
             return FakeEffect()
 
-    value = await broker_bpr_for(None, BusyAccount(), strangle())
-    assert value == pytest.approx(3651.0)
-    assert len(attempts) == 3
-    assert slept == [
-        broker_mod.RATE_LIMIT_BASE_BACKOFF,
-        broker_mod.RATE_LIMIT_BASE_BACKOFF * 2,
-    ]
+    account = FlakyAccount()
+    for _ in range(broker_mod.MAX_CONSECUTIVE_FAILURES):
+        assert await broker_bpr_for(None, account, strangle()) is None
+    assert broker_mod.dry_runs_disabled()
+
+    # held for the cooldown: no further calls reach the account
+    spent = len(attempts)
+    assert await broker_bpr_for(None, account, strangle()) is None
+    assert len(attempts) == spent
+
+    await asyncio.sleep(0.06)
     assert not broker_mod.dry_runs_disabled()
+    failing = False
+    assert await broker_bpr_for(None, account, strangle()) == pytest.approx(3651.0)
+    assert not broker_mod.dry_runs_disabled()
+    # the counter reset with it, so the next blip starts from zero
+    assert broker_mod._consecutive_failures == 0
 
 
 @pytest.mark.asyncio
-async def test_rate_limits_never_trip_the_breaker(monkeypatch):
-    """Transient load must not read as "the broker is unavailable" — that is
-    the failure this whole feature exists to avoid presenting."""
+async def test_a_failed_probe_trips_the_breaker_again(monkeypatch):
     import asyncio
 
     from tau import broker as broker_mod
 
-    async def no_sleep(seconds):
-        pass
+    monkeypatch.setattr(broker_mod, "BREAKER_COOLDOWN", 0.05)
 
-    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    attempts = []
 
-    class BusyAccount:
-        async def get_order_buying_power_effect(self, session, order):
-            raise RuntimeError("429 Too Many Requests")
-
-    account = BusyAccount()
-    for _ in range(10):
-        assert await broker_bpr_for(None, account, strangle()) is None
-    assert not broker_mod.dry_runs_disabled()
-
-    # a real failure still counts, and still trips
     class DeadAccount:
         async def get_order_buying_power_effect(self, session, order):
-            raise RuntimeError("403: insufficient scopes")
+            attempts.append(order)
+            raise RuntimeError("read timeout")
 
-    dead = DeadAccount()
+    account = DeadAccount()
     for _ in range(broker_mod.MAX_CONSECUTIVE_FAILURES):
-        assert await broker_bpr_for(None, dead, strangle()) is None
+        assert await broker_bpr_for(None, account, strangle()) is None
     assert broker_mod.dry_runs_disabled()
+
+    await asyncio.sleep(0.06)
+    spent = len(attempts)
+    assert await broker_bpr_for(None, account, strangle()) is None
+    assert len(attempts) == spent + 1  # exactly one probe went out
+    assert broker_mod.dry_runs_disabled()
+
+    # and it is held again, not left open
+    assert await broker_bpr_for(None, account, strangle()) is None
+    assert len(attempts) == spent + 1
+
+
+@pytest.mark.asyncio
+async def test_only_one_probe_goes_out_after_a_cooldown(monkeypatch):
+    """A rank pass has several dry-runs in flight at once. They must not all
+    become probes the instant the cooldown lapses."""
+    import asyncio
+
+    from tau import broker as broker_mod
+
+    monkeypatch.setattr(broker_mod, "BREAKER_COOLDOWN", 0.05)
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    attempts = []
+
+    class SlowAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            attempts.append(order)
+            if len(attempts) > broker_mod.MAX_CONSECUTIVE_FAILURES:
+                started.set()
+                await release.wait()
+            raise RuntimeError("read timeout")
+
+    account = SlowAccount()
+    for _ in range(broker_mod.MAX_CONSECUTIVE_FAILURES):
+        assert await broker_bpr_for(None, account, strangle()) is None
+    assert broker_mod.dry_runs_disabled()
+
+    await asyncio.sleep(0.06)
+    probe = asyncio.ensure_future(broker_bpr_for(None, account, strangle()))
+    await started.wait()
+    spent = len(attempts)
+
+    second = asyncio.ensure_future(broker_bpr_for(None, account, strangle()))
+    _, pending = await asyncio.wait({second}, timeout=0.2)
+    if pending:  # it queued behind the probe instead of standing down
+        second.cancel()
+        release.set()
+        pytest.fail("a second caller probed while the first probe was out")
+    assert second.result() is None
+    assert len(attempts) == spent
+
+    release.set()
+    assert await probe is None

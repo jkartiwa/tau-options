@@ -17,7 +17,8 @@ def _fresh_broker_state():
     def reset():
         broker_mod._margin_account = False
         broker_mod._consecutive_failures = 0
-        broker_mod._tripped = False
+        broker_mod._tripped_until = 0.0
+        broker_mod._probing = False
 
     reset()
     yield
