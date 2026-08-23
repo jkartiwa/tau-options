@@ -53,12 +53,22 @@ Metric = Literal[
     "leg_count",
 ]
 
-# Metrics a `Require` may not name. They are computed from the buying-power
-# figure, and that figure can be replaced after the constraints have already
-# been decided: `build` settles `ok` and `failures` off the formula estimate,
-# and the broker's dry-run number arrives later. A rule on one of these would
-# judge a row on a figure it no longer displays. See
-# `build.MODEL_SENSITIVE_METRICS`, the same set for the same reason.
+# Metrics computed from the buying-power figure, which is the one figure that
+# has two models behind it — the broker's portfolio margin ran 30% above the
+# naked-margin formula on MU and 8% below it on AAPL. Two consequences, one
+# set, defined here because this is the module `build` imports from:
+#
+# A `Require` may not name one. `build` settles `ok` and `failures` off the
+# formula estimate and the broker's dry-run number arrives afterwards, so a
+# rule on one of these would judge a row on a figure it no longer displays —
+# a green row whose shown ROC is below its own floor. `_validate` refuses
+# them for that reason.
+#
+# And two structures whose `bpr` came from different models do not compare on
+# one: the gap is enough to hand the win to whichever happened to be measured
+# by the more generous model. `build.comparable_on` and `build.rank` use the
+# set for that, under the name `MODEL_SENSITIVE_METRICS`. Metrics that never
+# read `bpr` are unaffected on both counts.
 UNCONSTRAINABLE_METRICS = frozenset({"bpr", "roc", "annualized_roc"})
 
 METRICS: frozenset[str] = frozenset(get_args(Metric))

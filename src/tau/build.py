@@ -43,7 +43,16 @@ from tau.payoff import (
     worst_loss_down,
     worst_loss_up,
 )
-from tau.strategy import Atm, Delta, LegSpec, Moneyness, Ref, Require, Strategy
+from tau.strategy import (
+    UNCONSTRAINABLE_METRICS,
+    Atm,
+    Delta,
+    LegSpec,
+    Moneyness,
+    Ref,
+    Require,
+    Strategy,
+)
 
 # How far a referenced wing may land from the strike it asked for, as a
 # fraction of the requested offset, before the variant is thrown out. A 10-wide
@@ -495,20 +504,12 @@ def evaluate_all(strategies, cycle: Cycle) -> list[Structure]:
     return [s for strategy in strategies for s in evaluate(strategy, cycle)]
 
 
-# Metrics computed from the buying-power figure. Two structures whose `bpr`
-# came from different margin models are not comparable on these: the broker's
-# portfolio margin ran 30% above the naked-margin formula on MU and 8% below
-# it on AAPL, which is enough to hand the win to whichever structure happened
-# to be measured on the more generous model. Metrics that never read `bpr`
-# are unaffected and compare across sources as they always did.
-#
-# These are also the metrics a `Require` may not name. `ok` and `failures`
-# are decided here, at build time, off the formula estimate; the broker
-# figure is attached afterwards and re-derives `bpr`/`roc` without re-running
-# the constraints. A rule on one of these would be enforced against a number
-# the row no longer shows — a green row whose displayed ROC is below its own
-# floor. `Strategy._validate` refuses them for that reason.
-MODEL_SENSITIVE_METRICS = frozenset({"bpr", "roc", "annualized_roc"})
+# Metrics computed from the buying-power figure, so two structures whose
+# `bpr` came from different margin models do not compare on them. The same
+# set `strategy` refuses a `Require` on, and for the same underlying reason —
+# one name each for the two consequences, but never two definitions to keep
+# in step.
+MODEL_SENSITIVE_METRICS = UNCONSTRAINABLE_METRICS
 
 
 def comparable_on(structures: list[Structure], key: str) -> list[Structure]:

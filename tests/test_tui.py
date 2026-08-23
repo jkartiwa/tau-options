@@ -834,6 +834,37 @@ async def test_the_meta_line_says_when_the_broker_stopped_pricing(monkeypatch):
         assert "broker BPR off" in str(a.query_one("#meta").content)
 
 
+def _pane_lines(proposal):
+    """The detail pane as it renders for a name in the rank view — the whole
+    pane, because the winner is shown twice in it."""
+    from tau.tui.detail import DetailPane
+
+    return DetailPane()._cycle_lines(proposal.candidate, proposal)
+
+
+def _header_ann(lines):
+    return next(ln for ln in lines if "· ANN " in ln).split("· ANN ")[-1].strip()
+
+
+def _ladder_rows(lines):
+    start = next(
+        i for i, ln in enumerate(lines) if ln.endswith("credit / POP / ANN[/dim]")
+    )
+    rows = []
+    for line in lines[start + 1:]:
+        if "variants passed" in line:
+            break
+        rows.append(line)
+    return rows
+
+
+def _family(proposal):
+    return [
+        s for s in proposal.structures
+        if s.strategy.name == proposal.best.strategy.name and s.complete
+    ]
+
+
 def test_the_detail_ladder_compares_siblings_on_one_margin_model():
     """The broker prices a bounded shortlist, so a strategy's ladder can
     straddle the cut. `ANN` is read off the buying-power figure and this
@@ -841,19 +872,12 @@ def test_the_detail_ladder_compares_siblings_on_one_margin_model():
     the unpriced strikes pay more when the whole gap is the margin model."""
     from dataclasses import replace
 
-    from tau.tui.detail import DetailPane
-
     p = _proposal("HIGH")
-    best = p.best
-    family = [
-        s for s in p.structures
-        if s.strategy.name == best.strategy.name and s.complete
-    ]
+    family = _family(p)
     assert len(family) > 2
 
     def ann_column(proposal):
-        lines = DetailPane()._ladder_lines(proposal, proposal.best)
-        return [line.split()[-1] for line in lines[2:]]
+        return [row.split()[-1] for row in _ladder_rows(_pane_lines(proposal))]
 
     formula_column = ann_column(p)
 
@@ -926,3 +950,61 @@ async def test_a_breaker_trip_on_the_drill_in_path_reaches_the_meta_line(monkeyp
         assert await _settle(
             a, lambda: "broker BPR off" in str(a.query_one("#meta").content)
         )
+
+
+def test_the_detail_pane_never_shows_two_different_anns_for_one_trade():
+    """The winner is printed twice in this pane: once in its own summary line
+    and again as the marked row of the ladder below it. `ANN` is read off the
+    buying-power figure, and a ladder straddling the bounded pull is shown on
+    the formula — so the summary has to follow it there, or the same trade
+    carries two different numbers under the same label four lines apart.
+
+    This is the ordinary shape on any name with more passing variants than
+    the pull covers, not an edge case.
+    """
+    from dataclasses import replace
+
+    p = _proposal("HIGH")
+    family = _family(p)
+    unpriced = next(s for s in reversed(family) if s.ok)
+    mixed = replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr * 1.30)
+            if s in family and s is not unpriced
+            else s
+            for s in p.structures
+        ),
+    )
+    # the winner really did come back broker-priced, and its ladder really is
+    # split across the two margin models — the case that produced the clash
+    assert mixed.best.bpr_source == "broker"
+    assert mixed.best.strategy.name == unpriced.strategy.name
+
+    lines = _pane_lines(mixed)
+    marked = next(row for row in _ladder_rows(lines) if row.startswith("\u203a"))
+    assert _header_ann(lines) == marked.split()[-1]
+    # and the pane says which model that is, rather than labelling a
+    # formula-derived return with the broker's buying power beside it
+    assert "BPR~" in next(ln for ln in lines if "· ANN " in ln)
+
+
+def test_a_uniformly_priced_pane_keeps_the_broker_figure():
+    """The fallback is the mixed ladder's, not a blanket retreat: when the
+    broker priced the whole ladder the pane stays on its numbers and says so.
+    """
+    from dataclasses import replace
+
+    p = _proposal("HIGH")
+    family = _family(p)
+    uniform = replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr * 1.30) if s in family else s
+            for s in p.structures
+        ),
+    )
+    lines = _pane_lines(uniform)
+    marked = next(row for row in _ladder_rows(lines) if row.startswith("\u203a"))
+    assert _header_ann(lines) == marked.split()[-1]
+    assert "(broker dry-run)" in next(ln for ln in lines if "· ANN " in ln)

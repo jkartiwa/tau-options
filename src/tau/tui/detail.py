@@ -218,9 +218,17 @@ class DetailPane(Static):
             lines.append(f"[yellow]not built: {shown.reason}[/yellow]")
             return lines
 
-        lines += self._structure_lines(shown)
+        # One pane, one margin model. The winner appears twice — in the line
+        # below and again in the ladder under it — and `ANN` is read off the
+        # buying-power figure, so a ladder forced onto the formula takes the
+        # lines above it along. Two different numbers four lines apart under
+        # the same `ANN` label is worse than either model on its own.
+        siblings, on_formula = (
+            ([], False) if chosen is not None else self._ladder(p, shown)
+        )
+        lines += self._structure_lines(shown.on_formula if on_formula else shown)
         if chosen is None:
-            lines += self._ladder_lines(p, shown)
+            lines += self._ladder_lines(shown, siblings, on_formula)
             # The winner is one of many, and how many were rejected is part of
             # reading it — one passing variant out of twelve is a different
             # market from twelve out of twelve.
@@ -231,21 +239,19 @@ class DetailPane(Static):
             )
         return lines
 
-    def _ladder_lines(self, p: Proposal, best: Structure) -> list[str]:
-        """The winner's siblings: the same strategy's other variants, in ladder
-        order.
-
-        The rank view can only show one row per name, and on return alone the
-        widest delta almost always wins, so the cheaper strikes were only
-        visible by drilling in. Seeing what the extra credit costs in
-        probability is the actual decision, so it belongs beside the winner.
+    def _ladder(self, p: Proposal, best: Structure) -> tuple[list[Structure], bool]:
+        """The winner's siblings in ladder order, and whether the pane has to
+        read them on the formula.
 
         The broker prices a bounded shortlist, so a strategy's ladder can
-        straddle the cut. `ANN` is read off the buying-power figure, and this
-        column carries no source marker of its own — so when the ladder is
-        not uniformly broker-priced every row is shown on the formula. A
-        marker would tell the reader these rows are incomparable; the formula
-        makes them comparable, which is what the column is for.
+        straddle the cut. `ANN` is read off the buying-power figure and
+        carries no source marker of its own, so a ladder that is not
+        uniformly broker-priced is shown on the formula throughout. A marker
+        would tell the reader these rows are incomparable; the formula makes
+        them comparable, which is what the column is for.
+
+        Fewer than two siblings is not a ladder, and nothing is rendered from
+        it — so it forces nothing onto the formula either.
         """
         siblings = [
             s
@@ -253,11 +259,25 @@ class DetailPane(Static):
             if s.strategy.name == best.strategy.name and s.complete
         ]
         if len(siblings) < 2:
-            return []
+            return [], False
         siblings.sort(key=lambda s: s.variant)
-        on_formula = not build_mod.uniformly_broker_priced(
+        return siblings, not build_mod.uniformly_broker_priced(
             siblings, "annualized_roc"
         )
+
+    def _ladder_lines(
+        self, best: Structure, siblings: list[Structure], on_formula: bool
+    ) -> list[str]:
+        """The winner's siblings: the same strategy's other variants, in ladder
+        order.
+
+        The rank view can only show one row per name, and on return alone the
+        widest delta almost always wins, so the cheaper strikes were only
+        visible by drilling in. Seeing what the extra credit costs in
+        probability is the actual decision, so it belongs beside the winner.
+        """
+        if not siblings:
+            return []
         lines = [
             "",
             f"[b]{best.strategy.name}[/b] [dim]· credit / POP / ANN[/dim]",
