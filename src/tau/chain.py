@@ -177,6 +177,39 @@ class Cycle:
         ivs = [leg.iv for leg in (row.call, row.put) if leg and leg.iv is not None]
         return sum(ivs) / len(ivs) if ivs else None
 
+    def iv_at(self, price: float, option_type: OptionType) -> float | None:
+        """Implied vol on one side of the chain at an arbitrary underlying
+        price, for pricing a probability boundary under the vol local to it
+        rather than under the ATM average.
+
+        Linear in strike between the two bracketing quoted strikes, flat
+        outside the quoted range. Interpolating rather than snapping to the
+        nearest strike is worth the handful of extra lines here: a breakeven is
+        pushed off the strike grid by the credit almost by construction, so
+        nearest-strike would quantise the vol to the ladder spacing on exactly
+        the boundaries this exists to price.
+
+        `None` when that side of the chain carries no IV at all, which is the
+        caller's cue to fall back to `atm_iv` for that boundary.
+        """
+        points = sorted(
+            (leg.strike, leg.iv)
+            for leg in self.legs
+            if leg.type is option_type and leg.iv is not None and leg.iv > 0
+        )
+        if not points:
+            return None
+        if price <= points[0][0]:
+            return points[0][1]
+        if price >= points[-1][0]:
+            return points[-1][1]
+        for (k0, v0), (k1, v1) in zip(points, points[1:]):
+            if k0 <= price <= k1:
+                if k1 == k0:
+                    return v0
+                return v0 + (v1 - v0) * (price - k0) / (k1 - k0)
+        return None
+
     @property
     def expected_move(self) -> float | None:
         value = self._expected_move_calc()

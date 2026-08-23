@@ -23,6 +23,7 @@ shakiest piece of the generalization and must be checked against tastytrade's
 own figure the first time each new structure family is traded.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from math import erf, inf, log, sqrt
@@ -283,34 +284,77 @@ def _lognormal_cdf(bound: float, spot: float, sigma: float, drift: float) -> flo
     return _norm_cdf((log(bound / spot) - drift) / sigma)
 
 
+def _boundary_cdf(
+    bound: float,
+    spot: float,
+    iv: float,
+    dte: int,
+    option_type: OptionType,
+    iv_at: Callable[[float, OptionType], float | None] | None,
+) -> float:
+    """Lognormal CDF at one interval boundary, priced under the vol local to
+    that boundary when `iv_at` can supply one and under `iv` when it cannot."""
+    if bound <= 0:
+        return 0.0
+    if bound == inf:
+        return 1.0
+    local = iv_at(bound, option_type) if iv_at is not None else None
+    vol = local if local is not None and local > 0 else iv
+    sigma = vol * sqrt(dte / DAYS_PER_YEAR)
+    # Driftless in log terms means a -sigma^2/2 median shift.
+    return _lognormal_cdf(bound, spot, sigma, -0.5 * sigma * sigma)
+
+
 def pop_over_intervals(
-    intervals: list[tuple[float, float]], spot: float, iv: float, dte: int
+    intervals: list[tuple[float, float]],
+    spot: float,
+    iv: float,
+    dte: int,
+    iv_at: Callable[[float, OptionType], float | None] | None = None,
 ) -> float | None:
     """Probability the underlying finishes inside any profitable interval,
-    under a driftless lognormal at the given implied vol.
+    under a driftless lognormal.
 
     Deliberately not the 1 - delta shortcut: delta measures finishing beyond
     the *strikes*, while the trade is profitable out to the breakevens, which
     the credit pushes further out. The shortcut understates every proposal's
     odds.
+
+    With no `iv_at`, one vol prices the whole distribution and the smile is
+    thrown away. Pass `iv_at(price, option_type) -> vol | None` and each
+    boundary is instead priced under the vol local to it: the put side for a
+    lower boundary, the call side for an upper one. On an equity where puts
+    are bid over calls that lowers the estimate, which is the point — a single
+    ATM vol systematically overstates POP on skewed names.
+
+    Be clear about what that is. Reading a lower boundary off one lognormal
+    and the upper boundary off another is a practitioner approximation, not a
+    distribution: the two CDFs subtracted here do not belong to the same
+    random variable, and nothing constrains the result to be monotone in the
+    skew (a call side quoted far under ATM can push the number back *up*). It
+    is strictly better than ATM-for-everything and it is what a desk would
+    do; it is not a correct POP. The rigorous version recovers the
+    risk-neutral density from the whole smile (Breeden-Litzenberger across the
+    chain) and is not implemented here.
+
+    A boundary whose own vol is missing falls back to `iv` rather than
+    invalidating the proposal — a partially skewed estimate beats none.
     """
     if spot <= 0 or iv <= 0 or dte <= 0:
         return None
-    sigma = iv * sqrt(dte / DAYS_PER_YEAR)
-    # Driftless in log terms means a -sigma^2/2 median shift.
-    drift = -0.5 * sigma * sigma
     total = 0.0
     for lower, upper in intervals:
-        total += _lognormal_cdf(upper, spot, sigma, drift) - _lognormal_cdf(
-            lower, spot, sigma, drift
-        )
+        total += _boundary_cdf(
+            upper, spot, iv, dte, OptionType.CALL, iv_at
+        ) - _boundary_cdf(lower, spot, iv, dte, OptionType.PUT, iv_at)
     return min(1.0, max(0.0, total))
 
 
 def pop_between(
     spot: float, lower: float, upper: float, iv: float, dte: int
 ) -> float | None:
-    """Single-interval form, kept for the two-breakeven case."""
+    """Single-interval form, kept for the two-breakeven case. Single-vol
+    only — the skew-aware path is `pop_over_intervals(..., iv_at=...)`."""
     if spot <= 0 or lower <= 0 or upper <= lower or iv <= 0 or dte <= 0:
         return None
     return pop_over_intervals([(lower, upper)], spot, iv, dte)
