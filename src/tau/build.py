@@ -536,13 +536,41 @@ def best(structures: list[Structure]) -> Structure | None:
     return max(pool, key=lambda s: s.metric(s.strategy.rank))
 
 
+def uniformly_broker_priced(structures: list[Structure], key: str) -> bool:
+    """Whether every candidate that `key` would compare came from the broker.
+
+    Asked of the passing rows only, because failures sort behind them as a
+    block and are never priced anyway. The broker pull is bounded at ten per
+    symbol, so a name with more passing variants than that has some rows on
+    one margin model and some on the other.
+    """
+    if key not in MODEL_SENSITIVE_METRICS:
+        return True
+    passing = [s for s in structures if s.ok]
+    return bool(passing) and all(s.bpr_source == "broker" for s in passing)
+
+
 def rank(structures: list[Structure], key: str = "annualized_roc") -> list[Structure]:
     """Passing variants first, ordered by the chosen metric descending;
     failures and unbuildable variants keep their place at the back rather
-    than vanishing."""
+    than vanishing.
+
+    Ordered on one margin model throughout: the broker's when it priced every
+    passing variant, the formula's the moment it did not. Ranking a
+    broker-priced row against an estimate would float whichever was measured
+    by the more generous model — the broker's figure ran 30% above the
+    formula on MU, which costs that row a quarter of its annualized return
+    against a neighbour the broker never saw. Each row still displays and
+    labels its own figure; this is the sort key only.
+    """
+    on_formula = not uniformly_broker_priced(structures, key)
 
     def sort_key(structure: Structure):
-        value = structure.metric(key) if structure.complete else None
+        if not structure.complete:
+            value = None
+        else:
+            measured = structure.on_formula if on_formula else structure
+            value = measured.metric(key)
         return (not structure.ok, -(value or 0), structure.symbol, structure.variant)
 
     return sorted(structures, key=sort_key)

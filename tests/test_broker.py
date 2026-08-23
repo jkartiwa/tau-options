@@ -336,3 +336,73 @@ async def test_a_success_between_failures_keeps_the_breaker_closed():
     ]
     assert values == [None, None, pytest.approx(3651.0), None, None]
     assert not broker_mod.dry_runs_disabled()
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limited_dry_run_backs_off_and_retries(monkeypatch):
+    """A 429 is the API answering and asking for less load. Retrying it is
+    the convention the chain fetch already follows."""
+    import asyncio
+
+    from tau import broker as broker_mod
+
+    slept = []
+
+    async def no_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    class FakeEffect:
+        isolated_order_margin_requirement = Decimal("-3651.00")
+
+    attempts = []
+
+    class BusyAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            attempts.append(order)
+            if len(attempts) < 3:
+                raise RuntimeError("429 Too Many Requests")
+            return FakeEffect()
+
+    value = await broker_bpr_for(None, BusyAccount(), strangle())
+    assert value == pytest.approx(3651.0)
+    assert len(attempts) == 3
+    assert slept == [
+        broker_mod.RATE_LIMIT_BASE_BACKOFF,
+        broker_mod.RATE_LIMIT_BASE_BACKOFF * 2,
+    ]
+    assert not broker_mod.dry_runs_disabled()
+
+
+@pytest.mark.asyncio
+async def test_rate_limits_never_trip_the_breaker(monkeypatch):
+    """Transient load must not read as "the broker is unavailable" — that is
+    the failure this whole feature exists to avoid presenting."""
+    import asyncio
+
+    from tau import broker as broker_mod
+
+    async def no_sleep(seconds):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    class BusyAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            raise RuntimeError("429 Too Many Requests")
+
+    account = BusyAccount()
+    for _ in range(10):
+        assert await broker_bpr_for(None, account, strangle()) is None
+    assert not broker_mod.dry_runs_disabled()
+
+    # a real failure still counts, and still trips
+    class DeadAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            raise RuntimeError("403: insufficient scopes")
+
+    dead = DeadAccount()
+    for _ in range(broker_mod.MAX_CONSECUTIVE_FAILURES):
+        assert await broker_bpr_for(None, dead, strangle()) is None
+    assert broker_mod.dry_runs_disabled()

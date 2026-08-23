@@ -80,9 +80,9 @@ BROKER_BPR_TOP = 10
 BROKER_BPR_BUDGET = 30.0
 
 
-def _is_rate_limited(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return "429" in text or "too many requests" in text
+# One definition of "the API asked for less load", shared with the dry-run
+# path, which has to tell backpressure from a broker that will not answer.
+_is_rate_limited = broker_mod.is_rate_limited
 
 
 def _clean_error(exc: Exception) -> str:

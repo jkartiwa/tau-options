@@ -22,6 +22,7 @@ from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Static
 
+from tau import broker as broker_mod
 from tau import catalyst as catalyst_mod
 from tau import chain as chain_mod
 from tau import history as history_mod
@@ -710,6 +711,12 @@ class TauApp(App):
                 f"★ {len(self._starred)}",
                 f"fetched {fetched}",
             ]
+        if broker_mod.dry_runs_disabled():
+            # The breaker's own warning goes to a logger, and Textual
+            # redirects stderr for the life of the app — so on screen this
+            # line is the only thing that separates "the broker stopped
+            # answering" from "these were always estimates".
+            bits.append("broker BPR off")
         if self._status:
             bits.append(self._status)
         self.query_one("#meta", Static).update("  ·  ".join(bits))

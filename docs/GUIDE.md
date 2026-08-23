@@ -175,11 +175,14 @@ models at once. The two are not comparable — the same trade prices 30% apart
 between them — so the winning structure is picked within one model: whenever
 any candidate has a broker figure, only broker-priced candidates compete, and
 a name with none of them ranks exactly as it did before the dry-run existed.
-The same rule governs the ordering one level up. `tau rank` sorts symbols
-against each other on the broker figures only when every name in the pass got
-them; one name missing them drops the whole list back to the formula, which is
-the yardstick every name always has. Each row still shows and labels its own
-figure — this decides the sort key, not the display.
+The same rule governs every ordering. `tau rank` sorts symbols against each
+other on the broker figures only when every name in the pass got them, and the
+variants drill-in sorts a name's ladder on them only when every passing variant
+got them — which, since the pull stops at ten, means a name with more than ten
+passing variants always orders on the formula. Either way one name missing them
+drops the whole list back to the formula, the yardstick every row always has.
+Each row still shows and labels its own figure; this decides the sort key, not
+the display.
 
 The pull is all or nothing for that reason. Which POSTs come back first is
 network timing, so a shortlist priced in part would hand the headline pick to
@@ -193,7 +196,12 @@ Two bounds keep an unavailable broker from stalling a pass. The pull gets 30
 seconds per name, and after three dry-run failures in a row tau stops asking
 for the rest of the run and says so once — the case that needs it is an account
 API that hangs rather than fails, where nothing would otherwise be cached and
-every name would pay the wait again. In the TUI the drill-in never waits on the
+every name would pay the wait again. A rate limit does not count towards that:
+a 429 is the API asking for less load, not declining to answer, so it backs off
+and retries like every other rate-limited call. When the breaker has tripped
+the TUI meta line reads `broker BPR off`, so a screen full of `~` is never
+ambiguous between "the broker stopped answering" and "these were always
+estimates". In the TUI the drill-in never waits on the
 broker at all: the variants appear on the estimates immediately and upgrade in
 place when it answers.
 

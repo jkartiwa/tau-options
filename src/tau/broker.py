@@ -58,6 +58,15 @@ TICK = Decimal("0.01")
 # the formula estimate covers every symbol after it.
 MAX_CONSECUTIVE_FAILURES = 3
 
+# A rate-limited dry-run is the API answering and asking for less load, so it
+# is retried on the same exponential backoff the chain fetch uses and never
+# counted against the breaker. The breaker is for an account API that will
+# not answer this token at all; letting a burst of 429s latch it would turn
+# the whole feature off for the run over transient load — the one thing the
+# graceful fallback must not be mistaken for.
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_BASE_BACKOFF = 1.0
+
 
 class _LoopGate:
     """The asyncio primitives shared by everything running on one event loop.
@@ -107,6 +116,12 @@ def dry_runs_disabled() -> bool:
     made; `broker_bpr_for` enforces the same thing for anyone who does not.
     """
     return _tripped
+
+
+def is_rate_limited(exc: Exception) -> bool:
+    """Whether a failed call was backpressure rather than a refusal."""
+    text = str(exc).lower()
+    return "429" in text or "too many requests" in text
 
 
 def _record_failure() -> None:
@@ -220,17 +235,29 @@ async def broker_bpr_for(session, account, structure: Structure) -> float | None
     buying power, which blends in offsets against existing positions and the
     premium flow. The dry-run is a calculation; nothing here ever places an
     order.
+
+    A rate-limited attempt backs off and tries again without counting against
+    the breaker; anything else counts once and gives up.
     """
-    if _tripped:
-        return None
     order = order_for(structure)
     if order is None:
         return None
-    try:
-        async with _gate().dry_run:
-            effect = await account.get_order_buying_power_effect(session, order)
-    except Exception:
-        _record_failure()
-        return None
-    _record_success()
-    return margin_requirement(effect)
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        if _tripped:
+            return None
+        try:
+            async with _gate().dry_run:
+                effect = await account.get_order_buying_power_effect(session, order)
+        except Exception as exc:
+            if not is_rate_limited(exc):
+                _record_failure()
+                return None
+            if attempt == RATE_LIMIT_RETRIES:
+                return None
+            # outside the gate on purpose: a backing-off call holding a slot
+            # would throttle the calls that are not being rate-limited
+            await asyncio.sleep(RATE_LIMIT_BASE_BACKOFF * 2**attempt)
+            continue
+        _record_success()
+        return margin_requirement(effect)
+    return None

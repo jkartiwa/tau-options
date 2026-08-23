@@ -802,3 +802,22 @@ async def test_the_variants_drill_in_upgrades_when_the_broker_answers(monkeypatc
         assert await _settle(a, lambda: "~" not in _row_text(a, 0))
         assert "2,500" in _row_text(a, 0)
         assert "BPR~" not in str(a.query_one("#detail").content)
+
+
+@pytest.mark.asyncio
+async def test_the_meta_line_says_when_the_broker_stopped_pricing(monkeypatch):
+    """The breaker's own warning goes to a logger, and Textual redirects
+    stderr for the life of the app. On screen the meta line is the only thing
+    separating "the broker stopped answering" from "these were always
+    estimates"."""
+    from tau import broker as broker_mod
+
+    a = app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert "broker BPR off" not in str(a.query_one("#meta").content)
+
+        broker_mod._tripped = True
+        a.refresh_meta()
+        await pilot.pause()
+        assert "broker BPR off" in str(a.query_one("#meta").content)
