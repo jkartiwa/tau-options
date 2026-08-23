@@ -51,7 +51,9 @@ tau
 ## Limits
 
 Buying power is an estimate from a margin formula, not a broker quote.
-Probability of profit assumes a driftless lognormal. Quotes are mid-based. The
+Probability of profit bounds one interval with two driftless lognormals — the
+lower breakeven priced off the put smile, the upper off the call smile — which
+is not a single self-consistent distribution. Quotes are mid-based. The
 catalyst read is a language model's opinion of recent headlines with no
 measured accuracy.
 
