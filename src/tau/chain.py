@@ -57,7 +57,7 @@ MAX_STRIKES_PER_SIDE = 80
 # correctly refused for a ladder that only looked coarse because of the
 # thinning.
 UNSTRIDED_CORE = 60
-DELTA_TOLERANCE = 0.05  # beyond this, the pick is reported as off-target
+DELTA_TOLERANCE = 0.05  # beyond this the variant is refused: build.MAX_DELTA_MISS
 DAYS_PER_YEAR = 365.0
 
 # tastytrade's own expected-move convention: the ATM straddle blended with

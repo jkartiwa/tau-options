@@ -297,6 +297,7 @@ Scan parameters are constants rather than flags:
 | Max spread cost | 25% of premium at stake | `strategies.defaults.MAX_SPREAD_COST` |
 | Min probability of profit | 68% (`--min-pop` overrides) | `strategies.defaults.MIN_POP` |
 | Max referenced-strike miss | 25% of the requested width | `build.MAX_REF_MISS` |
+| Max delta-selected miss | 0.05 delta | `build.MAX_DELTA_MISS` |
 | Max variants per strategy | 64 | `strategy.MAX_VARIANTS` |
 | Margin estimate | max(20% spot − OTM + premium, 10% strike + premium, $50) per contract | `payoff.OTM_PERCENT`, `STRIKE_PERCENT`, `MIN_PER_CONTRACT` |
 
