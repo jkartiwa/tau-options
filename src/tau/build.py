@@ -483,13 +483,38 @@ def evaluate_all(strategies, cycle: Cycle) -> list[Structure]:
     return [s for strategy in strategies for s in evaluate(strategy, cycle)]
 
 
+# Metrics computed from the buying-power figure. Two structures whose `bpr`
+# came from different margin models are not comparable on these: the broker's
+# portfolio margin ran 30% above the naked-margin formula on MU and 8% below
+# it on AAPL, which is enough to hand the win to whichever structure happened
+# to be measured on the more generous model. Metrics that never read `bpr`
+# are unaffected and compare across sources as they always did.
+MODEL_SENSITIVE_METRICS = frozenset({"bpr", "roc", "annualized_roc"})
+
+
+def comparable_on(structures: list[Structure], key: str) -> list[Structure]:
+    """`structures` narrowed to one margin model when `key` depends on which
+    model produced it.
+
+    The broker-priced structures when there are any, everything otherwise —
+    so a formula estimate can never beat a broker figure on a comparison that
+    reads buying power, and a run with no broker figures at all ranks exactly
+    as it did before the dry-run existed.
+    """
+    if key not in MODEL_SENSITIVE_METRICS:
+        return structures
+    priced = [s for s in structures if s.bpr_source == "broker"]
+    return priced or structures
+
+
 def best(structures: list[Structure]) -> Structure | None:
     """The highest-ranked passing variant, by each structure's own rank
     metric. Structures that failed a constraint never win."""
     passing = [s for s in structures if s.ok and s.metric(s.strategy.rank) is not None]
     if not passing:
         return None
-    return max(passing, key=lambda s: s.metric(s.strategy.rank))
+    pool = comparable_on(passing, passing[0].strategy.rank)
+    return max(pool, key=lambda s: s.metric(s.strategy.rank))
 
 
 def rank(structures: list[Structure], key: str = "annualized_roc") -> list[Structure]:

@@ -490,22 +490,35 @@ class TauApp(App):
         self.render_detail()
         try:
             cycle = await self._chain_loader(candidate)
+            # Searching every strategy over the fetched cycle is in-memory
+            # arithmetic, so a chain load produces the same full proposal the
+            # rank view would — one cache, filled from either direction.
             proposal = propose_mod.propose_on(candidate, cycle, self._strategies)
-            session = None
-            try:
-                session = get_session()
-            except Exception:
-                pass  # no credentials — the formula estimate is the whole story
-            # The broker dry-run is an upgrade, never a requirement: without a
-            # session, or with one that cannot reach the account API, the
-            # proposal keeps its formula figures untouched.
-            self._proposals[candidate.symbol] = await propose_mod.enrich_with_broker_bpr(
-                session, proposal
-            )
-            self._detail_status = ""
         except Exception as exc:
             self._detail_status = f"chain failed: {exc}"
-        # The cursor may have moved on; only repaint what is selected now.
+            # The cursor may have moved on; only repaint what is selected now.
+            self.render_current_table()
+            return
+        # The chain is in hand, so the variants are showable now. Every row
+        # renders with the `~` that marks a formula estimate, and the account
+        # API — which can hang for as long as its read timeout allows —
+        # upgrades the rows it answers for afterwards. The drill-in never
+        # waits on it.
+        self._proposals[candidate.symbol] = proposal
+        self._detail_status = ""
+        self.render_current_table()
+        session = None
+        try:
+            session = get_session()
+        except Exception:
+            pass  # no credentials — the formula estimate is the whole story
+        # The broker dry-run is an upgrade, never a requirement: without a
+        # session, or with one that cannot reach the account API, the
+        # proposal keeps its formula figures untouched.
+        enriched = await propose_mod.enrich_with_broker_bpr(session, proposal)
+        if enriched is proposal:
+            return
+        self._proposals[candidate.symbol] = enriched
         self.render_current_table()
 
     def action_load_chain(self) -> None:

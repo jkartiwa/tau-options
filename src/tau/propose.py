@@ -70,6 +70,15 @@ CROSS_STRATEGY_METRIC = "annualized_roc"
 # what the rank view shows.
 BROKER_BPR_TOP = 10
 
+# Seconds the whole broker pull gets before the proposal ships on whatever
+# came back. A dry-run that fails is free — `margin_account` caches the
+# failure and enrichment is skipped — but one that merely hangs costs a read
+# timeout per POST, and a rank pass drains them through one shared gate. The
+# requirement is that an unavailable broker never stalls the pipeline, and a
+# deadline is the only thing that actually enforces it: whatever answered in
+# time is kept, everything else stays on the formula estimate and says so.
+BROKER_BPR_BUDGET = 30.0
+
 
 def _is_rate_limited(exc: Exception) -> bool:
     text = str(exc).lower()
@@ -113,6 +122,10 @@ class Proposal:
         variant rather than its highest-returning one. Those winners then
         compete on one common metric, because a lizard and a condor cannot be
         compared on a yardstick only one of them declared.
+
+        The shortlist the broker prices is bounded, so those winners can carry
+        figures from two different margin models. `comparable_on` keeps the
+        final comparison to one of them.
         """
         by_strategy: dict[str, list[Structure]] = {}
         for structure in self.structures:
@@ -127,7 +140,8 @@ class Proposal:
         ]
         if not comparable:
             return None
-        return max(comparable, key=lambda s: s.metric(CROSS_STRATEGY_METRIC))
+        pool = build_mod.comparable_on(comparable, CROSS_STRATEGY_METRIC)
+        return max(pool, key=lambda s: s.metric(CROSS_STRATEGY_METRIC))
 
     @property
     def ok(self) -> bool:
@@ -295,6 +309,7 @@ async def enrich_with_broker_bpr(
     session: Session | None,
     proposal: Proposal,
     top_n: int = BROKER_BPR_TOP,
+    budget: float = BROKER_BPR_BUDGET,
 ) -> Proposal:
     """Attach the broker's dry-run buying-power figure to the proposal's
     top-ranked structures.
@@ -306,6 +321,11 @@ async def enrich_with_broker_bpr(
     error, timeout, rate limit, SDK exception, missing env (`session=None`)
     — silently leaves the proposal as it was. The pipeline never changes
     shape because the broker did not answer.
+
+    The whole pull is bounded by `budget` seconds. Running out is not an
+    error: the figures that arrived are kept, the rest stay on the formula,
+    and the caller is never told the difference beyond the source label each
+    row already carries.
     """
     if session is None or not proposal.structures:
         return proposal
@@ -319,21 +339,33 @@ async def enrich_with_broker_bpr(
     if not shortlist:
         return proposal
 
-    async def one(structure: Structure) -> Structure:
+    priced: dict[int, Structure] = {}
+
+    async def one(structure: Structure) -> None:
         # `broker_bpr_for` gates itself: a rank pass runs several of these
         # batches at once, so the cap on dry-run POSTs in flight has to be
-        # shared across them rather than reset per batch.
+        # shared across them rather than reset per batch. Each figure lands
+        # in `priced` as it arrives, so a deadline that cuts the pull short
+        # keeps everything that answered before it.
         try:
             value = await broker_mod.broker_bpr_for(session, account, structure)
         except Exception:
-            return structure
-        if value is None:
-            return structure
-        return replace(structure, broker_bpr=value)
+            return
+        if value is not None:
+            priced[id(structure)] = replace(structure, broker_bpr=value)
 
-    enriched = await asyncio.gather(*(one(s) for s in shortlist))
-    by_id = {id(s): e for s, e in zip(shortlist, enriched)}
-    structures = tuple(by_id.get(id(s), s) for s in proposal.structures)
+    tasks = [asyncio.ensure_future(one(s)) for s in shortlist]
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks), budget)
+    except Exception:
+        pass
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+    if not priced:
+        return proposal
+    structures = tuple(priced.get(id(s), s) for s in proposal.structures)
     return replace(proposal, structures=structures)
 
 

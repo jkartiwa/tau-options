@@ -132,3 +132,64 @@ def test_an_open_profit_tail_is_stored_as_absent_not_as_a_number():
     assert store._finite(float("inf")) is None
     assert store._finite(-float("inf")) is None
     assert store._finite(3.0) == 3.0
+
+
+def test_a_pick_records_which_margin_model_produced_its_figures():
+    """`bpr`, `roc` and `annualized_roc` mean different things depending on
+    whether the broker or the formula produced them, so the row says which."""
+    from dataclasses import replace
+
+    p = propose_on(cand("SPY"), cycle("SPY"))
+    formula_scan = store.log_scan({}, [])
+    store.log_picks(formula_scan, [p])
+
+    priced = replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=2500.0) if s is p.best else s
+            for s in p.structures
+        ),
+    )
+    assert priced.best.bpr_source == "broker"
+    broker_scan = store.log_scan({}, [])
+    store.log_picks(broker_scan, [priced])
+
+    logged = dict(
+        rows("SELECT scan_id, bpr_source FROM pick ORDER BY scan_id")
+    )
+    assert logged[formula_scan] == "estimate"
+    assert logged[broker_scan] == "broker"
+    bpr = dict(rows("SELECT scan_id, bpr FROM pick ORDER BY scan_id"))
+    assert bpr[broker_scan] == pytest.approx(2500.0)
+
+
+def test_a_log_written_before_the_column_existed_still_opens_and_appends():
+    """The migration is additive: an existing database gains the column, its
+    rows keep every value they had, and the absent figure reads as unknown
+    rather than as a guess."""
+    import sqlite3
+
+    path = store.db_path()
+    legacy_columns = [c for c in store._PICK_COLUMNS if c != "bpr_source"]
+    conn = sqlite3.connect(path)
+    with conn:
+        conn.executescript(
+            store._SCHEMA.replace("    bpr_source TEXT,\n", "")
+        )
+        conn.execute("INSERT INTO scan (ts, params_json) VALUES ('t', '{}')")
+        conn.execute(
+            f"INSERT INTO pick ({', '.join(legacy_columns)}) "
+            f"VALUES ({', '.join('?' * len(legacy_columns))})",
+            (1, None, "OLD", "v1", "2026-01-16", 45, 100.0, "[]",
+             1.5, 150.0, 3000.0, 0.05, 0.4, 0.7, 0.02, 1.2, "[]", None),
+        )
+    conn.close()
+
+    scan_id = store.log_scan({}, [])
+    store.log_picks(scan_id, [propose_on(cand("NEW"), cycle("NEW"))])
+
+    logged = dict(rows("SELECT symbol, bpr_source FROM pick"))
+    assert logged["OLD"] is None
+    assert logged["NEW"] == "estimate"
+    old = rows("SELECT variant, bpr, annualized_roc FROM pick WHERE symbol='OLD'")[0]
+    assert old == ("v1", 3000.0, 0.4)

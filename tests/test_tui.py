@@ -676,3 +676,65 @@ async def test_rank_table_marks_broker_and_formula_bpr_sources(monkeypatch):
         table = a2.query_one("#table", DataTable)
         row = list(table.get_row_at(0))
         assert row[6].endswith("~")
+
+
+@pytest.mark.asyncio
+async def test_chain_load_renders_before_the_broker_answers(monkeypatch):
+    """The drill-in must never wait on the account API. The variants show up
+    on the formula figures the `~` marks as estimates, and the broker upgrades
+    the rows it answers for afterwards."""
+    from dataclasses import replace
+
+    from tau import propose as propose_mod
+    from tau.chain import Cycle, Leg
+
+    cycle = Cycle(
+        symbol="HIGH",
+        expiration=date(2026, 9, 4),
+        dte=40,
+        underlying=100.0,
+        legs=(
+            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
+            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
+        ),
+        fetched_at=datetime.now(UTC),
+    )
+    release = asyncio.Event()
+
+    async def chain_loader(candidate):
+        return cycle
+
+    async def loader():
+        return list(FIXTURE)
+
+    async def slow_enrich(session, proposal, *args, **kwargs):
+        await release.wait()
+        return replace(
+            proposal,
+            structures=tuple(
+                replace(s, broker_bpr=2500.0) if s is proposal.best else s
+                for s in proposal.structures
+            ),
+        )
+
+    monkeypatch.setattr("tau.tui.app.get_session", lambda: object())
+    monkeypatch.setattr(propose_mod, "enrich_with_broker_bpr", slow_enrich)
+
+    a = TauApp(loader=loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        # cached and painted while the account API is still hanging
+        assert await _settle(a, lambda: "HIGH" in a._proposals)
+        assert not release.is_set()
+        formula = a._proposals["HIGH"]
+        assert formula.best is not None
+        assert formula.best.bpr_source == "estimate"
+        assert a._detail_status == ""
+        assert "~" in str(a.query_one("#detail").content)
+
+        release.set()
+        assert await _settle(
+            a, lambda: a._proposals["HIGH"].best.bpr_source == "broker"
+        )
+        assert a._proposals["HIGH"].best.bpr == pytest.approx(2500.0)

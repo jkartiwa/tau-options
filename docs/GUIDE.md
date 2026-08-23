@@ -170,6 +170,18 @@ formula estimates carry a trailing `~` (the tables' column header is `BPR`
 for both). `tau rank --top N` prices the top N names; within each name the
 top 10 structures get the broker figure.
 
+Because that shortlist is bounded, one name's rows can carry figures from both
+models at once. The two are not comparable — the same trade prices 30% apart
+between them — so the winning structure is picked within one model: whenever
+any candidate has a broker figure, only broker-priced candidates compete, and
+a name with none of them ranks exactly as it did before the dry-run existed.
+The whole broker pull is also bounded to 30 seconds per name. An account API
+that hangs rather than fails cannot stall a rank pass: whatever answered in
+time keeps its broker figure and the rest stay on the estimate, with the `~`
+saying so. In the TUI the drill-in never waits on it at all — the variants
+appear on the estimates immediately and upgrade in place when the broker
+answers.
+
 Underneath the structure you get the rest of that strategy's ladder, with the
 winner marked. The rank view can only show one row per name, and on return
 alone the widest delta almost always wins, so this is where you see what the
@@ -379,6 +391,12 @@ every leg with its OCC symbol and delta, and the figures. Definitions are
 stored once each in `strategy_def`, keyed by a digest, so editing a strategy
 does not rewrite the history of picks made under the old version. A symbol that
 priced nothing still gets a row with its reason.
+
+`bpr_source` records which margin model produced that row's `bpr`, and `roc`
+and `annualized_roc` with it — `broker` for the dry-run figure, `estimate` for
+the formula, `NULL` on rows written before the column existed. Filter on it
+before comparing capital efficiency across scans; the two models are different
+numbers for the same trade.
 
 ```sql
 SELECT d.name, k.variant, count(*), round(avg(k.annualized_roc), 2)

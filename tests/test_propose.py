@@ -584,3 +584,113 @@ async def test_dry_runs_in_flight_are_capped_across_concurrent_batches(monkeypat
     assert peak <= broker_mod.MAX_CONCURRENT
     # and the figures still landed
     assert all(e.best.bpr_source == "broker" for e in enriched)
+
+
+def _strategy_winners(p):
+    from tau.build import best as build_best
+
+    groups = {}
+    for s in p.structures:
+        groups.setdefault(s.strategy.name, []).append(s)
+    winners = [w for g in groups.values() if (w := build_best(g)) is not None]
+    return sorted(
+        winners, key=lambda s: s.metric("annualized_roc"), reverse=True
+    )
+
+
+def test_a_formula_estimate_never_outranks_a_broker_figure_for_best():
+    """The shortlist is bounded, so a strategy's winner can miss the dry-run
+    and keep the naked-margin formula while another carries portfolio margin.
+    The two are different numbers for the same trade — up to 30% apart on the
+    author's own measurement — so `best` must not decide between them."""
+    from dataclasses import replace
+
+    p = proposal()
+    winners = _strategy_winners(p)
+    top, runner_up = winners[0], winners[1]
+    assert top.metric("annualized_roc") > runner_up.metric("annualized_roc")
+    assert p.best.label == top.label
+
+    # the runner-up got a broker figure that leaves its own ranking unchanged;
+    # it still loses on the raw metric, and still must win `best`
+    priced = replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr) if s is runner_up else s
+            for s in p.structures
+        ),
+    )
+    assert priced.best.label == runner_up.label
+    assert priced.best.bpr_source == "broker"
+    assert priced.best.metric("annualized_roc") < top.metric("annualized_roc")
+
+
+def test_a_formula_estimate_never_outranks_a_broker_figure_within_a_strategy():
+    """Same rule one stage earlier: a strategy picks its own winner on a
+    bpr-derived metric too."""
+    from dataclasses import replace
+
+    from tau.build import best as build_best
+
+    p = proposal()
+    top = _strategy_winners(p)[0]
+    group = [s for s in p.structures if s.strategy.name == top.strategy.name]
+    loser = next(
+        s for s in group
+        if s.ok and s is not top and s.metric("annualized_roc") is not None
+    )
+    priced = [replace(s, broker_bpr=s.bpr) if s is loser else s for s in group]
+    winner = build_best(priced)
+    assert winner.label == loser.label
+    assert winner.bpr_source == "broker"
+
+
+def test_a_metric_that_ignores_buying_power_still_compares_across_sources():
+    """The rule is about margin models, not about the broker: a comparison
+    that never reads `bpr` is unaffected by which model produced it."""
+    from dataclasses import replace
+
+    from tau.build import comparable_on
+
+    p = proposal()
+    structures = list(p.structures)
+    marked = [replace(s, broker_bpr=5000.0) for s in structures[:1]] + structures[1:]
+    assert comparable_on(marked, "credit") == marked
+    assert comparable_on(marked, "annualized_roc") == marked[:1]
+
+
+@pytest.mark.asyncio
+async def test_enrichment_gives_up_on_its_budget_and_keeps_what_arrived(monkeypatch):
+    """An account API that hangs rather than fails must not stall the pass.
+    Whatever answered inside the budget is kept; everything else stays on the
+    formula estimate, and nothing raises."""
+    import asyncio
+
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    answered = []
+
+    async def fake_margin(session):
+        return object()
+
+    async def fake_bpr(session, account, structure):
+        if not answered:
+            answered.append(structure.label)
+            return 2500.0
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
+
+    p = proposal()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), p, budget=0.1)
+    elapsed = loop.time() - started
+
+    assert elapsed < 5.0
+    assert len(enriched.structures) == len(p.structures)
+    priced = [s for s in enriched.structures if s.bpr_source == "broker"]
+    assert [s.label for s in priced] == answered
+    assert priced[0].bpr == pytest.approx(2500.0)
