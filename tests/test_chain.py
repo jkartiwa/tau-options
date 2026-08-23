@@ -77,6 +77,27 @@ def test_atm_iv_blends_call_and_put_at_the_nearest_strike():
     assert cy.atm_iv == pytest.approx((0.30 + 0.32) / 2)
 
 
+def test_iv_at_interpolates_linearly_between_bracketing_strikes():
+    cy = cycle(EM_LEGS, underlying=100.0)
+    # puts: 90 -> 0.33, 95 -> 0.31, 100 -> 0.32
+    assert cy.iv_at(92.5, P) == pytest.approx(0.32)
+    assert cy.iv_at(95.0, P) == pytest.approx(0.31)
+    # calls: 100 -> 0.30, 105 -> 0.29, 110 -> 0.28
+    assert cy.iv_at(107.5, C) == pytest.approx(0.285)
+
+
+def test_iv_at_is_flat_outside_the_quoted_strike_range():
+    cy = cycle(EM_LEGS, underlying=100.0)
+    assert cy.iv_at(50.0, P) == pytest.approx(0.33)   # below the lowest put
+    assert cy.iv_at(500.0, C) == pytest.approx(0.28)  # above the highest call
+
+
+def test_iv_at_is_none_when_that_side_carries_no_iv():
+    calls_only = tuple(leg for leg in EM_LEGS if leg.type is C)
+    assert cycle(calls_only).iv_at(95.0, P) is None
+    assert cycle((leg(100, C, 0.50, iv=None),)).iv_at(100.0, C) is None
+
+
 def test_expected_move_uses_tastytrade_weighted_formula_when_wings_priced():
     cy = cycle(EM_LEGS, underlying=100.0)
     assert cy.expected_move == pytest.approx(0.6 * 6.0 + 0.3 * 3.0 + 0.1 * 1.2)

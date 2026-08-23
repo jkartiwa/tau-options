@@ -1,10 +1,11 @@
+from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import pytest
 
 from tau.build import MAX_REF_MISS, best, build, evaluate, rank
 from tau.chain import Cycle, Leg
-from tau.payoff import OptionType, Side
+from tau.payoff import OptionType, Side, pop_over_intervals, profitable_intervals
 from tau.strategies import STRATEGIES
 from tau.strategy import Bias, Delta, LegSpec, Ref, Require, Strategy
 
@@ -20,7 +21,7 @@ CALL_MIDS = {100: 3.50, 105: 2.00, 110: 1.20, 115: 0.80, 120: 0.50}
 SPREAD = 0.02  # tight enough that the shipped spread_cost constraints pass
 
 
-def leg(strike, option_type, delta, mid, spread=SPREAD):
+def leg(strike, option_type, delta, mid, spread=SPREAD, iv=0.30):
     return Leg(
         occ=f"{option_type}{strike:g}",
         streamer=f"s{option_type}{strike:g}",
@@ -29,13 +30,26 @@ def leg(strike, option_type, delta, mid, spread=SPREAD):
         bid=mid - spread / 2,
         ask=mid + spread / 2,
         delta=delta,
-        iv=0.30,
+        iv=iv,
     )
 
 
 def ladder():
     legs = [leg(k, P, d, PUT_MIDS[k]) for k, d in PUT_DELTAS.items()]
     legs += [leg(k, C, d, CALL_MIDS[k]) for k, d in CALL_DELTAS.items()]
+    return tuple(legs)
+
+
+# The same ladder with a realistic equity smile laid over it: puts bid over
+# calls in the wings, both sides meeting at 30% on the 100 strike so `atm_iv`
+# is unchanged at 0.30 and only the *local* vols differ.
+PUT_IVS = {80: 0.40, 85: 0.37, 90: 0.345, 95: 0.32, 100: 0.30}
+CALL_IVS = {100: 0.30, 105: 0.29, 110: 0.28, 115: 0.275, 120: 0.27}
+
+
+def skewed_ladder():
+    legs = [leg(k, P, d, PUT_MIDS[k], iv=PUT_IVS[k]) for k, d in PUT_DELTAS.items()]
+    legs += [leg(k, C, d, CALL_MIDS[k], iv=CALL_IVS[k]) for k, d in CALL_DELTAS.items()]
     return tuple(legs)
 
 
@@ -350,6 +364,47 @@ def test_best_never_returns_a_variant_that_fails_the_pop_floor():
     assert winner is not None
     assert winner.pop >= 0.70
     assert winner.annualized_roc < naive_top.annualized_roc
+
+
+def test_a_flat_smile_leaves_pop_on_the_atm_number():
+    """Requirement: a symmetric chain must be unchanged. The default ladder
+    quotes 30% on every strike, so the per-boundary read has to land exactly
+    where the single-ATM-vol read did."""
+    structure = one(STRANGLE_20, cycle(), "20Δ/20Δ")
+    cy = structure.cycle
+    assert cy.atm_iv == pytest.approx(0.30)
+    assert structure.pop == pop_over_intervals(
+        profitable_intervals(structure.payoff_legs), 100.0, 0.30, 45
+    )
+
+
+def test_put_over_call_skew_pulls_pop_below_the_atm_only_number():
+    """Requirement: a skewed chain must report a lower POP. Same strikes,
+    same credit, same `atm_iv` — only the wings' own vols differ, and the
+    fatter downside has to show up as worse odds."""
+    structure = one(STRANGLE_20, cycle(legs=skewed_ladder()), "20Δ/20Δ")
+    assert structure.cycle.atm_iv == pytest.approx(0.30)  # unchanged by the smile
+    atm_only = pop_over_intervals(
+        profitable_intervals(structure.payoff_legs), 100.0, 0.30, 45
+    )
+    assert structure.pop < atm_only
+    # 87.60 breakeven off a 35.7% put, 112.40 off a 27.76% call
+    assert structure.pop == pytest.approx(0.7337, abs=5e-4)
+    assert atm_only == pytest.approx(0.7632, abs=5e-4)
+
+
+def test_pop_survives_a_chain_with_no_leg_level_ivs():
+    """Degrade, never fail: strip every leg's own IV but keep an ATM read,
+    and pop must still come back on the ATM number rather than None."""
+    legs = tuple(
+        replace(built, iv=0.30) if built.strike == 100.0 else replace(built, iv=None)
+        for built in ladder()
+    )
+    structure = one(STRANGLE_20, cycle(legs=legs), "20Δ/20Δ")
+    assert structure.cycle.atm_iv == pytest.approx(0.30)
+    assert structure.pop == pop_over_intervals(
+        profitable_intervals(structure.payoff_legs), 100.0, 0.30, 45
+    )
 
 
 def test_be_over_em_measures_the_nearer_breakeven_in_expected_moves():

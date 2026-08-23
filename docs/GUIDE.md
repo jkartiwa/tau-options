@@ -143,7 +143,7 @@ the first and second OTM strangles, weighted 60/30/10. It falls back to
 | `max profit` | Best case in dollars per contract. `∞` when the upside is open |
 | `BPR~` | Estimated buying power in dollars. A formula, not a broker quote |
 | `ANN` | Annualized return on capital, which makes a 40-day trade comparable to a 60-day one |
-| `POP` | Probability of profit at expiry under a driftless lognormal |
+| `POP` | Probability of profit at expiry under a driftless lognormal, with each breakeven priced under the vol local to it — puts below, calls above. An approximation, not a smile-consistent density; see `payoff.pop_over_intervals` |
 | `spread` | Cost of crossing every leg, as a share of the premium at stake |
 | `BE/EM` | Nearest breakeven measured in expected moves. Under 1.00 turns yellow |
 

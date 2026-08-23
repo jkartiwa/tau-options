@@ -184,5 +184,71 @@ def test_pop_is_none_on_degenerate_inputs():
     assert pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 0) is None
 
 
+def _flat_smile(vol):
+    return lambda price, option_type: vol
+
+
+def test_a_flat_smile_reproduces_the_single_vol_answer_exactly():
+    """Requirement: a symmetric chain must be unchanged. Put-side and
+    call-side vol equal to the ATM vol has to land on the old number, not
+    near it."""
+    single = pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 45)
+    local = pop_over_intervals(
+        [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=_flat_smile(0.30)
+    )
+    assert local == single
+
+
+def test_put_over_call_skew_lowers_pop_for_a_short_strangle():
+    """A realistic 45-DTE equity smile: 30% ATM, the 88 breakeven priced off
+    a 36% put and the 112 breakeven off a 27% call. The downside is fatter
+    than the ATM lognormal says, so the estimate has to come down."""
+    smile = {OptionType.PUT: 0.36, OptionType.CALL: 0.27}
+    skewed = pop_over_intervals(
+        [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=lambda price, t: smile[t]
+    )
+    flat = pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 45)
+    assert skewed < flat
+    assert skewed == pytest.approx(0.7215, abs=5e-4)
+    assert flat == pytest.approx(0.7476, abs=5e-4)
+
+
+def test_a_missing_local_vol_falls_back_to_the_atm_vol_per_boundary():
+    """Degrade, never fail: the put side has no IV, so the lower boundary
+    reverts to the ATM vol while the upper keeps its own."""
+    def half_smile(price, option_type):
+        return None if option_type is OptionType.PUT else 0.27
+
+    both_sides = pop_over_intervals(
+        [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=lambda price, t: {
+            OptionType.PUT: 0.30, OptionType.CALL: 0.27
+        }[t]
+    )
+    degraded = pop_over_intervals(
+        [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=half_smile
+    )
+    assert degraded == both_sides
+    assert degraded is not None
+
+
+def test_a_nonpositive_local_vol_falls_back_rather_than_dividing_by_zero():
+    assert pop_over_intervals(
+        [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=lambda price, t: 0.0
+    ) == pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 45)
+
+
+def test_an_open_tail_never_consults_the_smile():
+    """`inf` and `0` are certainties, not vol-dependent — a lookup there
+    would be asked for the vol at an infinite strike."""
+    asked = []
+
+    def record(price, option_type):
+        asked.append(price)
+        return 0.30
+
+    pop_over_intervals([(88.0, inf)], 100.0, 0.30, 45, iv_at=record)
+    assert asked == [88.0]
+
+
 def test_bpr_is_none_without_a_spot():
     assert bpr(STRANGLE, 0.0) is None

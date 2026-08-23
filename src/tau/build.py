@@ -191,6 +191,10 @@ class Structure:
 
     @property
     def pop(self) -> float | None:
+        """Probability of finishing profitable, with each breakeven priced
+        under the vol local to it — puts below, calls above — and `atm_iv` as
+        the per-boundary fallback. See `pop_over_intervals` for what that
+        approximation is and is not."""
         if not self.complete or self.cycle.underlying is None:
             return None
         iv = self.cycle.atm_iv
@@ -201,6 +205,7 @@ class Structure:
             self.cycle.underlying,
             iv,
             self.cycle.dte,
+            iv_at=self.cycle.iv_at,
         )
 
     @property
