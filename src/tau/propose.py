@@ -154,7 +154,9 @@ class Proposal:
         if narrowed.best is not None:
             return narrowed
         reason = (
-            "no strategy enabled" if not kept else _no_structure_reason(kept)
+            "no strategy enabled"
+            if not kept
+            else _no_structure_reason(self.cycle, kept)
         )
         return Proposal(self.candidate, self.cycle, kept, error=reason)
 
@@ -198,17 +200,26 @@ class Proposal:
         return self._of_best("max_profit")
 
 
-def _no_structure_reason(structures: tuple[Structure, ...]) -> str:
+def _no_structure_reason(
+    cycle: Cycle | None, structures: tuple[Structure, ...]
+) -> str:
     """Why a priced cycle yielded no trade. A cycle that built nothing failed
     for a different reason than one where every variant broke a constraint,
     and the second is the interesting case — it is a market condition, not a
     data problem.
+
+    Which is why a missing underlying quote is checked first. Without a spot
+    price every risk metric fails closed, so every variant breaks a
+    constraint and the tally below would describe a dropped feed in the
+    vocabulary of a market read.
 
     Summarized by which constraint bit and how often, not by quoting the first
     couple of failure messages: a name where nine variants died on spread cost
     and twelve on probability reads as a pure probability problem if the list
     is simply truncated.
     """
+    if cycle is not None and cycle.underlying is None:
+        return "no underlying quote"
     if not structures:
         return "no strategy produced a variant"
     built = [s for s in structures if s.complete]
@@ -244,7 +255,7 @@ def propose_on(
     if proposal.best is not None:
         return proposal
     return Proposal(
-        candidate, cycle, structures, error=_no_structure_reason(structures)
+        candidate, cycle, structures, error=_no_structure_reason(cycle, structures)
     )
 
 

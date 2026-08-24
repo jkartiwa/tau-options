@@ -9,6 +9,7 @@ from tau.propose import (
     Proposal,
     naked_side_requirement,
     pop_between,
+    propose_on,
     rank_proposals,
 )
 from tau.screen import Candidate
@@ -70,7 +71,9 @@ def proposal(symbol="TEST", cy=None, strategies=SHIPPED):
 
 def test_naked_requirement_uses_the_greater_of_two_formulas():
     # far OTM, cheap premium -> the 10%-of-strike floor should bind
-    req = naked_side_requirement(spot=100.0, strike=50.0, premium=0.10)
+    req = naked_side_requirement(
+        spot=100.0, strike=50.0, premium=0.10, option_type=P
+    )
     assert req == pytest.approx(max(
         (0.20 * 100 - 50 + 0.10) * 100,
         (0.10 * 50 + 0.10) * 100,
@@ -79,8 +82,51 @@ def test_naked_requirement_uses_the_greater_of_two_formulas():
 
 
 def test_naked_requirement_floor_applies_to_tiny_premium():
-    req = naked_side_requirement(spot=10.0, strike=9.0, premium=0.01)
+    req = naked_side_requirement(
+        spot=10.0, strike=9.0, premium=0.01, option_type=P
+    )
     assert req >= 50.0
+
+
+def test_naked_requirement_otm_term_is_side_aware():
+    # spot 100, premium 2.00. K=90 is OTM for a put by 10 and ITM for a
+    # call; K=110 is the mirror image.
+    assert naked_side_requirement(100.0, 90.0, 2.00, P) == pytest.approx(
+        max((0.20 * 100 - 10 + 2.00) * 100, (0.10 * 90 + 2.00) * 100, 50.0)
+    )
+    assert naked_side_requirement(100.0, 110.0, 2.00, C) == pytest.approx(
+        max((0.20 * 100 - 10 + 2.00) * 100, (0.10 * 110 + 2.00) * 100, 50.0)
+    )
+
+
+def test_naked_requirement_charges_an_itm_short_no_otm_credit():
+    # ITM has no out-of-the-money distance to subtract: the 20% term is
+    # charged in full. A short put at 110 against spot 100 is ITM.
+    itm_put = naked_side_requirement(100.0, 110.0, 2.00, P)
+    assert itm_put == pytest.approx(
+        max((0.20 * 100 - 0.0 + 2.00) * 100, (0.10 * 110 + 2.00) * 100, 50.0)
+    )
+    assert itm_put == pytest.approx(2200.0)
+
+    itm_call = naked_side_requirement(100.0, 90.0, 2.00, C)
+    assert itm_call == pytest.approx(
+        max((0.20 * 100 - 0.0 + 2.00) * 100, (0.10 * 90 + 2.00) * 100, 50.0)
+    )
+    assert itm_call == pytest.approx(2200.0)
+
+
+def test_missing_underlying_quote_is_reported_as_a_data_gap():
+    # Every metric fails closed without a spot price, so the constraint
+    # tally would otherwise describe a dropped feed as a market condition.
+    p = propose_on(cand(), cycle(underlying=None), SHIPPED)
+    assert p.best is None
+    assert p.error == "no underlying quote"
+
+
+def test_missing_underlying_quote_survives_strategy_narrowing():
+    p = propose_on(cand(), cycle(underlying=None), SHIPPED)
+    narrowed = p.only({next(iter(STRATEGIES))})
+    assert narrowed.error == "no underlying quote"
 
 
 def test_pop_symmetric_breakevens_near_half_with_slight_drift_correction():
@@ -214,7 +260,7 @@ def test_a_cycle_where_every_variant_fails_says_so_rather_than_going_blank():
     assert all(s.complete for s in structures)
     from tau.propose import _no_structure_reason
 
-    assert "failed a constraint" in _no_structure_reason(structures)
+    assert "failed a constraint" in _no_structure_reason(cy, structures)
 
 
 def test_rank_orders_by_metric_descending_failed_last():

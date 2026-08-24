@@ -186,9 +186,21 @@ def worst_loss_down(legs: tuple[PayoffLeg, ...], spot: float) -> float:
     return max(0.0, -min(payoff_at(legs, point) for point in points))
 
 
-def naked_side_requirement(spot: float, strike: float, premium: float) -> float:
-    """Margin for one naked short option, per contract, in dollars."""
-    otm = max(0.0, spot - strike) if strike < spot else max(0.0, strike - spot)
+def naked_side_requirement(
+    spot: float, strike: float, premium: float, option_type: OptionType
+) -> float:
+    """Margin for one naked short option, per contract, in dollars.
+
+    Which way is out of the money depends on the side: a short put is OTM
+    below spot, a short call above it. An in-the-money short has no OTM
+    distance to hand back, so the 20 %-of-underlying term is charged in full
+    — taking `abs(spot - strike)` there would discount the leg that is
+    actually at risk.
+    """
+    if option_type is OptionType.PUT:
+        otm = max(0.0, spot - strike)
+    else:
+        otm = max(0.0, strike - spot)
     a = (OTM_PERCENT * spot - otm + premium) * CONTRACT_MULTIPLIER
     b = (STRIKE_PERCENT * strike + premium) * CONTRACT_MULTIPLIER
     return max(a, b, MIN_PER_CONTRACT)
@@ -215,7 +227,10 @@ def _open_side_requirement(
     ]
     if not shorts or net_short <= 0:
         return 0.0
-    per = max(naked_side_requirement(spot, leg.strike, leg.mid) for leg in shorts)
+    per = max(
+        naked_side_requirement(spot, leg.strike, leg.mid, option_type)
+        for leg in shorts
+    )
     return per * net_short
 
 
