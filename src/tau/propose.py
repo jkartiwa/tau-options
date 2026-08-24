@@ -200,6 +200,15 @@ class Proposal:
         return self._of_best("max_profit")
 
 
+def _unbuilt_reasons(structures: tuple[Structure, ...]) -> str:
+    """The distinct reasons variants never got as far as being priced, capped
+    the way the constraint tally is — two is enough to tell a chain too thin
+    to quote from a ladder too coarse to land on, and the whole list would not
+    fit the row this prints in."""
+    reasons = {s.reason for s in structures if not s.complete and s.reason}
+    return "; ".join(sorted(reasons)[:2])
+
+
 def _no_structure_reason(
     cycle: Cycle | None, structures: tuple[Structure, ...]
 ) -> str:
@@ -217,6 +226,12 @@ def _no_structure_reason(
     couple of failure messages: a name where nine variants died on spread cost
     and twelve on probability reads as a pure probability problem if the list
     is simply truncated.
+
+    The mixed case is reported as a mix. Since a leg that misses its requested
+    delta by more than `build.MAX_DELTA_MISS` is refused outright, a thin day
+    routinely prices a handful of variants and refuses the rest — and naming
+    only the handful would read as a market with nothing to offer rather than
+    as a chain that did not arrive.
     """
     if cycle is not None and cycle.underlying is None:
         return "no underlying quote"
@@ -224,8 +239,7 @@ def _no_structure_reason(
         return "no strategy produced a variant"
     built = [s for s in structures if s.complete]
     if not built:
-        reasons = {s.reason for s in structures if s.reason}
-        return "; ".join(sorted(reasons)[:2]) or "no variant could be built"
+        return _unbuilt_reasons(structures) or "no variant could be built"
     counts: dict[str, int] = {}
     for structure in built:
         for failure in structure.failures:
@@ -234,7 +248,14 @@ def _no_structure_reason(
         f"{metric} ({n})"
         for metric, n in sorted(counts.items(), key=lambda kv: -kv[1])
     )
-    return f"all {len(built)} priced variants failed a constraint: {tally}"
+    reason = f"all {len(built)} priced variants failed a constraint: {tally}"
+    unbuilt = len(structures) - len(built)
+    if unbuilt:
+        reason += (
+            f"; {unbuilt} of {len(structures)} never priced: "
+            f"{_unbuilt_reasons(structures)}"
+        )
+    return reason
 
 
 def propose_on(

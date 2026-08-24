@@ -143,6 +143,24 @@ def _label_width(labels) -> int:
     return max((len(x) for x in labels), default=len("STRUCTURE"))
 
 
+def _rank_summary(priced: int, total: int) -> str:
+    """The footer under the rank table, stated as a count so that an empty
+    result reads as a result.
+
+    A variant whose leg missed its requested delta by more than
+    `build.MAX_DELTA_MISS` is refused rather than relabelled, so a thin day
+    can legitimately leave every name without a structure. Printed as `0 of
+    15`, that is a finding a trader can act on; printed as a table with
+    nothing under the header, it is indistinguishable from a tool that broke.
+    """
+    if total and not priced:
+        return (
+            f"no structure on any of the {total} names priced — "
+            f"the reason for each is on its row above"
+        )
+    return f"{priced} of {total} names produced a structure"
+
+
 async def rank(args: argparse.Namespace) -> None:
     strategies = _selected_strategies(args.strategy, args.min_pop)
     candidates, passed = await _screened(args)
@@ -176,6 +194,8 @@ async def rank(args: argparse.Namespace) -> None:
             f"{_pct(s.annualized_roc):>7} {_pct(s.pop):>5} "
             f"{_pct(s.spread_cost):>6} {_fmt(s.be_over_em, '.2f'):>6}"
         )
+    priced = sum(1 for p in ordered if p.best is not None)
+    print(f"\n{_rank_summary(priced, len(ordered))}")
     if args.log:
         scan_id = store.log_scan(
             {

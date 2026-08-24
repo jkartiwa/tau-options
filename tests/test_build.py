@@ -3,10 +3,10 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from tau.build import MAX_REF_MISS, best, build, evaluate, rank
+from tau.build import MAX_DELTA_MISS, MAX_REF_MISS, best, build, evaluate, rank
 from tau.chain import Cycle, Leg
 from tau.payoff import OptionType, Side, pop_over_intervals, profitable_intervals
-from tau.strategies import STRATEGIES
+from tau.strategies import ALL, STRATEGIES
 from tau.strategy import Bias, Delta, LegSpec, Ref, Require, Strategy
 
 C, P = OptionType.CALL, OptionType.PUT
@@ -90,13 +90,26 @@ def test_delta_selection_picks_the_nearest_strike_and_reports_no_miss():
     assert structure.credit == pytest.approx(2.40)
 
 
-def test_delta_miss_is_reported_not_folded_into_the_label():
+def test_delta_miss_beyond_tolerance_is_refused_not_folded_into_the_label():
     """The original bug in this codebase: a 0.38-delta leg returned labelled
-    16-delta. A coarse ladder must stay visible."""
+    16-delta. A coarse ladder must not be quietly relabelled, and the rule is
+    now the same one `MAX_REF_MISS` applies to a missed width — refuse the
+    variant rather than return it under a name it does not have."""
     coarse = (leg(70, P, -0.40, 1.0), leg(130, C, 0.38, 1.0))
     structure = one(STRANGLE_20, cycle(coarse), "20Δ/20Δ")
+    assert not structure.complete
+    assert "short_put" in structure.reason
+    assert "40.0Δ" in structure.reason
+
+
+def test_a_delta_miss_inside_tolerance_is_still_built_and_reported():
+    """The gate refuses a mislabelled variant, it does not demand an exact
+    hit: a ladder that lands within tolerance still builds, and the miss stays
+    visible on the structure."""
+    near = (leg(85, P, -0.17, 0.80), leg(115, C, 0.17, 0.80))
+    structure = one(STRANGLE_20, cycle(near), "20Δ/20Δ")
     assert structure.complete
-    assert structure.worst_off_target == pytest.approx(0.20)
+    assert structure.worst_off_target == pytest.approx(0.03)
 
 
 def test_reference_leg_resolves_by_dollar_offset():
@@ -306,6 +319,63 @@ def test_variants_that_resolve_to_the_same_contracts_collapse_to_one():
     assert len(structures) == 1
     # the surviving row is the one that asked for closest to what it got
     assert structures[0].variant == "20Δ-10"
+
+
+def test_a_delta_ladder_collapsed_by_dropouts_refuses_the_labels_it_missed():
+    """From the code-health review's `repro_dedup.py`, on this file's own
+    fixtures: a chain where only the 95 put still quotes below spot collapses
+    all three requested deltas onto one contract. The 29.5-delta contract is
+    an honest 30Δ and a 13.5-point lie as a 16Δ, so only the 30Δ variant may
+    survive — before the gate this shipped as `cash-secured-put · 16Δ`,
+    ok=True, with `worst_off_target` 0.135 and nothing consulting it."""
+    coarse = (leg(95, P, -0.295, 2.07), leg(100, P, -0.50, 3.50),
+              leg(100, C, 0.50, 3.50), leg(105, C, 0.30, 2.00))
+    csp = STRATEGIES["cash-secured-put"]  # Delta([0.16, 0.20, 0.30])
+    structures = evaluate(csp, cycle(coarse))
+
+    built = [s for s in structures if s.complete]
+    assert [s.variant for s in built] == ["30Δ"]
+    assert built[0].legs[0].leg.strike == 95.0
+    assert built[0].worst_off_target == pytest.approx(0.005)
+    refused = {s.variant: s.reason for s in structures if not s.complete}
+    assert set(refused) == {"16Δ", "20Δ"}
+    assert all("29.5Δ" in reason for reason in refused.values())
+
+
+def test_no_built_variant_can_carry_a_label_its_contracts_do_not_have():
+    """The property the gate exists for, over every shipped strategy and a
+    ladder coarse enough to strand each requested delta."""
+    coarse = (leg(75, P, -0.02, 0.10), leg(95, P, -0.295, 2.07),
+              leg(100, P, -0.50, 3.50), leg(100, C, 0.50, 3.50),
+              leg(105, C, 0.30, 2.00), leg(125, C, 0.02, 0.10))
+    cy = cycle(coarse)
+    for strategy in ALL:
+        for structure in evaluate(strategy, cy):
+            if structure.complete:
+                assert (structure.worst_off_target or 0.0) <= MAX_DELTA_MISS, (
+                    f"{structure.label} kept a delta it missed by "
+                    f"{structure.worst_off_target}"
+                )
+
+
+def test_variants_on_one_contract_keep_the_closest_delta_label():
+    """The dedup tiebreak compared `worst_strike_miss`, which is None for
+    every delta-selected leg — so `0 < 0` was always False and the
+    first-enumerated variant won regardless of what it landed on. Here 16Δ
+    enumerates first and 20Δ is the closer label."""
+    strategy = Strategy(
+        name="t-csp-ladder",
+        bias=Bias.BULLISH,
+        legs=[LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.16, 0.20]))],
+    )
+    # One quoted put below spot, at a delta both requests can honestly reach.
+    coarse = (leg(90, P, -0.19, 1.20), leg(100, P, -0.50, 3.50),
+              leg(100, C, 0.50, 3.50), leg(105, C, 0.30, 2.00))
+    structures = evaluate(strategy, cycle(coarse))
+
+    assert len(structures) == 1
+    assert structures[0].variant == "20Δ"
+    assert structures[0].worst_off_target == pytest.approx(0.01)
 
 
 def test_best_never_returns_a_variant_that_failed_a_constraint():

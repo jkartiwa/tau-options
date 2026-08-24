@@ -172,13 +172,23 @@ highlighted.
 | `worst_loss_up` | Credit does not cover the call spread's width. Only on jade lizards |
 | `not built` | No legs to price, with the reason in the detail pane |
 
-There are two reasons a variant cannot be built at all.
+There are three reasons a variant cannot be built at all.
 
 **ladder too coarse** — a referenced wing landed more than 25% away from the
 width it asked for. A 10-wide spread that resolves to 7 wide has different
 margin and a different maximum loss, so tau refuses it rather than returning it
 under the requested label. On a name with 10-point strikes, every 5-wide
 request is correctly refused.
+
+**no strike near that delta** — the same rule on the other selector. The
+nearest quoted contract missed the requested delta by more than 0.05, so a
+`16Δ` variant would have been holding something materially different, with a
+different probability of profit. This is what a partially quoted chain looks
+like: the far wings are the contracts with no resting market, so they are the
+ones that fail to quote, and the nearest survivor can be most of the way to the
+money. Expect it on thin names, and expect it to leave some of them with no row
+at all — `tau rank` closes with a count of how many names produced a structure
+so that none is legible as a result rather than as a blank screen.
 
 **two legs resolved to the same contract** — the requested strikes collapsed
 onto one strike. Variants resolving to identical contracts are also merged into
@@ -287,6 +297,7 @@ Scan parameters are constants rather than flags:
 | Max spread cost | 25% of premium at stake | `strategies.defaults.MAX_SPREAD_COST` |
 | Min probability of profit | 68% (`--min-pop` overrides) | `strategies.defaults.MIN_POP` |
 | Max referenced-strike miss | 25% of the requested width | `build.MAX_REF_MISS` |
+| Max delta-selected miss | 0.05 delta | `build.MAX_DELTA_MISS` |
 | Max variants per strategy | 64 | `strategy.MAX_VARIANTS` |
 | Margin estimate | max(20% spot − OTM + premium, 10% strike + premium, $50) per contract | `payoff.OTM_PERCENT`, `STRIKE_PERCENT`, `MIN_PER_CONTRACT` |
 

@@ -1,6 +1,6 @@
 import pytest
 
-from tau.cli import _selected_strategies
+from tau.cli import _rank_summary, _selected_strategies
 from tau.strategies import ALL, MIN_POP
 from tau.strategy import Require
 
@@ -22,3 +22,16 @@ def test_min_pop_flag_overrides_the_shipped_floor():
 def test_unknown_strategy_name_is_a_hard_error():
     with pytest.raises(SystemExit, match="unknown strategy"):
         _selected_strategies(["not-a-real-strategy"])
+
+
+def test_an_empty_rank_says_so_rather_than_printing_a_bare_header():
+    """Refusing a variant that missed its requested delta means a thin day can
+    leave every name without a structure. That has to read as a result — a
+    table with nothing under the header looks like a tool that broke."""
+    summary = _rank_summary(0, 15)
+    assert "15" in summary
+    assert "no structure" in summary
+
+
+def test_a_partly_priced_rank_reports_how_many_names_produced_one():
+    assert _rank_summary(3, 15) == "3 of 15 names produced a structure"

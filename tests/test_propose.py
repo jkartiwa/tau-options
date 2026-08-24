@@ -1,8 +1,9 @@
 from datetime import UTC, date, datetime
+from math import erf, log, sqrt
 
 import pytest
 
-from tau.build import evaluate, evaluate_all
+from tau.build import MAX_DELTA_MISS, evaluate, evaluate_all
 from tau.chain import Cycle, Leg
 from tau.payoff import OptionType, Side
 from tau.propose import (
@@ -14,7 +15,7 @@ from tau.propose import (
 )
 from tau.screen import Candidate
 from tau.strategies import STRATEGIES
-from tau.strategy import Bias, Delta, LegSpec, Require, Strategy
+from tau.strategy import Bias, Delta, LegSpec, Require, Strategy, with_min_pop
 
 C, P = OptionType.CALL, OptionType.PUT
 SHORT = Side.SHORT
@@ -263,6 +264,90 @@ def test_a_cycle_where_every_variant_fails_says_so_rather_than_going_blank():
     assert "failed a constraint" in _no_structure_reason(cy, structures)
 
 
+# --- the degraded-chain reproduction, from the code-health review's exp_a3.py ---
+#
+# A Black-Scholes ladder rather than this file's hand-set one, because the
+# question is whether the *ranking* moves when quotes go missing, and that
+# needs deltas and mids that stay mutually consistent as strikes are removed.
+
+BS_SPOT, BS_IV, BS_DTE = 100.0, 0.30, 45
+BS_STRIKES = [70, 75, 80, 82.5, 85, 87.5, 90, 92.5, 95, 97.5, 100,
+              102.5, 105, 107.5, 110, 115, 120, 125]
+
+
+def _bs(strike, option_type):
+    """Mid and delta for one contract, under a flat 30% vol."""
+    sigma = BS_IV * sqrt(BS_DTE / 365)
+    d1 = (log(BS_SPOT / strike) + 0.5 * sigma * sigma) / sigma
+    d2 = d1 - sigma
+
+    def norm(x):
+        return 0.5 * (1 + erf(x / sqrt(2)))
+
+    if option_type is C:
+        return BS_SPOT * norm(d1) - strike * norm(d2), norm(d1)
+    return strike * norm(-d2) - BS_SPOT * norm(-d1), -norm(-d1)
+
+
+def bs_ladder(unquoted=frozenset()):
+    """The full ladder, with `unquoted` contracts carrying greeks but no
+    market — which is exactly what `fetch_cycle` builds for a leg whose quote
+    never arrived before the DXLink timeout."""
+    legs = []
+    for strike in BS_STRIKES:
+        for option_type in (C, P):
+            mid, delta = _bs(strike, option_type)
+            quoted = (strike, option_type) not in unquoted
+            legs.append(Leg(
+                occ=f"{option_type}{strike:g}",
+                streamer=f"s{option_type}{strike:g}",
+                strike=float(strike),
+                type=option_type,
+                bid=mid - 0.02 if quoted else None,
+                ask=mid + 0.02 if quoted else None,
+                delta=delta,
+                iv=BS_IV,
+            ))
+    return tuple(legs)
+
+
+def test_a_dropout_no_longer_changes_which_structure_wins():
+    """The review's exp_a3: the same market, priced twice, differing only in
+    which contracts happened to quote before the timeout.
+
+    Every put below 95 goes missing, which used to collapse the whole delta
+    ladder onto the 95 strike and hand back the *first* label — a 29.5-delta
+    contract shipped as `cash-secured-put · 16Δ`, ok=True, ranked above the
+    fully quoted copy of the identical market. The winner must now be the same
+    structure either way, and it must be the one whose label is true.
+    """
+    csp = (STRATEGIES["cash-secured-put"],)
+    full_cycle = Cycle(
+        symbol="FULL", expiration=date(2026, 9, 18), dte=BS_DTE,
+        underlying=BS_SPOT, legs=bs_ladder(), fetched_at=datetime.now(UTC),
+    )
+    unquoted = {(k, P) for k in BS_STRIKES if k < 95}
+    degraded_cycle = Cycle(
+        symbol="DEGR", expiration=date(2026, 9, 18), dte=BS_DTE,
+        underlying=BS_SPOT, legs=bs_ladder(unquoted), fetched_at=datetime.now(UTC),
+    )
+    full = propose_on(cand("FULL"), full_cycle, csp)
+    degraded = propose_on(cand("DEGR"), degraded_cycle, csp)
+
+    assert full.best is not None and degraded.best is not None
+    # Same winner, same contract, same economics — the dropout cost the two
+    # variants that could not be built honestly, and nothing else.
+    assert degraded.best.variant == full.best.variant == "30Δ"
+    assert degraded.best.legs[0].leg.strike == full.best.legs[0].leg.strike == 95.0
+    assert degraded.best.annualized_roc == pytest.approx(full.best.annualized_roc)
+    # and the label describes the contract it holds
+    assert abs(degraded.best.legs[0].leg.delta) == pytest.approx(0.295, abs=1e-3)
+    assert degraded.best.worst_off_target <= MAX_DELTA_MISS
+
+    refused = [s for s in degraded.structures if not s.complete]
+    assert {s.variant for s in refused} == {"16Δ", "20Δ"}
+
+
 def test_rank_orders_by_metric_descending_failed_last():
     # One strategy only: across all six the credit-ranked winner may be a
     # broken wing that priced as a debit and has no credit at all, which is a
@@ -318,3 +403,26 @@ def test_only_nothing_enabled_reports_a_reason_rather_than_going_blank():
     assert not p.ok
     assert p.best is None
     assert p.error == "no strategy enabled"
+
+
+def test_a_cycle_that_mostly_could_not_be_priced_says_so_too():
+    """The mixed case: the delta gate refuses most of the ladder and the few
+    that priced then fail a constraint. Reporting only the constraint tally
+    would read as a market with nothing on offer, when the actual finding is a
+    chain that did not arrive."""
+    from tau.propose import _no_structure_reason
+
+    # Only the 95 put quotes below spot, so two of the three requested deltas
+    # cannot be built at all — and the third is then held under a pop floor
+    # nothing on this chain can clear.
+    coarse = (leg(95, P, -0.295, 2.07), leg(100, P, -0.50, 3.50),
+              leg(100, C, 0.50, 3.50), leg(105, C, 0.30, 2.00))
+    demanding = with_min_pop((STRATEGIES["cash-secured-put"],), 0.99)
+    cy = cycle(coarse)
+    structures = tuple(evaluate(demanding[0], cy))
+
+    assert sum(s.complete for s in structures) == 1
+    reason = _no_structure_reason(cy, structures)
+    assert "failed a constraint" in reason
+    assert "2 of 3 never priced" in reason
+    assert "no strike near that delta" in reason
