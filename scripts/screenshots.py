@@ -7,6 +7,12 @@ GitHub. Run against a real account so the shots show real chains:
 
 Only market data appears in these views — no positions, balances, or account
 identifiers — so the output is safe to commit.
+
+Pricing a name here goes through the same buying-power path the app does, so
+a capture run POSTs order dry-run *calculations* against the account (nothing
+is placed). With a trading-scoped grant the BPR column comes back plain; with
+a read-scoped one it falls back to the formula and every figure carries the
+`~`. The committed shots are the formula ones.
 """
 
 import asyncio

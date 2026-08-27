@@ -10,6 +10,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   over 2 hours before being caught). Start the *first* `no-mistakes axi run` of any session with
   `--skip ci` explicitly (e.g. `no-mistakes axi run --intent "..." --skip ci`) rather than waiting
   for the ci step to hang. If a future no-mistakes version fixes this, drop the workaround.
+- The tastytrade token is trading-scoped (the buying-power dry-run is a trading-scope call).
+  Broker buying power comes only from the order dry-run in `src/tau/broker.py`; never add
+  order-placement code — the token can trade. `payoff.bpr()` stays as the offline formula
+  fallback, and `propose.enrich_with_broker_bpr` wires the two.
 
 ## Maintaining this file
 

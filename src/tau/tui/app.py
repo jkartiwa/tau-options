@@ -22,12 +22,16 @@ from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Static
 
+from tau import broker as broker_mod
 from tau import catalyst as catalyst_mod
 from tau import chain as chain_mod
 from tau import history as history_mod
 from tau import propose as propose_mod
 from tau import screen
 from tau.build import Structure
+from tau.fmt import bpr as _bpr
+from tau.fmt import fmt as _fmt
+from tau.fmt import pct as _pct
 from tau.propose import Proposal
 from tau.screen import Candidate
 from tau.session import get_session
@@ -58,7 +62,7 @@ COLUMNS = ("", "SYM", "IVR", "IVP", "IV/HV", "IV30", "HV30", "LIQ", "BETA", "ERN
 # carries the strategy and the variant that won, because "SMH 480%" without
 # saying which trade earned it is not actionable.
 RANK_COLUMNS = (
-    "", "SYM", "STRUCTURE", "BIAS", "DTE", "CREDIT", "BPR~",
+    "", "SYM", "STRUCTURE", "BIAS", "DTE", "CREDIT", "BPR",
     "ROC%", "ANN%", "POP%", "SPRD%", "BE/EM",
 )
 # The drill-in: every variant considered on one name, failures included.
@@ -67,7 +71,7 @@ RANK_COLUMNS = (
 # ANN% order the rows identically — dropping both buys the width the failure
 # reason needs, and a clipped reason reads as no reason at all.
 VARIANT_COLUMNS = (
-    "", "STRUCTURE", "CREDIT", "BPR~", "ANN%", "POP%",
+    "", "STRUCTURE", "CREDIT", "BPR", "ANN%", "POP%",
     "SPRD%", "BE/EM", "WHY NOT",
 )
 # (label, metric attribute, higher-is-better) — read off the winning Structure
@@ -125,20 +129,6 @@ def _universe() -> list[str]:
     from tau import universe
 
     return universe.load_universe(None)
-
-
-def _fmt(value, spec: str = ".1f") -> str:
-    if value is None:
-        return "—"
-    if value in (float("inf"), float("-inf")):
-        return "∞" if value > 0 else "-∞"
-    return format(value, spec)
-
-
-def _pct(value, spec: str = ".0f") -> str:
-    """A rate stored as a fraction, shown as a percentage. The column headers
-    already carry the % sign, so this doesn't repeat it."""
-    return "—" if value is None else _fmt(value * 100, spec)
 
 
 class TauApp(App):
@@ -306,6 +296,9 @@ class TauApp(App):
         than vanishing — the rank view is the same shortlist, just ordered
         differently once numbers exist."""
         label, attr, desc = RANK_SORTS[self.rank_sort_index]
+        on_broker = propose_mod.broker_priced_pass(
+            p for c in self._passing if (p := self.proposal_for(c.symbol))
+        )
 
         def keyfn(c: Candidate):
             if attr == "symbol":
@@ -313,12 +306,26 @@ class TauApp(App):
             p = self.proposal_for(c.symbol)
             if p is None or not p.ok:
                 return (True, 0.0)
-            value = getattr(p, attr)
+            value = propose_mod.ordering_value(p, attr, on_broker)
             if value is None:
                 return (True, 0.0)
             return (False, -value if desc else value)
 
         self._rank_rows = sorted(self._passing, key=keyfn)
+
+    def cache_proposal(self, proposal: Proposal) -> None:
+        """Store a symbol's proposal and rebuild whatever was derived from the
+        one it replaces.
+
+        Both row lists are snapshots — `_variant_rows` holds `Structure`
+        objects, not a live view — so a proposal swapped in behind them
+        repaints the old numbers. Anything that caches a proposal goes through
+        here for that reason.
+        """
+        self._proposals[proposal.symbol] = proposal
+        self.build_rank_rows()
+        if self.mode == "variants" and proposal.symbol == self._variants_symbol:
+            self.build_variant_rows()
 
     def build_variant_rows(self) -> None:
         """The open name's whole search, ranked by the active metric. Failed
@@ -397,7 +404,7 @@ class TauApp(App):
                 str(best.strategy.bias),
                 f"{p.cycle.dte}d",
                 _fmt(best.credit, ".2f"),
-                _fmt(best.bpr, ",.0f"),
+                _bpr(best.bpr, best.bpr_source),
                 _pct(best.roc, ".1f"),
                 _pct(best.annualized_roc, ".0f"),
                 _pct(best.pop, ".0f"),
@@ -425,7 +432,7 @@ class TauApp(App):
                 "·" if s.ok else "✗",
                 s.label,
                 _fmt(s.credit, ".2f"),
-                _fmt(s.bpr, ",.0f"),
+                _bpr(s.bpr, s.bpr_source),
                 _pct(s.annualized_roc, ".0f"),
                 _pct(s.pop, ".0f"),
                 _pct(s.spread_cost, ".0f"),
@@ -483,13 +490,36 @@ class TauApp(App):
             # Searching every strategy over the fetched cycle is in-memory
             # arithmetic, so a chain load produces the same full proposal the
             # rank view would — one cache, filled from either direction.
-            self._proposals[candidate.symbol] = propose_mod.propose_on(
-                candidate, cycle, self._strategies
-            )
-            self._detail_status = ""
+            proposal = propose_mod.propose_on(candidate, cycle, self._strategies)
         except Exception as exc:
             self._detail_status = f"chain failed: {exc}"
-        # The cursor may have moved on; only repaint what is selected now.
+            # The cursor may have moved on; only repaint what is selected now.
+            self.render_current_table()
+            return
+        # The chain is in hand, so the variants are showable now. Every row
+        # renders with the `~` that marks a formula estimate, and the account
+        # API — which can hang for as long as its read timeout allows —
+        # upgrades the rows it answers for afterwards. The drill-in never
+        # waits on it.
+        self.cache_proposal(proposal)
+        self._detail_status = ""
+        self.render_current_table()
+        session = None
+        try:
+            session = get_session()
+        except Exception:
+            pass  # no credentials — the formula estimate is the whole story
+        # The broker dry-run is an upgrade, never a requirement: without a
+        # session, or with one that cannot reach the account API, the
+        # proposal keeps its formula figures untouched.
+        enriched = await propose_mod.enrich_with_broker_bpr(session, proposal)
+        # Even when nothing came back the chrome may have news: this is the
+        # path a breaker trip happens on, and its marker lives on the meta
+        # line.
+        self.refresh_meta()
+        if enriched is proposal:
+            return
+        self.cache_proposal(enriched)
         self.render_current_table()
 
     def action_load_chain(self) -> None:
@@ -548,10 +578,7 @@ class TauApp(App):
         self.refresh_meta()
 
         def on_done(p: Proposal) -> None:
-            self._proposals[p.symbol] = p
-            self.build_rank_rows()
-            if self.mode == "variants" and p.symbol == self._variants_symbol:
-                self.build_variant_rows()
+            self.cache_proposal(p)
             self.render_current_table()
             self.refresh_meta()
 
@@ -667,6 +694,12 @@ class TauApp(App):
                 f"★ {len(self._starred)}",
                 f"fetched {fetched}",
             ]
+        if broker_mod.dry_runs_disabled():
+            # The breaker's own warning goes to a logger, and Textual
+            # redirects stderr for the life of the app — so on screen this
+            # line is the only thing that separates "the broker stopped
+            # answering" from "these were always estimates".
+            bits.append("broker BPR off")
         if self._status:
             bits.append(self._status)
         self.query_one("#meta", Static).update("  ·  ".join(bits))

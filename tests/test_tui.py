@@ -43,6 +43,23 @@ def app() -> TauApp:
     return TauApp(loader=loader)
 
 
+@pytest.fixture(autouse=True)
+def _no_broker_network(monkeypatch):
+    """The broker dry-run talks to the live account API; the test suite must
+    never. The enrichment falls back to the formula estimate when the account
+    is unreachable, and these stubs simulate exactly that."""
+    from tau import broker as broker_mod
+
+    async def no_account(session):
+        return None
+
+    async def no_bpr(session, account, structure):
+        return None
+
+    monkeypatch.setattr(broker_mod, "margin_account", no_account)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", no_bpr)
+
+
 def symbols(a: TauApp) -> list[str]:
     return [c.symbol for c in a._rows]
 
@@ -209,6 +226,16 @@ def _why_app(history=None, brief=None, calls=None):
     return TauApp(
         loader=loader, history_loader=history_loader, brief_loader=brief_loader
     ), calls
+
+
+def _trip_broker_breaker() -> None:
+    """Put the breaker in the state consecutive dry-run failures put it in.
+    What counts as a failure and how it recovers is covered in test_broker;
+    these tests are about what the screen says once it has tripped."""
+    from tau import broker as broker_mod
+
+    for _ in range(broker_mod.MAX_CONSECUTIVE_FAILURES):
+        broker_mod._record_failure()
 
 
 async def _settle(a, predicate, tries=60):
@@ -567,3 +594,417 @@ async def test_picker_will_not_leave_every_strategy_disabled():
         await pilot.press("escape")
         await pilot.pause()
         assert len(a._enabled) == 6
+
+
+@pytest.mark.asyncio
+async def test_chain_load_survives_missing_credentials(monkeypatch):
+    """No env, no broker dry-run, no crash: the chain load still caches the
+    proposal with its formula figures and the detail pane renders."""
+    from tau.chain import Cycle, Leg
+
+    cycle = Cycle(
+        symbol="HIGH",
+        expiration=date(2026, 9, 4),
+        dte=40,
+        underlying=100.0,
+        legs=(
+            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
+            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
+        ),
+        fetched_at=datetime.now(UTC),
+    )
+
+    async def chain_loader(candidate):
+        return cycle
+
+    async def loader():
+        return list(FIXTURE)
+
+    def no_session():
+        raise RuntimeError("TASTY_CLIENT_SECRET / TASTY_REFRESH_TOKEN not set (.env)")
+
+    monkeypatch.setattr("tau.tui.app.get_session", no_session)
+
+    a = TauApp(loader=loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        assert await _settle(a, lambda: "HIGH" in a._proposals)
+        p = a._proposals["HIGH"]
+        assert p.best is not None and p.best.bpr_source == "estimate"
+        rendered = str(a.query_one("#detail").content)
+        assert "strangle" in rendered and "BPR~" in rendered
+
+
+@pytest.mark.asyncio
+async def test_rank_table_marks_broker_and_formula_bpr_sources(monkeypatch):
+    """Broker-sourced buying power renders plain under the `BPR` header;
+    the formula estimate keeps the tilde the header used to carry. The row
+    itself has to say which model the number came from."""
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+    from tau.tui.app import _fmt
+    from textual.widgets import DataTable
+
+    async def loader():
+        return [FIXTURE[0]]  # just HIGH
+
+    base = _proposal("HIGH")
+    fake_account = object()
+
+    async def fake_margin(session):
+        return fake_account
+
+    async def fake_bpr(session, account, structure):
+        # a 10% haircut over the formula, applied to the whole shortlist:
+        # the top-ranked structure stays on top, so `best` is broker-priced
+        return structure.bpr * 0.9 if structure.bpr else None
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
+
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), base)
+    assert enriched.best.bpr_source == "broker"
+
+    a = TauApp(loader=loader, proposal_loader=_proposal_loader_factory({"HIGH": enriched}))
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        table = a.query_one("#table", DataTable)
+        assert "BPR" in [c.label.plain for c in table.columns.values()]
+        best = enriched.best
+        row = list(table.get_row_at(0))
+        assert row[6] == _fmt(best.bpr, ",.0f")  # plain: broker-sourced
+
+    # the same shortlist un-enriched falls back to the formula — tilde on
+    a2 = TauApp(loader=loader, proposal_loader=_proposal_loader_factory({"HIGH": base}))
+    async with a2.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        table = a2.query_one("#table", DataTable)
+        row = list(table.get_row_at(0))
+        assert row[6].endswith("~")
+
+
+@pytest.mark.asyncio
+async def test_chain_load_renders_before_the_broker_answers(monkeypatch):
+    """The drill-in must never wait on the account API. The variants show up
+    on the formula figures the `~` marks as estimates, and the broker upgrades
+    the rows it answers for afterwards."""
+    from dataclasses import replace
+
+    from tau import propose as propose_mod
+    from tau.chain import Cycle, Leg
+
+    cycle = Cycle(
+        symbol="HIGH",
+        expiration=date(2026, 9, 4),
+        dte=40,
+        underlying=100.0,
+        legs=(
+            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
+            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
+        ),
+        fetched_at=datetime.now(UTC),
+    )
+    release = asyncio.Event()
+
+    async def chain_loader(candidate):
+        return cycle
+
+    async def loader():
+        return list(FIXTURE)
+
+    async def slow_enrich(session, proposal, *args, **kwargs):
+        await release.wait()
+        return replace(
+            proposal,
+            structures=tuple(
+                replace(s, broker_bpr=2500.0) if s is proposal.best else s
+                for s in proposal.structures
+            ),
+        )
+
+    monkeypatch.setattr("tau.tui.app.get_session", lambda: object())
+    monkeypatch.setattr(propose_mod, "enrich_with_broker_bpr", slow_enrich)
+
+    a = TauApp(loader=loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        # cached and painted while the account API is still hanging
+        assert await _settle(a, lambda: "HIGH" in a._proposals)
+        assert not release.is_set()
+        formula = a._proposals["HIGH"]
+        assert formula.best is not None
+        assert formula.best.bpr_source == "estimate"
+        assert a._detail_status == ""
+        assert "~" in str(a.query_one("#detail").content)
+
+        release.set()
+        assert await _settle(
+            a, lambda: a._proposals["HIGH"].best.bpr_source == "broker"
+        )
+        assert a._proposals["HIGH"].best.bpr == pytest.approx(2500.0)
+
+
+@pytest.mark.asyncio
+async def test_the_variants_drill_in_upgrades_when_the_broker_answers(monkeypatch):
+    """Opening the drill-in before enrichment returns freezes a snapshot of
+    the formula structures. The broker figures landing behind it must reach
+    the rendered rows, not just the proposal cache."""
+    from dataclasses import replace
+
+    from tau import propose as propose_mod
+    from tau.chain import Cycle, Leg
+
+    cycle = Cycle(
+        symbol="HIGH",
+        expiration=date(2026, 9, 4),
+        dte=40,
+        underlying=100.0,
+        legs=(
+            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
+            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
+        ),
+        fetched_at=datetime.now(UTC),
+    )
+    release = asyncio.Event()
+
+    async def chain_loader(candidate):
+        return cycle
+
+    async def loader():
+        return list(FIXTURE)
+
+    async def slow_enrich(session, proposal, *args, **kwargs):
+        await release.wait()
+        return replace(
+            proposal,
+            structures=tuple(
+                replace(s, broker_bpr=2500.0) if s.ok else s
+                for s in proposal.structures
+            ),
+        )
+
+    monkeypatch.setattr("tau.tui.app.get_session", lambda: object())
+    monkeypatch.setattr(propose_mod, "enrich_with_broker_bpr", slow_enrich)
+
+    a = TauApp(loader=loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        assert await _settle(a, lambda: "HIGH" in a._proposals)
+
+        # drill in while the account API is still hanging
+        await pilot.press("v")
+        await pilot.pause()
+        assert a.mode == "variants"
+        assert not release.is_set()
+        assert "~" in _row_text(a, 0)
+
+        release.set()
+        assert await _settle(
+            a, lambda: a._proposals["HIGH"].best.bpr_source == "broker"
+        )
+        assert await _settle(a, lambda: "~" not in _row_text(a, 0))
+        assert "2,500" in _row_text(a, 0)
+        assert "BPR~" not in str(a.query_one("#detail").content)
+
+
+@pytest.mark.asyncio
+async def test_the_meta_line_says_when_the_broker_stopped_pricing(monkeypatch):
+    """The breaker's own warning goes to a logger, and Textual redirects
+    stderr for the life of the app. On screen the meta line is the only thing
+    separating "the broker stopped answering" from "these were always
+    estimates"."""
+    from tau import broker as broker_mod
+
+    a = app()
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert "broker BPR off" not in str(a.query_one("#meta").content)
+
+        _trip_broker_breaker()
+        assert broker_mod.dry_runs_disabled()
+        a.refresh_meta()
+        await pilot.pause()
+        assert "broker BPR off" in str(a.query_one("#meta").content)
+
+
+def _pane_lines(proposal):
+    """The detail pane as it renders for a name in the rank view — the whole
+    pane, because the winner is shown twice in it."""
+    from tau.tui.detail import DetailPane
+
+    return DetailPane()._cycle_lines(proposal.candidate, proposal)
+
+
+def _header_ann(lines):
+    return next(ln for ln in lines if "· ANN " in ln).split("· ANN ")[-1].strip()
+
+
+def _ladder_rows(lines):
+    start = next(
+        i for i, ln in enumerate(lines) if ln.endswith("credit / POP / ANN[/dim]")
+    )
+    rows = []
+    for line in lines[start + 1:]:
+        if "variants passed" in line:
+            break
+        rows.append(line)
+    return rows
+
+
+def _family(proposal):
+    return [
+        s for s in proposal.structures
+        if s.strategy.name == proposal.best.strategy.name and s.complete
+    ]
+
+
+def test_the_detail_ladder_compares_siblings_on_one_margin_model():
+    """The broker prices a bounded shortlist, so a strategy's ladder can
+    straddle the cut. `ANN` is read off the buying-power figure and this
+    column carries no source marker, so a mixed ladder would read as though
+    the unpriced strikes pay more when the whole gap is the margin model."""
+    from dataclasses import replace
+
+    p = _proposal("HIGH")
+    family = _family(p)
+    assert len(family) > 2
+
+    def ann_column(proposal):
+        return [row.split()[-1] for row in _ladder_rows(_pane_lines(proposal))]
+
+    formula_column = ann_column(p)
+
+    # every sibling priced 30% higher by the broker, as measured on MU: a
+    # uniform ladder moves together and stays the broker's
+    uniform = replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr * 1.30) if s in family else s
+            for s in p.structures
+        ),
+    )
+    assert ann_column(uniform) != formula_column
+
+    # one sibling left on the formula: the ladder is no longer comparable on
+    # the broker's numbers, so every row falls back to the one they share
+    mixed = replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr * 1.30)
+            if s in family and s is not family[-1]
+            else s
+            for s in p.structures
+        ),
+    )
+    assert ann_column(mixed) == formula_column
+
+
+@pytest.mark.asyncio
+async def test_a_breaker_trip_on_the_drill_in_path_reaches_the_meta_line(monkeypatch):
+    """Working from screen mode, a user presses `c` on one name after
+    another. That is a path the breaker can trip on, and nothing else
+    repaints the chrome."""
+    from tau import broker as broker_mod
+    from tau.chain import Cycle, Leg
+
+    cycle = Cycle(
+        symbol="HIGH",
+        expiration=date(2026, 9, 4),
+        dte=40,
+        underlying=100.0,
+        legs=(
+            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
+            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
+        ),
+        fetched_at=datetime.now(UTC),
+    )
+
+    async def chain_loader(candidate):
+        return cycle
+
+    async def loader():
+        return list(FIXTURE)
+
+    async def trip_the_breaker(session, proposal, *args, **kwargs):
+        _trip_broker_breaker()
+        return proposal
+
+    monkeypatch.setattr("tau.tui.app.get_session", lambda: object())
+    monkeypatch.setattr(
+        "tau.propose.enrich_with_broker_bpr", trip_the_breaker
+    )
+
+    a = TauApp(loader=loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        assert "broker BPR off" not in str(a.query_one("#meta").content)
+        await pilot.press("c")
+        assert await _settle(a, lambda: broker_mod.dry_runs_disabled())
+        assert await _settle(
+            a, lambda: "broker BPR off" in str(a.query_one("#meta").content)
+        )
+
+
+def test_the_detail_pane_never_shows_two_different_anns_for_one_trade():
+    """The winner is printed twice in this pane: once in its own summary line
+    and again as the marked row of the ladder below it. `ANN` is read off the
+    buying-power figure, and a ladder straddling the bounded pull is shown on
+    the formula — so the summary has to follow it there, or the same trade
+    carries two different numbers under the same label four lines apart.
+
+    This is the ordinary shape on any name with more passing variants than
+    the pull covers, not an edge case.
+    """
+    from dataclasses import replace
+
+    p = _proposal("HIGH")
+    family = _family(p)
+    unpriced = next(s for s in reversed(family) if s.ok)
+    mixed = replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr * 1.30)
+            if s in family and s is not unpriced
+            else s
+            for s in p.structures
+        ),
+    )
+    # the winner really did come back broker-priced, and its ladder really is
+    # split across the two margin models — the case that produced the clash
+    assert mixed.best.bpr_source == "broker"
+    assert mixed.best.strategy.name == unpriced.strategy.name
+
+    lines = _pane_lines(mixed)
+    marked = next(row for row in _ladder_rows(lines) if row.startswith("\u203a"))
+    assert _header_ann(lines) == marked.split()[-1]
+    # and the pane says which model that is, rather than labelling a
+    # formula-derived return with the broker's buying power beside it
+    assert "BPR~" in next(ln for ln in lines if "· ANN " in ln)
+
+
+def test_a_uniformly_priced_pane_keeps_the_broker_figure():
+    """The fallback is the mixed ladder's, not a blanket retreat: when the
+    broker priced the whole ladder the pane stays on its numbers and says so.
+    """
+    from dataclasses import replace
+
+    p = _proposal("HIGH")
+    family = _family(p)
+    uniform = replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr * 1.30) if s in family else s
+            for s in p.structures
+        ),
+    )
+    lines = _pane_lines(uniform)
+    marked = next(row for row in _ladder_rows(lines) if row.startswith("\u203a"))
+    assert _header_ann(lines) == marked.split()[-1]
+    assert "(broker dry-run)" in next(ln for ln in lines if "· ANN " in ln)

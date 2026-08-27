@@ -30,9 +30,9 @@ from typing import Literal, get_args
 
 from tau.payoff import OptionType, Side
 
-# Every metric a constraint may name, and the only names `rank` accepts. This
-# is a Literal rather than a plain str so a typo is a type error at author
-# time, which is the main thing a config format could not have given us.
+# Every metric the engine exposes, and the only names `rank` accepts. This is
+# a Literal rather than a plain str so a typo is a type error at author time,
+# which is the main thing a config format could not have given us.
 Metric = Literal[
     "credit",
     "net_premium",
@@ -52,6 +52,24 @@ Metric = Literal[
     "worst_off_target",
     "leg_count",
 ]
+
+# Metrics computed from the buying-power figure, which is the one figure that
+# has two models behind it — the broker's portfolio margin ran 30% above the
+# naked-margin formula on MU and 8% below it on AAPL. Two consequences, one
+# set, defined here because this is the module `build` imports from:
+#
+# A `Require` may not name one. `build` settles `ok` and `failures` off the
+# formula estimate and the broker's dry-run number arrives afterwards, so a
+# rule on one of these would judge a row on a figure it no longer displays —
+# a green row whose shown ROC is below its own floor. `_validate` refuses
+# them for that reason.
+#
+# And two structures whose `bpr` came from different models do not compare on
+# one: the gap is enough to hand the win to whichever happened to be measured
+# by the more generous model. `build.comparable_on` and `build.rank` use the
+# set for that, under the name `MODEL_SENSITIVE_METRICS`. Metrics that never
+# read `bpr` are unaffected on both counts.
+UNCONSTRAINABLE_METRICS = frozenset({"bpr", "roc", "annualized_roc"})
 
 METRICS: frozenset[str] = frozenset(get_args(Metric))
 
@@ -252,6 +270,16 @@ class Strategy:
                 raise ValueError(f"{where}: unknown operator {rule.op!r}")
             if isinstance(rule.value, str) and rule.value not in METRICS:
                 raise ValueError(f"{where}: unknown metric {rule.value!r}")
+            for named in (rule.metric, rule.value):
+                if named in UNCONSTRAINABLE_METRICS:
+                    raise ValueError(
+                        f"{where}: {named!r} cannot be required. Constraints "
+                        "are decided when the structure is built, off the "
+                        "formula buying-power estimate; the broker's dry-run "
+                        "figure arrives afterwards and would leave the row "
+                        "judged on a number it no longer displays. Rank on "
+                        "it instead."
+                    )
         if self.variant_count > MAX_VARIANTS:
             raise ValueError(
                 f"{where}: {self.variant_count} variants exceeds the "

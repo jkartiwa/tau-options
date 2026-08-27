@@ -3,8 +3,11 @@
 ## Requirements
 
 - Python 3.12+
-- A tastytrade account with API access. **Read scope is enough** — `tau`
-  cannot place, modify, or cancel an order even if it tried.
+- A tastytrade account with API access, with **trade scope** on the personal
+  grant. The buying-power figure is pulled from the order dry-run
+  calculation, which is a trading-scope endpoint — but tau only ever calls
+  that calculation. There is no order-placement code in the package, and
+  `tau` cannot place, modify, or cancel an order even if it tried.
 - An Anthropic API key, optional. Without one the catalyst read still fetches
   and shows headlines; only the classification is skipped.
 
@@ -34,7 +37,10 @@ credential tied to your own account, not an app other people log into.
 1. Log in at [my.tastytrade.com](https://my.tastytrade.com).
 2. Go to **Manage → API** and open **OAuth Applications**.
 3. Create a **personal grant**. Give it a name (`tau` works).
-4. Under scopes, select **read** only. Don't grant trade scope.
+4. Under scopes, select **trade** (or your broker's equivalent of
+   read+trade). The buying-power dry-run is a trading-scope call, so a
+   read-only grant silently falls back to the formula estimate for every
+   buying-power figure. tau never places an order with it.
 5. Save. You'll be shown a **client ID**, a **client secret**, and a
    **refresh token**.
 

@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS pick (
     credit REAL,
     max_profit REAL,
     bpr REAL,
+    bpr_source TEXT,
     roc REAL,
     annualized_roc REAL,
     pop REAL,
@@ -80,6 +81,45 @@ CREATE TABLE IF NOT EXISTS pick (
 """
 
 
+# Columns added after the table shipped. `_SCHEMA` is CREATE TABLE IF NOT
+# EXISTS, so it never reaches a database that already has the table — an
+# additive ALTER is the only way an existing log gains a column. Every
+# migration here must be non-destructive: no row is rewritten, dropped, or
+# backfilled with a guess, and the NULL an old row keeps means "not recorded",
+# which is the truth about a scan taken before the column existed.
+_MIGRATIONS = (
+    ("pick", "bpr_source", "TEXT"),
+)
+
+# Named rather than positional, so inserting a column into `_SCHEMA` can never
+# silently shift every value one place to the left.
+_PICK_COLUMNS = (
+    "scan_id",
+    "strategy_def_id",
+    "symbol",
+    "variant",
+    "expiration",
+    "dte",
+    "underlying",
+    "legs_json",
+    "credit",
+    "max_profit",
+    "bpr",
+    "bpr_source",
+    "roc",
+    "annualized_roc",
+    "pop",
+    "spread_cost",
+    "be_over_em",
+    "breakevens",
+    "error",
+)
+_INSERT_PICK = (
+    f"INSERT INTO pick ({', '.join(_PICK_COLUMNS)}) "
+    f"VALUES ({', '.join(':' + c for c in _PICK_COLUMNS)})"
+)
+
+
 def db_path() -> Path:
     root = Path(
         os.environ.get("TAU_DATA_DIR", Path.home() / ".local/share/tau")
@@ -88,10 +128,20 @@ def db_path() -> Path:
     return root / "tau.sqlite3"
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring an existing log up to the current column set, additively."""
+    for table, column, decl in _MIGRATIONS:
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in present:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(db_path())
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+    with conn:
+        _migrate(conn)
     return conn
 
 
@@ -186,32 +236,39 @@ def log_picks(scan_id: int, proposals) -> int:
             for p in proposals:
                 best = p.best
                 cycle = p.cycle
-                row = (
-                    scan_id,
-                    _strategy_def_id(conn, best.strategy) if best else None,
-                    p.symbol,
-                    best.variant if best else None,
-                    cycle.expiration.isoformat() if cycle else None,
-                    cycle.dte if cycle else None,
-                    cycle.underlying if cycle else None,
-                    json.dumps(_leg_rows(best)) if best else None,
-                    best.credit if best else None,
-                    _finite(best.max_profit) if best else None,
-                    best.bpr if best else None,
-                    best.roc if best else None,
-                    best.annualized_roc if best else None,
-                    best.pop if best else None,
-                    best.spread_cost if best else None,
-                    best.be_over_em if best else None,
-                    json.dumps([round(b, 4) for b in best.breakevens])
-                    if best
-                    else None,
-                    p.error,
-                )
-                conn.execute(
-                    "INSERT INTO pick VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    row,
-                )
+                row = {
+                    "scan_id": scan_id,
+                    "strategy_def_id": (
+                        _strategy_def_id(conn, best.strategy) if best else None
+                    ),
+                    "symbol": p.symbol,
+                    "variant": best.variant if best else None,
+                    "expiration": cycle.expiration.isoformat() if cycle else None,
+                    "dte": cycle.dte if cycle else None,
+                    "underlying": cycle.underlying if cycle else None,
+                    "legs_json": json.dumps(_leg_rows(best)) if best else None,
+                    "credit": best.credit if best else None,
+                    "max_profit": _finite(best.max_profit) if best else None,
+                    "bpr": best.bpr if best else None,
+                    # Which margin model produced `bpr`, and therefore `roc`
+                    # and `annualized_roc` with it. The broker's portfolio
+                    # margin and the naked-margin formula are different
+                    # numbers for the same trade, so a corpus that compares
+                    # capital efficiency across scans has to know which.
+                    "bpr_source": best.bpr_source if best else None,
+                    "roc": best.roc if best else None,
+                    "annualized_roc": best.annualized_roc if best else None,
+                    "pop": best.pop if best else None,
+                    "spread_cost": best.spread_cost if best else None,
+                    "be_over_em": best.be_over_em if best else None,
+                    "breakevens": (
+                        json.dumps([round(b, 4) for b in best.breakevens])
+                        if best
+                        else None
+                    ),
+                    "error": p.error,
+                }
+                conn.execute(_INSERT_PICK, row)
                 written += 1
         return written
     finally:

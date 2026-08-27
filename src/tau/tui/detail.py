@@ -10,6 +10,7 @@ from datetime import date
 from rich.markup import escape
 from textual.widgets import Static
 
+from tau import build as build_mod
 from tau import catalyst as catalyst_mod
 from tau import history as history_mod
 from tau.build import BuiltLeg, Structure
@@ -217,9 +218,17 @@ class DetailPane(Static):
             lines.append(f"[yellow]not built: {shown.reason}[/yellow]")
             return lines
 
-        lines += self._structure_lines(shown)
+        # One pane, one margin model. The winner appears twice — in the line
+        # below and again in the ladder under it — and `ANN` is read off the
+        # buying-power figure, so a ladder forced onto the formula takes the
+        # lines above it along. Two different numbers four lines apart under
+        # the same `ANN` label is worse than either model on its own.
+        siblings, on_formula = (
+            ([], False) if chosen is not None else self._ladder(p, shown)
+        )
+        lines += self._structure_lines(shown.on_formula if on_formula else shown)
         if chosen is None:
-            lines += self._ladder_lines(p, shown)
+            lines += self._ladder_lines(shown, siblings, on_formula)
             # The winner is one of many, and how many were rejected is part of
             # reading it — one passing variant out of twelve is a different
             # market from twelve out of twelve.
@@ -230,7 +239,35 @@ class DetailPane(Static):
             )
         return lines
 
-    def _ladder_lines(self, p: Proposal, best: Structure) -> list[str]:
+    def _ladder(self, p: Proposal, best: Structure) -> tuple[list[Structure], bool]:
+        """The winner's siblings in ladder order, and whether the pane has to
+        read them on the formula.
+
+        The broker prices a bounded shortlist, so a strategy's ladder can
+        straddle the cut. `ANN` is read off the buying-power figure and
+        carries no source marker of its own, so a ladder that is not
+        uniformly broker-priced is shown on the formula throughout. A marker
+        would tell the reader these rows are incomparable; the formula makes
+        them comparable, which is what the column is for.
+
+        Fewer than two siblings is not a ladder, and nothing is rendered from
+        it — so it forces nothing onto the formula either.
+        """
+        siblings = [
+            s
+            for s in p.structures
+            if s.strategy.name == best.strategy.name and s.complete
+        ]
+        if len(siblings) < 2:
+            return [], False
+        siblings.sort(key=lambda s: s.variant)
+        return siblings, not build_mod.uniformly_broker_priced(
+            siblings, "annualized_roc"
+        )
+
+    def _ladder_lines(
+        self, best: Structure, siblings: list[Structure], on_formula: bool
+    ) -> list[str]:
         """The winner's siblings: the same strategy's other variants, in ladder
         order.
 
@@ -239,23 +276,18 @@ class DetailPane(Static):
         visible by drilling in. Seeing what the extra credit costs in
         probability is the actual decision, so it belongs beside the winner.
         """
-        siblings = [
-            s
-            for s in p.structures
-            if s.strategy.name == best.strategy.name and s.complete
-        ]
-        if len(siblings) < 2:
+        if not siblings:
             return []
-        siblings.sort(key=lambda s: s.variant)
         lines = [
             "",
             f"[b]{best.strategy.name}[/b] [dim]· credit / POP / ANN[/dim]",
         ]
         for s in siblings:
             mark = "›" if s is best else " "
+            measured = s.on_formula if on_formula else s
             row = (
                 f"{mark} {s.variant:<12} {_fmt(s.credit):>6} "
-                f"{_pct(s.pop):>5} {_pct(s.annualized_roc):>6}"
+                f"{_pct(s.pop):>5} {_pct(measured.annualized_roc):>6}"
             )
             lines.append(row if s.ok else f"[dim]{row}[/dim]")
         return lines
@@ -275,10 +307,14 @@ class DetailPane(Static):
         lines.append(f"{taken} · BE {be}")
         # Premium is per share and the rest is per contract. Marking the
         # dollar figures keeps two different units off adjacent lines wearing
-        # the same clothes.
+        # the same clothes. Buying power names its source outright: `BPR~` is
+        # the formula, `BPR` is the broker's own dry-run figure, and the two
+        # are different numbers from different models.
+        bpr_label = "BPR" if s.bpr_source == "broker" else "BPR~"
+        bpr_note = " (broker dry-run)" if s.bpr_source == "broker" else " (formula)"
         lines.append(
             f"max profit ${_fmt(s.max_profit, ',.0f')} · "
-            f"BPR~ ${_fmt(s.bpr, ',.0f')} · "
+            f"{bpr_label} ${_fmt(s.bpr, ',.0f')}{bpr_note} · "
             f"ANN {_pct(s.annualized_roc, '.0f')}"
         )
         ratio = s.be_over_em

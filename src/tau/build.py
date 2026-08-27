@@ -43,7 +43,16 @@ from tau.payoff import (
     worst_loss_down,
     worst_loss_up,
 )
-from tau.strategy import Atm, Delta, LegSpec, Moneyness, Ref, Require, Strategy
+from tau.strategy import (
+    UNCONSTRAINABLE_METRICS,
+    Atm,
+    Delta,
+    LegSpec,
+    Moneyness,
+    Ref,
+    Require,
+    Strategy,
+)
 
 # How far a referenced wing may land from the strike it asked for, as a
 # fraction of the requested offset, before the variant is thrown out. A 10-wide
@@ -114,6 +123,10 @@ class Structure:
     legs: tuple[BuiltLeg, ...] = ()
     reason: str | None = None
     failures: tuple[ConstraintResult, ...] = ()
+    # The broker's dry-run buying-power figure, when one was obtained. `None`
+    # means `bpr` falls back to the in-house formula estimate. Filled by
+    # `propose.enrich_with_broker_bpr`, never by the builder.
+    broker_bpr: float | None = None
 
     @property
     def symbol(self) -> str:
@@ -172,10 +185,32 @@ class Structure:
 
     @property
     def bpr(self) -> float | None:
-        """Estimated buying power reduction, not a broker quote."""
+        """Buying power reduction in dollars: the broker's dry-run figure
+        when one was obtained, otherwise the formula estimate."""
+        if self.broker_bpr is not None:
+            return self.broker_bpr
         if not self.complete or self.cycle.underlying is None:
             return None
         return bpr(self.payoff_legs, self.cycle.underlying)
+
+    @property
+    def on_formula(self) -> "Structure":
+        """This structure as the formula alone measures it.
+
+        Every structure always has a formula figure, so a comparison built on
+        this one is available whatever the broker did or did not answer. That
+        is what makes it the fallback for an *ordering*: a list sorted on it
+        is complete and homogeneous, where one sorted on the broker figure is
+        only homogeneous when the broker answered for all of it.
+        """
+        return self if self.broker_bpr is None else replace(self, broker_bpr=None)
+
+    @property
+    def bpr_source(self) -> str:
+        """`"broker"` when `bpr` came from the dry-run calculation,
+        `"estimate"` when it is the formula. The two are different numbers
+        from different models, and the display says which one it is."""
+        return "broker" if self.broker_bpr is not None else "estimate"
 
     @property
     def roc(self) -> float | None:
@@ -469,22 +504,74 @@ def evaluate_all(strategies, cycle: Cycle) -> list[Structure]:
     return [s for strategy in strategies for s in evaluate(strategy, cycle)]
 
 
+# Metrics computed from the buying-power figure, so two structures whose
+# `bpr` came from different margin models do not compare on them. The same
+# set `strategy` refuses a `Require` on, and for the same underlying reason —
+# one name each for the two consequences, but never two definitions to keep
+# in step.
+MODEL_SENSITIVE_METRICS = UNCONSTRAINABLE_METRICS
+
+
+def comparable_on(structures: list[Structure], key: str) -> list[Structure]:
+    """`structures` narrowed to one margin model when `key` depends on which
+    model produced it.
+
+    The broker-priced structures when there are any, everything otherwise —
+    so a formula estimate can never beat a broker figure on a comparison that
+    reads buying power, and a run with no broker figures at all ranks exactly
+    as it did before the dry-run existed.
+    """
+    if key not in MODEL_SENSITIVE_METRICS:
+        return structures
+    priced = [s for s in structures if s.bpr_source == "broker"]
+    return priced or structures
+
+
 def best(structures: list[Structure]) -> Structure | None:
     """The highest-ranked passing variant, by each structure's own rank
     metric. Structures that failed a constraint never win."""
     passing = [s for s in structures if s.ok and s.metric(s.strategy.rank) is not None]
     if not passing:
         return None
-    return max(passing, key=lambda s: s.metric(s.strategy.rank))
+    pool = comparable_on(passing, passing[0].strategy.rank)
+    return max(pool, key=lambda s: s.metric(s.strategy.rank))
+
+
+def uniformly_broker_priced(structures: list[Structure], key: str) -> bool:
+    """Whether every candidate that `key` would compare came from the broker.
+
+    Asked of the passing rows only, because failures sort behind them as a
+    block and are never priced anyway. The broker pull is bounded at ten per
+    symbol, so a name with more passing variants than that has some rows on
+    one margin model and some on the other.
+    """
+    if key not in MODEL_SENSITIVE_METRICS:
+        return True
+    passing = [s for s in structures if s.ok]
+    return bool(passing) and all(s.bpr_source == "broker" for s in passing)
 
 
 def rank(structures: list[Structure], key: str = "annualized_roc") -> list[Structure]:
     """Passing variants first, ordered by the chosen metric descending;
     failures and unbuildable variants keep their place at the back rather
-    than vanishing."""
+    than vanishing.
+
+    Ordered on one margin model throughout: the broker's when it priced every
+    passing variant, the formula's the moment it did not. Ranking a
+    broker-priced row against an estimate would float whichever was measured
+    by the more generous model — the broker's figure ran 30% above the
+    formula on MU, which costs that row a quarter of its annualized return
+    against a neighbour the broker never saw. Each row still displays and
+    labels its own figure; this is the sort key only.
+    """
+    on_formula = not uniformly_broker_priced(structures, key)
 
     def sort_key(structure: Structure):
-        value = structure.metric(key) if structure.complete else None
+        if not structure.complete:
+            value = None
+        else:
+            measured = structure.on_formula if on_formula else structure
+            value = measured.metric(key)
         return (not structure.ok, -(value or 0), structure.symbol, structure.variant)
 
     return sorted(structures, key=sort_key)

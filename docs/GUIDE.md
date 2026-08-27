@@ -141,7 +141,7 @@ the first and second OTM strangles, weighted 60/30/10. It falls back to
 | `credit` | Net premium per share. A debit structure shows `debit` in yellow instead |
 | `BE` | Every breakeven. A broken wing has four; a cash-secured put has one |
 | `max profit` | Best case in dollars per contract. `∞` when the upside is open |
-| `BPR~` | Estimated buying power in dollars. A formula, not a broker quote |
+| `BPR` | Buying power in dollars: the broker's own dry-run figure when the account answered, otherwise a formula estimate. The `~` suffix on the tables' values marks the estimate; the detail pane spells it out |
 | `ANN` | Annualized return on capital, which makes a 40-day trade comparable to a 60-day one |
 | `POP` | Probability of profit at expiry under a driftless lognormal, with each breakeven priced under the vol local to it — puts below, calls above. An approximation, not a smile-consistent density; see `payoff.pop_over_intervals` |
 | `spread` | Cost of crossing every leg, as a share of the premium at stake |
@@ -149,6 +149,67 @@ the first and second OTM strangles, weighted 60/30/10. It falls back to
 
 Return is `max_profit / bpr`, not `credit / bpr`. On a broken wing the best case
 sits at a strike above the credit, and the structure can price as a debit.
+
+### Where the buying-power figure comes from
+
+`BPR` is the broker's own number when tau can get it: for each symbol, the
+top-ranked structures are sent to your account's order **dry-run** endpoint —
+one POST per structure, a calculation preview that places, modifies, and
+cancels nothing — and the broker's isolated margin requirement replaces the
+in-house estimate. The real number matters because the formula is a standard
+naked-margin model and the account runs on portfolio margin; measured against
+the broker's figure on 2026-08-20, the formula was $3,980 where the broker
+said $3,651 on an AAPL strangle and $28,335 where it said $37,010 on MU.
+
+When the broker does not answer — read-scoped token, network error, timeout,
+rate limit, missing credentials — tau silently falls back to the formula and
+screens exactly as it always has. Nothing crashes and nothing changes shape;
+the fallback is automatic and there is no toggle. The detail pane and the
+rank tables label the source per figure: broker-sourced values are plain,
+formula estimates carry a trailing `~` (the tables' column header is `BPR`
+for both). `tau rank --top N` prices the top N names; within each name the
+top 10 structures get the broker figure.
+
+Because that shortlist is bounded, one name's rows can carry figures from both
+models at once. The two are not comparable — the same trade prices 30% apart
+between them — so the winning structure is picked within one model: whenever
+any candidate has a broker figure, only broker-priced candidates compete, and
+a name with none of them ranks exactly as it did before the dry-run existed.
+The same rule governs every ordering. `tau rank` sorts symbols against each
+other on the broker figures only when every name in the pass got them, and the
+variants drill-in sorts a name's ladder on them only when every passing variant
+got them — which, since the pull stops at ten, means a name with more than ten
+passing variants always orders on the formula. Either way one name missing them
+drops the whole list back to the formula, the yardstick every row always has.
+Each row still shows and labels its own figure; this decides the sort key, not
+the display.
+
+The pull is all or nothing for that reason. Which POSTs come back first is
+network timing, so a shortlist priced in part would hand the headline pick to
+whichever ones did — the seventh-best structure presented as the trade to do,
+with nothing saying the six above it were never priced. Either every candidate
+gets a broker figure or the name stays on the formula across the board. Only
+tradable structures are priced at all; a variant that failed a constraint keeps
+its estimate rather than costing a live call.
+
+Two bounds keep an unavailable broker from stalling a pass. The pull gets 30
+seconds per name, and after three dry-run failures in a row tau stops asking —
+the case that needs it is an account API that hangs rather than fails, where
+nothing would otherwise be cached and every name would pay the wait again.
+Running out of those 30 seconds counts as one of the three: a broker slow
+enough to burn the deadline did not answer, and the pass stops paying the
+stall rather than repeating it name after name. So does failing to read the
+account list at all, which gets the same two-minute pause rather than being
+taken as a permanent verdict on the token.
+That pause lasts two minutes, not the rest of the run: the dry-run endpoint
+gives tau no way to tell a rate limit from a real failure, and a session that
+runs for hours must not lose broker pricing for good over one rough patch.
+When the two minutes are up a single call goes out to find out — if it answers,
+pricing resumes; if not, another two minutes. While it is paused the TUI meta
+line reads `broker BPR off`, so a screen full of `~` is never ambiguous between
+"the broker stopped answering" and "these were always estimates". In the TUI
+the drill-in never waits on the broker at all: the variants appear on the
+estimates immediately and upgrade in place when it answers.
 
 Underneath the structure you get the rest of that strategy's ladder, with the
 winner marked. The rank view can only show one row per name, and on return
@@ -256,6 +317,12 @@ Available metrics: `credit`, `net_premium`, `max_profit`, `max_loss`,
 `spread_cost`, `dte`, `breakeven_low`, `breakeven_high`, `be_over_em`,
 `worst_off_target`, `leg_count`.
 
+`bpr`, `roc` and `annualized_roc` can be ranked on but not required, and a
+strategy that tries fails at load. Constraints are settled when the structure
+is built, off the formula estimate; the broker's dry-run figure arrives after
+that and replaces the buying-power number the row displays. A floor decided on
+one model and shown against the other is a green row failing its own rule.
+
 Constrain the pricing outcome rather than the shape where you can. A jade
 lizard is defined by its credit covering the call spread's width, which is
 `Require("worst_loss_up", "<=", 0)`. On a given day the requested deltas may
@@ -300,6 +367,11 @@ Scan parameters are constants rather than flags:
 | Max delta-selected miss | 0.05 delta | `build.MAX_DELTA_MISS` |
 | Max variants per strategy | 64 | `strategy.MAX_VARIANTS` |
 | Margin estimate | max(20% spot − OTM + premium, 10% strike + premium, $50) per contract | `payoff.OTM_PERCENT`, `STRIKE_PERCENT`, `MIN_PER_CONTRACT` |
+
+Buying power is the broker's isolated margin requirement from the order
+**dry-run** when the account answers (see [Where the buying-power figure
+comes from](#where-the-buying-power-figure-comes-from)); the formula row above
+is the always-available fallback.
 
 Because only monthlies are considered, a symbol with no monthly expiration near
 the target DTE simply has no usable cycle. It will not quietly fall back to a
@@ -354,6 +426,12 @@ every leg with its OCC symbol and delta, and the figures. Definitions are
 stored once each in `strategy_def`, keyed by a digest, so editing a strategy
 does not rewrite the history of picks made under the old version. A symbol that
 priced nothing still gets a row with its reason.
+
+`bpr_source` records which margin model produced that row's `bpr`, and `roc`
+and `annualized_roc` with it — `broker` for the dry-run figure, `estimate` for
+the formula, `NULL` on rows written before the column existed. Filter on it
+before comparing capital efficiency across scans; the two models are different
+numbers for the same trade.
 
 ```sql
 SELECT d.name, k.variant, count(*), round(avg(k.annualized_roc), 2)

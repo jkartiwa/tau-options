@@ -2,8 +2,8 @@
 
 **An options scanner for premium sellers.** It finds where volatility is
 expensive, prices every option structure you have defined against the chain,
-and ranks what comes out. It runs in the terminal and only has read access to
-your account, so it cannot place orders.
+and ranks what comes out. It runs in the terminal, only ever calls the order
+dry-run *calculation* for buying power, and cannot place orders.
 
 ![The screen](docs/img/screen.svg)
 
@@ -29,7 +29,9 @@ your account, so it cannot place orders.
 
 ## Quick start
 
-You will need Python 3.12 or newer, and a tastytrade account with read scope.
+You will need Python 3.12 or newer, and a tastytrade account with trade scope
+on the personal grant (the buying-power dry-run is a trading-scope call; tau
+still never places an order).
 
 ```bash
 git clone https://github.com/jkartiwa/tau-options.git
@@ -50,12 +52,13 @@ tau
 
 ## Limits
 
-Buying power is an estimate from a margin formula, not a broker quote.
-Probability of profit bounds one interval with two driftless lognormals — the
-lower breakeven priced off the put smile, the upper off the call smile — which
-is not a single self-consistent distribution. Quotes are mid-based. The
-catalyst read is a language model's opinion of recent headlines with no
-measured accuracy.
+Buying power is the broker's own figure from the order dry-run calculation
+when the account answers, and a margin-formula estimate otherwise — labelled
+as either on every surface. Probability of profit bounds one interval with two
+driftless lognormals — the lower breakeven priced off the put smile, the upper
+off the call smile — which is not a single self-consistent distribution.
+Quotes are mid-based. The catalyst read is a language model's opinion of recent
+headlines with no measured accuracy.
 
 This is a personal research tool and not financial advice. Selling options
 carries uncapped risk, so verify every number against your broker before you

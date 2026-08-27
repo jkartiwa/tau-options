@@ -491,3 +491,76 @@ def test_be_over_em_measures_the_nearer_breakeven_in_expected_moves():
     # 90/110 wings on a 2.40 credit break even at 87.60 and 112.40
     assert structure.breakevens == pytest.approx([87.60, 112.40])
     assert structure.be_over_em == pytest.approx(12.40 / em)
+
+
+LADDERED_STRANGLE = Strategy(
+    name="t-ladder",
+    bias=Bias.NEUTRAL,
+    legs=[
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.12, 0.20])),
+        LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.12, 0.20])),
+    ],
+)
+
+
+def _shortlist_priced(structures, count):
+    """The first `count` passing variants carrying a broker figure, the rest
+    left on the formula — the shape `enrich_with_broker_bpr` produces on a
+    name with more passing variants than the bounded pull covers."""
+    from dataclasses import replace
+
+    priced = 0
+    out = []
+    for s in rank(structures):
+        if s.ok and priced < count and s.bpr:
+            out.append(replace(s, broker_bpr=s.bpr * 1.30))
+            priced += 1
+        else:
+            out.append(s)
+    return out
+
+
+def test_a_partly_priced_ladder_orders_on_the_formula_throughout():
+    """The pull is bounded, so rows past the cut keep the formula while the
+    ones above them carry portfolio margin. Interleaving the two floats
+    whichever was measured by the more generous model to the top of its own
+    drill-in."""
+    from tau.build import uniformly_broker_priced
+
+    structures = evaluate(LADDERED_STRANGLE, cycle())
+    passing = [s for s in structures if s.ok]
+    assert len(passing) > 2  # a real ladder, not a single row
+
+    mixed = _shortlist_priced(structures, 1)
+    assert not uniformly_broker_priced(mixed, "annualized_roc")
+
+    formula_order = [s.variant for s in rank(structures)]
+    assert [s.variant for s in rank(mixed)] == formula_order
+
+
+def test_a_fully_priced_ladder_orders_on_the_broker_figures():
+    from dataclasses import replace
+
+    from tau.build import uniformly_broker_priced
+
+    structures = evaluate(LADDERED_STRANGLE, cycle())
+    # every passing row priced, and the widest one flattered enough to lead
+    passing = rank([s for s in structures if s.ok])
+    laggard = passing[-1]
+    priced = [
+        replace(s, broker_bpr=s.bpr * (0.1 if s is laggard else 1.0))
+        for s in passing
+    ]
+    assert uniformly_broker_priced(priced, "annualized_roc")
+    assert rank(priced)[0].variant == laggard.variant
+
+
+def test_ordering_on_a_metric_that_ignores_buying_power_is_unaffected():
+    from tau.build import uniformly_broker_priced
+
+    structures = evaluate(LADDERED_STRANGLE, cycle())
+    mixed = _shortlist_priced(structures, 1)
+    assert uniformly_broker_priced(mixed, "credit")
+    assert [s.variant for s in rank(mixed, "credit")] == [
+        s.variant for s in rank(structures, "credit")
+    ]

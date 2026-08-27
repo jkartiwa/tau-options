@@ -16,16 +16,19 @@ cycle, not a single hardcoded strangle. One chain fetch per symbol feeds all
 of them — everything after the fetch is in-memory arithmetic, so searching six
 strategies costs what searching one did.
 
-Buying power is an *estimate* from the standard naked-option margin formula,
-not a broker quote — the read-only grant cannot dry-run an order. It is
-labelled as an estimate everywhere it surfaces.
+Buying power is the broker's own figure when the account answered — one
+POST per structure to the order dry-run calculation, which places nothing —
+and the in-house formula estimate otherwise, labelled as such either way.
+The formula stays the always-available base figure; the broker call is the
+upgrade, and its every failure falls back to the formula.
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from tastytrade import Session
 
+from tau import broker as broker_mod
 from tau import build as build_mod
 from tau import chain as chain_mod
 from tau.build import Structure
@@ -58,6 +61,30 @@ RATE_LIMIT_BASE_BACKOFF = 1.0
 # single metric both are measured on, and return per day of capital tied up is
 # the one this tool is built around.
 CROSS_STRATEGY_METRIC = "annualized_roc"
+
+# Per symbol: how many of the ranked shortlist the broker prices. Rank with
+# the formula first (cheap, offline), then pull the broker figure for this
+# many of the top structures and let the real numbers re-rank within the
+# shortlist. Bounded on purpose — a full search is ~50 variants, and pricing
+# all of them against the live account is ~5x the API load for no change in
+# what the rank view shows.
+BROKER_BPR_TOP = 10
+
+# Seconds the whole broker pull gets before the proposal ships on whatever
+# came back. A dry-run that fails is cheap — the breaker learns it and the
+# rest of the pass skips — but one that merely hangs costs a read timeout per
+# POST, and a rank pass drains them through one shared gate. The requirement
+# is that an unavailable broker never stalls the pipeline, and a deadline is
+# the only thing that actually enforces it: whatever answered in time is
+# kept, everything else stays on the formula estimate and says so.
+#
+# The deadline is per symbol while the gate is process-wide, so a broker that
+# is slow rather than broken can expire this budget on queueing alone. That
+# is not something to tune the budget around — it is a broker failing to
+# answer in time, and `broker.cancel_for_budget` reports it as one, so the
+# breaker trips on it like any other timeout and the pass stops paying the
+# stall instead of repeating it symbol after symbol.
+BROKER_BPR_BUDGET = 30.0
 
 
 def _is_rate_limited(exc: Exception) -> bool:
@@ -102,6 +129,10 @@ class Proposal:
         variant rather than its highest-returning one. Those winners then
         compete on one common metric, because a lizard and a condor cannot be
         compared on a yardstick only one of them declared.
+
+        The shortlist the broker prices is bounded, so those winners can carry
+        figures from two different margin models. `comparable_on` keeps the
+        final comparison to one of them.
         """
         by_strategy: dict[str, list[Structure]] = {}
         for structure in self.structures:
@@ -116,7 +147,8 @@ class Proposal:
         ]
         if not comparable:
             return None
-        return max(comparable, key=lambda s: s.metric(CROSS_STRATEGY_METRIC))
+        pool = build_mod.comparable_on(comparable, CROSS_STRATEGY_METRIC)
+        return max(pool, key=lambda s: s.metric(CROSS_STRATEGY_METRIC))
 
     @property
     def ok(self) -> bool:
@@ -280,6 +312,94 @@ def propose_on(
     )
 
 
+async def enrich_with_broker_bpr(
+    session: Session | None,
+    proposal: Proposal,
+    top_n: int = BROKER_BPR_TOP,
+    budget: float = BROKER_BPR_BUDGET,
+) -> Proposal:
+    """Attach the broker's dry-run buying-power figure to the proposal's
+    top-ranked structures.
+
+    Rank with the existing formula first — cheap, offline — then pull the
+    broker figure for the ranked shortlist and let the real numbers re-rank
+    it. Structures the broker did not answer for keep the formula estimate,
+    and any failure of the broker call — 403 insufficient scopes, network
+    error, timeout, rate limit, SDK exception, missing env (`session=None`)
+    — silently leaves the proposal as it was. The pipeline never changes
+    shape because the broker did not answer.
+
+    The pull is all or nothing. A partial one would leave the winner chosen
+    from whichever POSTs happened to return — the shortlist's seventh-best
+    structure presented as the trade to do, with nothing saying the six above
+    it were simply never priced. Every candidate priced, or the proposal
+    stays on the formula across the board; both are one margin model, and
+    only the first is independent of network timing.
+
+    The whole pull is bounded by `budget` seconds. Running out is not an
+    error for the proposal — it is one of the ways the pull comes back
+    incomplete — but it is a broker failure, and it is counted as one, so a
+    broker slow enough to expire the budget trips the breaker instead of
+    charging the same stall to every symbol behind it.
+
+    Only tradable structures are priced. A variant that failed a constraint
+    is not going to be traded, so a live call against a rate-limited endpoint
+    buys nothing for it.
+    """
+    if session is None or proposal.error is not None or not proposal.structures:
+        return proposal
+    if broker_mod.dry_runs_disabled():
+        return proposal
+    try:
+        account = await broker_mod.margin_account(session)
+    except Exception:
+        return proposal
+    if account is None:
+        return proposal
+    shortlist = [s for s in proposal.variants() if s.ok][:top_n]
+    if not shortlist:
+        return proposal
+
+    priced: dict[int, Structure] = {}
+
+    async def one(structure: Structure) -> None:
+        # `broker_bpr_for` gates itself: a rank pass runs several of these
+        # batches at once, so the cap on dry-run POSTs in flight has to be
+        # shared across them rather than reset per batch.
+        try:
+            value = await broker_mod.broker_bpr_for(session, account, structure)
+        except Exception:
+            return
+        if value is not None:
+            priced[id(structure)] = replace(structure, broker_bpr=value)
+
+    tasks = [asyncio.ensure_future(one(s)) for s in shortlist]
+    try:
+        _, pending = await asyncio.wait(tasks, timeout=budget)
+    except BaseException:
+        # Somebody else's cancellation (Ctrl-C, a TUI tearing down its
+        # worker). These tasks are ours to clean up, but the broker did not
+        # fail — cancel them plainly so `broker_bpr_for` re-raises rather
+        # than counting it, and let the cancellation through.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        raise
+    # Running out of budget is a broker that did not answer in time, which is
+    # the failure the breaker exists to catch and the only one that used to
+    # escape it: `CancelledError` is not an `Exception`, so a cut-off dry run
+    # never reached the counter and a slow broker could starve every symbol
+    # in a pass without ever tripping anything.
+    for task in pending:
+        broker_mod.cancel_for_budget(task)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    if len(priced) != len(shortlist):
+        return proposal
+    structures = tuple(priced.get(id(s), s) for s in proposal.structures)
+    return replace(proposal, structures=structures)
+
+
 async def price_candidate(
     session: Session,
     candidate: Candidate,
@@ -300,7 +420,9 @@ async def price_candidate(
                 await asyncio.sleep(RATE_LIMIT_BASE_BACKOFF * 2 ** (attempt - 1))
                 continue
             return Proposal(candidate, error=_clean_error(exc))
-    return propose_on(candidate, cycle, strategies)
+    return await enrich_with_broker_bpr(
+        session, propose_on(candidate, cycle, strategies)
+    )
 
 
 async def price_many(
@@ -335,11 +457,42 @@ async def price_many(
     )
 
 
+def broker_priced_pass(proposals) -> bool:
+    """Whether every priced proposal in a pass carries a broker figure.
+
+    The question an ordering has to ask before it picks a yardstick. Answered
+    across the whole pass rather than per row, because the ordering is what
+    the reader compares and one row measured on the other model corrupts the
+    comparison rather than just itself.
+    """
+    priced = [p for p in proposals if p.best is not None]
+    return bool(priced) and all(p.best.bpr_source == "broker" for p in priced)
+
+
+def ordering_value(proposal: Proposal, key: str, on_broker: bool) -> float | None:
+    """The figure `proposal` sorts on, given what the rest of its pass got.
+
+    A whole pass priced by the broker orders on the broker's numbers. The
+    moment one symbol is missing them the whole list drops to the formula —
+    the broker figure ran 8% below the formula on AAPL and 30% above it on
+    MU, so a mixed sort puts a name on top for having been measured by the
+    more generous model. Comparability across the list beats precision on
+    the rows that happened to answer, and the rows still display and label
+    their own figure either way.
+    """
+    best = proposal.best
+    if best is None:
+        return None
+    return best.metric(key) if on_broker else best.on_formula.metric(key)
+
+
 def rank_proposals(proposals: list[Proposal], key: str = CROSS_STRATEGY_METRIC):
     """Priced proposals first, ordered by the chosen metric descending;
     unpriced ones keep their place at the back rather than vanishing."""
+    on_broker = broker_priced_pass(proposals)
+
     def sort_key(p: Proposal):
-        value = getattr(p, key, None)
+        value = ordering_value(p, key, on_broker)
         return (not p.ok, -(value or 0), p.symbol)
 
     return sorted(proposals, key=sort_key)

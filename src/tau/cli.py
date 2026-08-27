@@ -20,6 +20,9 @@ from dotenv import load_dotenv
 from tau import chain as chain_mod
 from tau import propose as propose_mod
 from tau import screen, store, universe
+from tau.fmt import bpr as _bpr
+from tau.fmt import fmt as _fmt
+from tau.fmt import pct as _pct
 from tau.session import get_session
 from tau.strategies import ALL as ALL_STRATEGIES
 from tau.strategies import MIN_POP, STRATEGIES
@@ -36,18 +39,6 @@ def _load_env() -> None:
         load_dotenv(repo_env)
     else:
         load_dotenv()
-
-
-def _fmt(value, spec: str = ".1f") -> str:
-    if value is None:
-        return "—"
-    if value in (float("inf"), float("-inf")):
-        return "∞" if value > 0 else "-∞"
-    return format(value, spec)
-
-
-def _pct(value, spec: str = ".0f") -> str:
-    return "—" if value is None else _fmt(value * 100, spec)
 
 
 def _print_table(rows: list[screen.Candidate], show_reasons: bool) -> None:
@@ -180,7 +171,7 @@ async def rank(args: argparse.Namespace) -> None:
     w = _label_width(p.best.label for p in ordered if p.best is not None)
     print(
         f"{'SYM':<6} {'STRUCTURE':<{w}} {'BIAS':<8} {'DTE':>4} {'CREDIT':>7} "
-        f"{'BPR~':>8} {'ROC%':>6} {'ANN%':>7} {'POP%':>5} {'SPRD%':>6} {'BE/EM':>6}"
+        f"{'BPR':>8} {'ROC%':>6} {'ANN%':>7} {'POP%':>5} {'SPRD%':>6} {'BE/EM':>6}"
     )
     for p in ordered:
         s = p.best
@@ -190,7 +181,7 @@ async def rank(args: argparse.Namespace) -> None:
         print(
             f"{p.symbol:<6} {s.label:<{w}} {str(s.strategy.bias):<8} "
             f"{p.cycle.dte:>3}d {_fmt(s.credit, '.2f'):>7} "
-            f"{_fmt(s.bpr, ',.0f'):>8} {_pct(s.roc, '.1f'):>6} "
+            f"{_bpr(s.bpr, s.bpr_source):>8} {_pct(s.roc, '.1f'):>6} "
             f"{_pct(s.annualized_roc):>7} {_pct(s.pop):>5} "
             f"{_pct(s.spread_cost):>6} {_fmt(s.be_over_em, '.2f'):>6}"
         )
@@ -218,19 +209,22 @@ async def variants(args: argparse.Namespace) -> None:
     a market condition worth reading, and a missing row says nothing."""
     strategies = _selected_strategies(args.strategy, args.min_pop)
     symbol = args.symbol.upper()
-    cycle = await chain_mod.fetch_cycle(get_session(), symbol, target_dte=args.dte)
+    session = get_session()
+    cycle = await chain_mod.fetch_cycle(session, symbol, target_dte=args.dte)
     # No metrics pull here: this command is about one name's chain, and the
     # vol context it would add is what `tau scan` is for.
     candidate = screen.Candidate(
         symbol=symbol, ivr=None, ivp=None, iv30=None, hv30=None,
         liquidity=None, beta=None, earnings_date=None,
     )
-    proposal = propose_mod.propose_on(candidate, cycle, strategies)
+    proposal = await propose_mod.enrich_with_broker_bpr(
+        session, propose_mod.propose_on(candidate, cycle, strategies)
+    )
     spot = _fmt(cycle.underlying, ".2f")
     print(f"{symbol} · {cycle.expiration} · {cycle.dte} DTE · spot {spot}\n")
     ordered = proposal.variants(args.sort)
     w = _label_width(s.label for s in ordered)
-    print(f"{'':<2}{'STRUCTURE':<{w}} {'BIAS':<8} {'CREDIT':>7} {'BPR~':>8} "
+    print(f"{'':<2}{'STRUCTURE':<{w}} {'BIAS':<8} {'CREDIT':>7} {'BPR':>8} "
           f"{'ANN%':>7} {'POP%':>5} {'SPRD%':>6}  WHY NOT")
     passing = 0
     for s in ordered:
@@ -243,7 +237,7 @@ async def variants(args: argparse.Namespace) -> None:
         why = "; ".join(f.reason for f in s.failures)
         print(f"{mark}{s.label:<{w}} "
               f"{str(s.strategy.bias):<8} {_fmt(s.credit, '.2f'):>7} "
-              f"{_fmt(s.bpr, ',.0f'):>8} {_pct(s.annualized_roc):>7} "
+              f"{_bpr(s.bpr, s.bpr_source):>8} {_pct(s.annualized_roc):>7} "
               f"{_pct(s.pop):>5} {_pct(s.spread_cost):>6}  {why}")
     print(f"\n{passing} of {len(proposal.structures)} variants passed")
 

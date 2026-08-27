@@ -9,6 +9,7 @@ from tau.payoff import OptionType, Side
 from tau.propose import (
     Proposal,
     naked_side_requirement,
+    ordering_value,
     pop_between,
     propose_on,
     rank_proposals,
@@ -426,3 +427,519 @@ def test_a_cycle_that_mostly_could_not_be_priced_says_so_too():
     assert "failed a constraint" in reason
     assert "2 of 3 never priced" in reason
     assert "no strike near that delta" in reason
+# --- broker buying-power enrichment ---
+
+
+def test_bpr_defaults_to_the_formula_estimate():
+    p = proposal()
+    best = p.best
+    assert best.broker_bpr is None
+    assert best.bpr_source == "estimate"
+
+
+def test_broker_bpr_overrides_the_formula_figure_and_flows_into_roc():
+    from dataclasses import replace
+
+    p = proposal()
+    best = p.best
+    enriched = replace(best, broker_bpr=2500.0)
+    assert enriched.bpr == 2500.0
+    assert enriched.bpr_source == "broker"
+    # return on capital is computed from whichever figure `bpr` reports
+    assert enriched.roc == pytest.approx(enriched.max_profit / 2500.0)
+
+
+@pytest.mark.asyncio
+async def test_enrichment_uses_the_broker_figure_when_the_dry_run_succeeds(monkeypatch):
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    p = proposal()
+    fake_account = object()
+    calls = []
+
+    async def fake_margin(session):
+        return fake_account
+
+    async def fake_bpr(session, account, structure):
+        assert account is fake_account
+        calls.append(structure)
+        # a proportional figure keeps the ranked shortlist on top, so the
+        # re-ranked winner is verifiably broker-priced
+        return structure.bpr * 0.9 if structure.bpr else None
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
+
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), p)
+    assert enriched is not p
+    complete = [s for s in p.variants() if s.complete]
+    priced = min(propose_mod.BROKER_BPR_TOP, len(complete))
+    # exactly the top of the ranked shortlist got the broker figure
+    assert sum(1 for s in enriched.structures if s.bpr_source == "broker") == priced
+    assert len(calls) == priced
+    for s in enriched.structures:
+        if s.bpr_source == "broker":
+            assert s.bpr == pytest.approx(s.broker_bpr)
+    # the structure that ranked first on the formula is among them, and the
+    # untouched tail still reports the formula estimate
+    top = complete[0]
+    enriched_top = next(s for s in enriched.structures if s.label == top.label)
+    assert enriched_top.bpr_source == "broker"
+    assert enriched.best.bpr_source == "broker"
+
+
+@pytest.mark.asyncio
+async def test_enrichment_falls_back_when_the_account_cannot_be_read(monkeypatch):
+    """A 403-style failure resolving the account must leave the proposal
+    exactly as it was — same figures, same structure count, no crash."""
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    async def fake_margin(session):
+        raise RuntimeError("403: insufficient scopes")
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+
+    p = proposal()
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), p)
+    assert enriched is p
+    assert all(s.bpr_source == "estimate" for s in enriched.structures)
+
+
+@pytest.mark.asyncio
+async def test_enrichment_falls_back_on_a_generic_exception(monkeypatch):
+    """A dry-run that blows up mid-batch must not take the rest of the
+    proposal with it: every structure keeps the formula estimate."""
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    async def fake_margin(session):
+        return object()
+
+    async def fake_bpr(session, account, structure):
+        raise ValueError("connection reset")
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
+
+    p = proposal()
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), p)
+    assert all(s.bpr_source == "estimate" for s in enriched.structures)
+    assert len(enriched.structures) == len(p.structures)
+
+
+@pytest.mark.asyncio
+async def test_enrichment_with_no_session_is_a_noop():
+    """No credentials means no dry-run and no crash — the formula estimate
+    is the whole story."""
+    from tau import propose as propose_mod
+
+    p = proposal()
+    assert await propose_mod.enrich_with_broker_bpr(None, p) is p
+
+
+@pytest.mark.asyncio
+async def test_dry_runs_in_flight_are_capped_across_concurrent_batches(monkeypatch):
+    """A rank pass enriches several symbols at once. The cap on dry-run
+    POSTs in flight has to hold across those batches, not reset per batch —
+    otherwise the burst is a multiple of the cap and the account API
+    rate-limits it back down to the formula estimate."""
+    import asyncio
+
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    in_flight = 0
+    peak = 0
+
+    class FakeEffect:
+        isolated_order_margin_requirement = 2500.0
+
+    class FakeAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            try:
+                await asyncio.sleep(0.01)
+                return FakeEffect()
+            finally:
+                in_flight -= 1
+
+    account = FakeAccount()
+
+    async def fake_margin(session):
+        return account
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+
+    batches = [proposal(symbol=f"T{i}") for i in range(3)]
+    assert all(
+        len([s for s in p.variants() if s.complete]) > broker_mod.MAX_CONCURRENT
+        for p in batches
+    )
+    enriched = await asyncio.gather(
+        *(propose_mod.enrich_with_broker_bpr(object(), p) for p in batches)
+    )
+    assert peak <= broker_mod.MAX_CONCURRENT
+    # and the figures still landed
+    assert all(e.best.bpr_source == "broker" for e in enriched)
+
+
+def _strategy_winners(p):
+    from tau.build import best as build_best
+
+    groups = {}
+    for s in p.structures:
+        groups.setdefault(s.strategy.name, []).append(s)
+    winners = [w for g in groups.values() if (w := build_best(g)) is not None]
+    return sorted(
+        winners, key=lambda s: s.metric("annualized_roc"), reverse=True
+    )
+
+
+def test_a_formula_estimate_never_outranks_a_broker_figure_for_best():
+    """The shortlist is bounded, so a strategy's winner can miss the dry-run
+    and keep the naked-margin formula while another carries portfolio margin.
+    The two are different numbers for the same trade — up to 30% apart on the
+    author's own measurement — so `best` must not decide between them."""
+    from dataclasses import replace
+
+    p = proposal()
+    winners = _strategy_winners(p)
+    top, runner_up = winners[0], winners[1]
+    assert top.metric("annualized_roc") > runner_up.metric("annualized_roc")
+    assert p.best.label == top.label
+
+    # the runner-up got a broker figure that leaves its own ranking unchanged;
+    # it still loses on the raw metric, and still must win `best`
+    priced = replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr) if s is runner_up else s
+            for s in p.structures
+        ),
+    )
+    assert priced.best.label == runner_up.label
+    assert priced.best.bpr_source == "broker"
+    assert priced.best.metric("annualized_roc") < top.metric("annualized_roc")
+
+
+def test_a_formula_estimate_never_outranks_a_broker_figure_within_a_strategy():
+    """Same rule one stage earlier: a strategy picks its own winner on a
+    bpr-derived metric too."""
+    from dataclasses import replace
+
+    from tau.build import best as build_best
+
+    p = proposal()
+    top = _strategy_winners(p)[0]
+    group = [s for s in p.structures if s.strategy.name == top.strategy.name]
+    loser = next(
+        s for s in group
+        if s.ok and s is not top and s.metric("annualized_roc") is not None
+    )
+    priced = [replace(s, broker_bpr=s.bpr) if s is loser else s for s in group]
+    winner = build_best(priced)
+    assert winner.label == loser.label
+    assert winner.bpr_source == "broker"
+
+
+def test_a_metric_that_ignores_buying_power_still_compares_across_sources():
+    """The rule is about margin models, not about the broker: a comparison
+    that never reads `bpr` is unaffected by which model produced it."""
+    from dataclasses import replace
+
+    from tau.build import comparable_on
+
+    p = proposal()
+    structures = list(p.structures)
+    marked = [replace(s, broker_bpr=5000.0) for s in structures[:1]] + structures[1:]
+    assert comparable_on(marked, "credit") == marked
+    assert comparable_on(marked, "annualized_roc") == marked[:1]
+
+
+@pytest.mark.asyncio
+async def test_enrichment_gives_up_on_its_budget_without_stalling(monkeypatch):
+    """An account API that hangs rather than fails must not stall the pass:
+    the budget ends the pull and nothing raises."""
+    import asyncio
+
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    async def fake_margin(session):
+        return object()
+
+    async def fake_bpr(session, account, structure):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
+
+    p = proposal()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), p, budget=0.1)
+    elapsed = loop.time() - started
+
+    assert elapsed < 5.0
+    assert len(enriched.structures) == len(p.structures)
+    assert all(s.bpr_source == "estimate" for s in enriched.structures)
+
+
+@pytest.mark.asyncio
+async def test_a_partial_pull_leaves_every_figure_on_the_formula(monkeypatch):
+    """Which POSTs came back is network timing, and a shortlist priced in
+    part would hand the headline pick to whichever ones did. Completeness
+    and homogeneity are both available, because every structure always has a
+    formula figure."""
+    import asyncio
+
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    answered = []
+
+    async def fake_margin(session):
+        return object()
+
+    async def fake_bpr(session, account, structure):
+        if len(answered) < 2:
+            answered.append(structure.label)
+            return 2500.0
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
+
+    p = proposal()
+    assert len([s for s in p.variants() if s.ok]) > len(answered) + 1
+    enriched = await propose_mod.enrich_with_broker_bpr(object(), p, budget=0.1)
+
+    assert len(answered) == 2  # the pull really was partial
+    assert enriched is p
+    assert all(s.bpr_source == "estimate" for s in enriched.structures)
+    assert enriched.best.bpr_source == "estimate"
+
+
+@pytest.mark.asyncio
+async def test_a_name_with_no_tradable_structure_spends_no_dry_runs(monkeypatch):
+    """A proposal that priced nothing prints no figures at all, so a live
+    call against a rate-limited endpoint buys nothing for it."""
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    calls = []
+
+    async def fake_margin(session):
+        return object()
+
+    async def fake_bpr(session, account, structure):
+        calls.append(structure.label)
+        return 2500.0
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
+
+    p = proposal()
+    dead = Proposal(
+        p.candidate, p.cycle, p.structures, error="all variants failed"
+    )
+    assert await propose_mod.enrich_with_broker_bpr(object(), dead) is dead
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_rejected_variants_are_never_sent_to_the_broker(monkeypatch):
+    """A variant that failed a constraint is not going to be traded, so it
+    keeps its formula figure rather than costing a dry-run POST."""
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    priced = []
+
+    async def fake_margin(session):
+        return object()
+
+    async def fake_bpr(session, account, structure):
+        priced.append(id(structure))
+        return 2500.0
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+    monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
+
+    p = proposal()
+    passing = [s for s in p.variants() if s.ok]
+    rejected = {id(s) for s in p.structures if s.complete and not s.ok}
+    assert rejected  # the fixture really does produce failures
+
+    # a shortlist wider than the passing set: the rejected variants are next
+    # in the ranking, and are exactly what must not be sent
+    enriched = await propose_mod.enrich_with_broker_bpr(
+        object(), p, top_n=len(passing) + 5
+    )
+    assert len(priced) == len(passing)
+    assert not (set(priced) & rejected)
+    for s in enriched.structures:
+        if id(s) in rejected:
+            assert s.bpr_source == "estimate"
+        elif s.ok:
+            assert s.bpr_source == "broker"
+
+
+@pytest.mark.asyncio
+async def test_enrichment_stops_after_the_broker_circuit_breaker_trips(monkeypatch):
+    """The account list resolving while every POST times out is the case a
+    per-symbol deadline cannot bound: nothing caches it, so each symbol pays
+    the wait again and the stall grows with `--top`."""
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    attempts = []
+
+    class DeadAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            attempts.append(order)
+            raise TimeoutError("read timeout")
+
+    async def fake_margin(session):
+        return DeadAccount()
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+
+    first = await propose_mod.enrich_with_broker_bpr(object(), proposal())
+    assert all(s.bpr_source == "estimate" for s in first.structures)
+    spent = len(attempts)
+    assert spent >= broker_mod.MAX_CONSECUTIVE_FAILURES
+    assert broker_mod.dry_runs_disabled()
+
+    for _ in range(3):
+        later = await propose_mod.enrich_with_broker_bpr(object(), proposal())
+        assert all(s.bpr_source == "estimate" for s in later.structures)
+    assert len(attempts) == spent  # no symbol after the trip pays the wait again
+
+
+def _priced(p, factor):
+    """`p` with every structure carrying a broker figure `factor` times its
+    formula estimate — the broker ran below the formula on one of the
+    author's measured names and above it on the other."""
+    from dataclasses import replace
+
+    return replace(
+        p,
+        structures=tuple(
+            replace(s, broker_bpr=s.bpr * factor) if s.bpr else s
+            for s in p.structures
+        ),
+    )
+
+
+def test_a_whole_broker_priced_pass_ranks_on_the_broker_figures():
+    a = _priced(proposal("AAA"), 0.5)   # broker margin below the formula
+    b = _priced(proposal("BBB"), 2.0)   # broker margin above it
+    assert a.best.bpr_source == b.best.bpr_source == "broker"
+    assert a.annualized_roc > b.annualized_roc
+
+    assert [p.symbol for p in rank_proposals([b, a])] == ["AAA", "BBB"]
+
+
+def test_a_mixed_pass_ranks_every_symbol_on_the_formula():
+    """One timed-out POST flips a symbol back to the formula. Ordering the
+    rest against it would put a name on top for having been measured by the
+    more generous model, so the whole list drops to the yardstick every
+    symbol has."""
+    formula = proposal("AAA")
+    # the same name, broker-priced at half the formula margin: its return
+    # doubles and it would lead a mixed ranking on that alone
+    flattered = _priced(proposal("BBB"), 0.5)
+    assert flattered.annualized_roc > formula.annualized_roc
+
+    mixed = rank_proposals([flattered, formula])
+    assert [p.symbol for p in mixed] == ["AAA", "BBB"]
+    # the figures themselves are untouched: this governs the sort key only
+    assert flattered.best.bpr_source == "broker"
+    assert flattered.best.bpr == pytest.approx(flattered.best.on_formula.bpr * 0.5)
+
+
+def test_ordering_ignores_the_broker_when_the_metric_does():
+    """The rule is about margin models. A metric that never reads buying
+    power sorts the same either way."""
+    a = _priced(proposal("AAA"), 0.5)
+    b = proposal("BBB")
+    for on_broker in (True, False):
+        assert ordering_value(a, "credit", on_broker) == pytest.approx(a.credit)
+        assert ordering_value(b, "credit", on_broker) == pytest.approx(b.credit)
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_the_budget_cuts_off_counts_toward_the_breaker(monkeypatch):
+    """A broker that is slow rather than broken is the case the breaker could
+    never see. The per-symbol deadline drains through a process-wide gate, so
+    the later symbols in a pass expire on queueing alone — and the
+    cancellation that ends those POSTs is not an `Exception`, so it reached no
+    counter at all. Uncounted, every wave repeats the full stall in silence.
+    """
+    import asyncio
+
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    started = []
+
+    class SlowAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            started.append(order)
+            await asyncio.sleep(60)
+
+    async def fake_margin(session):
+        return SlowAccount()
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+
+    enriched = await propose_mod.enrich_with_broker_bpr(
+        object(), proposal(), budget=0.05
+    )
+    # the structures still ship on the formula estimate, as they always did
+    assert all(s.bpr_source == "estimate" for s in enriched.structures)
+    assert started  # POSTs really were in flight when the budget expired
+    # ...but now the pass knows it, so it stops paying the stall and says so
+    assert broker_mod.dry_runs_disabled()
+
+    spent = len(started)
+    later = await propose_mod.enrich_with_broker_bpr(
+        object(), proposal(), budget=0.05
+    )
+    assert all(s.bpr_source == "estimate" for s in later.structures)
+    assert len(started) == spent
+
+
+@pytest.mark.asyncio
+async def test_an_outer_cancellation_is_never_read_as_a_broker_failure(monkeypatch):
+    """Ctrl-C, or the TUI tearing down a re-price worker, is not the broker
+    failing. Counting it would trip the breaker on a keystroke, and swallowing
+    it would turn a stop request into a silent formula fallback."""
+    import asyncio
+
+    from tau import broker as broker_mod
+    from tau import propose as propose_mod
+
+    class SlowAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            await asyncio.sleep(60)
+
+    async def fake_margin(session):
+        return SlowAccount()
+
+    monkeypatch.setattr(broker_mod, "margin_account", fake_margin)
+
+    task = asyncio.ensure_future(
+        propose_mod.enrich_with_broker_bpr(object(), proposal(), budget=30.0)
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.05)
+    assert not broker_mod.dry_runs_disabled()

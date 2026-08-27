@@ -35,3 +35,13 @@ def test_an_empty_rank_says_so_rather_than_printing_a_bare_header():
 
 def test_a_partly_priced_rank_reports_how_many_names_produced_one():
     assert _rank_summary(3, 15) == "3 of 15 names produced a structure"
+
+
+def test_bpr_formatting_marks_the_formula_estimate():
+    """Broker figures render plain under the `BPR` header; the formula
+    estimate carries the tilde, and a missing figure stays a dash."""
+    from tau.cli import _bpr
+
+    assert _bpr(3651.0, "broker") == "3,651"
+    assert _bpr(3980.0, "estimate") == "3,980~"
+    assert _bpr(None, "estimate") == "—"
