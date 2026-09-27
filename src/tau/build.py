@@ -20,6 +20,7 @@ a variant that survives to be priced is one whose label describes the
 contracts it holds. Fewer rows on a thin day is the accepted cost.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from math import inf
 
@@ -463,7 +464,7 @@ def evaluate(strategy: Strategy, cycle: Cycle) -> list[Structure]:
     return out
 
 
-def evaluate_all(strategies, cycle: Cycle) -> list[Structure]:
+def evaluate_all(strategies: Iterable[Strategy], cycle: Cycle) -> list[Structure]:
     """Every variant of every strategy over a single cycle.
 
     One chain fetch per symbol, all strategies evaluated over it — everything

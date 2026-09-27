@@ -5,12 +5,16 @@ every structure the search produced, so disabling a strategy re-ranks the list
 from what is already in memory, and re-enabling it costs nothing either.
 """
 
+from collections.abc import Iterable
+
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Static
+
+from tau.strategy import Strategy
 
 COLUMNS = ("", "STRATEGY", "BIAS", "VARIANTS")
 
@@ -38,7 +42,7 @@ class StrategyPicker(ModalScreen[set[str]]):
         Binding("n", "enable_none", "none"),
     ]
 
-    def __init__(self, strategies, enabled: set[str]) -> None:
+    def __init__(self, strategies: Iterable[Strategy], enabled: set[str]) -> None:
         super().__init__()
         self._strategies = list(strategies)
         # A copy: the picker edits its own set and hands it back on close, so
@@ -78,7 +82,7 @@ class StrategyPicker(ModalScreen[set[str]]):
             table.move_cursor(row=max(0, min(cursor, len(self._strategies) - 1)))
 
     @property
-    def highlighted(self):
+    def highlighted(self) -> Strategy | None:
         table = self.query_one("#picker-table", DataTable)
         if not self._strategies or table.cursor_row < 0:
             return None

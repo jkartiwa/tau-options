@@ -18,13 +18,14 @@ or greeks is invalid rather than partially credited.
 import asyncio
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from functools import cached_property
 from itertools import pairwise
 from math import sqrt
 
 from tastytrade import DXLinkStreamer, Session
 from tastytrade.dxfeed import Greeks, Quote
-from tastytrade.instruments import NestedOptionChain
+from tastytrade.instruments import NestedOptionChain, NestedOptionChainExpiration
 
 from tau.payoff import OptionType
 
@@ -243,7 +244,13 @@ class Cycle:
         return (straddle * STRADDLE_ONLY_FACTOR, "straddle×0.85")
 
 
-async def _collect(streamer, cls, want: set[str], out: dict, timeout: float) -> None:
+async def _collect(
+    streamer: DXLinkStreamer,
+    cls: type[Quote] | type[Greeks],
+    want: set[str],
+    out: dict[str, Quote | Greeks],
+    timeout: float,
+) -> None:
     try:
         async with asyncio.timeout(timeout):
             while want - out.keys():
@@ -254,7 +261,7 @@ async def _collect(streamer, cls, want: set[str], out: dict, timeout: float) -> 
         pass
 
 
-def _f(value) -> float | None:
+def _f(value: Decimal | None) -> float | None:
     return None if value is None else float(value)
 
 
@@ -312,7 +319,7 @@ def select_strikes(
 MONTHLY_EXPIRATION_TYPE = "Regular"
 
 
-def is_monthly(expiration) -> bool:
+def is_monthly(expiration: NestedOptionChainExpiration) -> bool:
     """True for a standard monthly (3rd-Friday) expiration. Weeklies and
     quarterlies are excluded — monthly-only for now, since liquidity and
     the rest of the pipeline haven't been verified against the thinner
@@ -320,11 +327,13 @@ def is_monthly(expiration) -> bool:
     return expiration.expiration_type == MONTHLY_EXPIRATION_TYPE
 
 
-def _live_monthlies(chain) -> list:
+def _live_monthlies(chain: NestedOptionChain) -> list[NestedOptionChainExpiration]:
     return [e for e in chain.expirations if e.days_to_expiration >= 0 and is_monthly(e)]
 
 
-def choose_expiration(chain, target_dte: int):
+def choose_expiration(
+    chain: NestedOptionChain, target_dte: int
+) -> NestedOptionChainExpiration | None:
     live = _live_monthlies(chain)
     if not live:
         return None

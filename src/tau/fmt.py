@@ -5,7 +5,7 @@ in one place.
 """
 
 
-def fmt(value, spec: str = ".1f") -> str:
+def fmt(value: float | None, spec: str = ".1f") -> str:
     if value is None:
         return "—"
     if value in (float("inf"), float("-inf")):
@@ -13,13 +13,13 @@ def fmt(value, spec: str = ".1f") -> str:
     return format(value, spec)
 
 
-def pct(value, spec: str = ".0f") -> str:
+def pct(value: float | None, spec: str = ".0f") -> str:
     """A rate stored as a fraction, shown as a percentage. The column headers
     already carry the % sign, so this doesn't repeat it."""
     return "—" if value is None else fmt(value * 100, spec)
 
 
-def bpr(value, source: str) -> str:
+def bpr(value: float | None, source: str) -> str:
     """Buying power with its source marked per row: broker figures plain,
     formula estimates with a trailing tilde. The shared `BPR` header cannot
     say which margin model a row came from, so the row has to."""

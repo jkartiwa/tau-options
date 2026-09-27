@@ -25,11 +25,11 @@ HEADLINE_LINES = 8  # shown only when there is no verdict to show instead
 RANGE_EDGE = 0.05  # within this fraction of the 52-week high or low
 
 
-def _fmt(value, spec: str = ".2f") -> str:
+def _fmt(value: float | None, spec: str = ".2f") -> str:
     return fmt(value, spec)
 
 
-def _pct(value, spec: str = ".0f") -> str:
+def _pct(value: float | None, spec: str = ".0f") -> str:
     """Unlike the table columns, prose carries its own % sign."""
     return pct(value, spec) + ("" if value is None else "%")
 

@@ -20,9 +20,13 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date
 from email.utils import parsedate_to_datetime
+from typing import TYPE_CHECKING
 from xml.etree import ElementTree
 
 from tau.chain import TARGET_DTE
+
+if TYPE_CHECKING:
+    import anthropic  # optional: the `catalyst` extra
 
 MODEL = "claude-sonnet-5"
 NEWS_URL = "https://news.google.com/rss/search"
@@ -258,7 +262,7 @@ def classify(
     symbol: str,
     headlines: tuple[Headline, ...],
     today: date | None = None,
-    client=None,
+    client: "anthropic.Anthropic | None" = None,
 ) -> Brief:
     """Classify the vol driver from headlines. Never guesses: too little to
     read on returns insufficient_signal without spending a model call."""
@@ -363,7 +367,7 @@ def brief_for(
     symbol: str,
     description: str | None = None,
     today: date | None = None,
-    client=None,
+    client: "anthropic.Anthropic | None" = None,
 ) -> Brief:
     """Headlines plus classification for one symbol."""
     try:

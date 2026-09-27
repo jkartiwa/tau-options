@@ -12,6 +12,7 @@ either way (dotenv never overrides).
 
 import argparse
 import asyncio
+from collections.abc import Iterable
 from datetime import date
 from pathlib import Path
 
@@ -116,7 +117,7 @@ async def scan(args: argparse.Namespace) -> None:
         print(f"logged scan #{scan_id} → {store.db_path()}")
 
 
-def _label_width(labels) -> int:
+def _label_width(labels: Iterable[str]) -> int:
     """Wide enough for the longest label. A fixed width would clip `30Δ+10-25`
     to `30Δ+10-2`, which names a different wing."""
     return max((len(x) for x in labels), default=len("STRUCTURE"))

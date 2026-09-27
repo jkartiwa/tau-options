@@ -12,6 +12,7 @@ percents.
 
 from dataclasses import dataclass, replace
 from datetime import date
+from decimal import Decimal
 
 from tastytrade import Session
 from tastytrade.metrics import MarketMetricInfo, get_market_metrics
@@ -54,11 +55,11 @@ class Candidate:
         return (self.earnings_date - today).days
 
 
-def _float(value) -> float | None:
+def _float(value: Decimal | None) -> float | None:
     return None if value is None else float(value)
 
 
-def _pct(value) -> float | None:
+def _pct(value: str | None) -> float | None:
     return None if value is None else float(value) * 100
 
 

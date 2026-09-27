@@ -89,7 +89,7 @@ class Bias(StrEnum):
     NEUTRAL = "neutral"
 
 
-def _as_list(value):
+def _as_list[T](value: T | list[T] | tuple[T, ...]) -> list[T]:
     return list(value) if isinstance(value, (list, tuple)) else [value]
 
 

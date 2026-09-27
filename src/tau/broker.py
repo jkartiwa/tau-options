@@ -19,8 +19,10 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from weakref import WeakKeyDictionary
 
+from tastytrade import Session
 from tastytrade.account import Account
 from tastytrade.order import (
+    BuyingPowerEffect,
     InstrumentType,
     Leg,
     LimitOrder,
@@ -63,7 +65,7 @@ BREAKER_COOLDOWN = 120.0
 BUDGET_EXPIRED = "tau: broker pull budget expired"
 
 
-def cancel_for_budget(task) -> None:
+def cancel_for_budget(task: asyncio.Task) -> None:
     """Cancel a dry-run task so its failure counts toward the breaker."""
     task.cancel(BUDGET_EXPIRED)
 
@@ -166,7 +168,7 @@ def _record_success() -> None:
     _state.tripped_until = 0.0
 
 
-async def margin_account(session) -> Account | None:
+async def margin_account(session: Session) -> Account | None:
     """The account the dry-run prices against: the open margin account.
 
     `None` when there is no such account or the account list cannot be read
@@ -233,7 +235,7 @@ def order_for(structure: Structure) -> LimitOrder | None:
     )
 
 
-def margin_requirement(effect) -> float | None:
+def margin_requirement(effect: BuyingPowerEffect) -> float | None:
     """The isolated margin requirement as a positive dollar figure, or `None`
     when the response carries no usable one.
 
@@ -251,7 +253,9 @@ def margin_requirement(effect) -> float | None:
     return number if number > 0 else None
 
 
-async def broker_bpr_for(session, account, structure: Structure) -> float | None:
+async def broker_bpr_for(
+    session: Session, account: Account, structure: Structure
+) -> float | None:
     """The broker's buying-power figure for one structure, or `None` on any
     failure.
 

@@ -135,7 +135,7 @@ class History:
         return z is not None and abs(z) >= STRETCHED_Z
 
 
-def _bars_from(events) -> tuple[Bar, ...]:
+def _bars_from(events: list[Candle]) -> tuple[Bar, ...]:
     """Candles arrive as an unordered snapshot with removals mixed in, so they
     are keyed by day and sorted rather than trusted in arrival order. A removal
     retracts whatever that day already received."""

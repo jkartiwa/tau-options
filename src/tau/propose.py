@@ -23,6 +23,7 @@ as such either way. Any broker failure falls back to the formula.
 
 import asyncio
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cached_property
 
@@ -369,7 +370,7 @@ async def price_many(
     strategies: tuple[Strategy, ...] = ALL_STRATEGIES,
     target_dte: int = chain_mod.TARGET_DTE,
     max_concurrent: int = MAX_CONCURRENT,
-    on_done=None,
+    on_done: Callable[[Proposal], None] | None = None,
 ) -> list[Proposal]:
     """Price a whole shortlist concurrently. One symbol failing never fails
     the batch — it comes back as a Proposal carrying its error."""
@@ -393,7 +394,7 @@ async def price_many(
     )
 
 
-def broker_priced_pass(proposals) -> bool:
+def broker_priced_pass(proposals: list[Proposal]) -> bool:
     """Whether every priced proposal in a pass carries a broker figure.
 
     The question an ordering has to ask before it picks a yardstick. Answered
@@ -420,12 +421,14 @@ def ordering_value(proposal: Proposal, key: str, on_broker: bool) -> float | Non
     return best.metric(key) if on_broker else best.on_formula.metric(key)
 
 
-def rank_proposals(proposals: list[Proposal], key: str = CROSS_STRATEGY_METRIC):
+def rank_proposals(
+    proposals: list[Proposal], key: str = CROSS_STRATEGY_METRIC
+) -> list[Proposal]:
     """Priced proposals first, ordered by the chosen metric descending;
     unpriced ones keep their place at the back rather than vanishing."""
     on_broker = broker_priced_pass(proposals)
 
-    def sort_key(p: Proposal):
+    def sort_key(p: Proposal) -> tuple[bool, float, str]:
         value = ordering_value(p, key, on_broker)
         return (not p.ok, -(value or 0), p.symbol)
 
