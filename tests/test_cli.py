@@ -1,6 +1,6 @@
 import pytest
 
-from tau.cli import _bpr, _rank_summary, _selected_strategies
+from tau.cli import _bpr, _parser, _rank_summary, _selected_strategies
 from tau.strategies import ALL, MIN_POP
 from tau.strategy import Require
 
@@ -22,6 +22,15 @@ def test_min_pop_flag_overrides_the_shipped_floor():
 def test_unknown_strategy_name_is_a_hard_error():
     with pytest.raises(SystemExit, match="unknown strategy"):
         _selected_strategies(["not-a-real-strategy"])
+
+
+def test_unknown_sort_metric_is_a_hard_error():
+    """An unknown metric reads as None on every row, which would print the
+    search unranked with no sign that the flag was ignored."""
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["variants", "SPY", "--sort", "annualised_roc"])
+    args = _parser().parse_args(["variants", "SPY", "--sort", "pop"])
+    assert args.sort == "pop"
 
 
 def test_an_empty_rank_says_so_rather_than_printing_a_bare_header():

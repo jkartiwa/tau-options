@@ -26,7 +26,7 @@ from tau.fmt import pct as _pct
 from tau.session import get_session
 from tau.strategies import ALL as ALL_STRATEGIES
 from tau.strategies import MIN_POP, STRATEGIES
-from tau.strategy import with_min_pop
+from tau.strategy import METRICS, with_min_pop
 
 # A ranked row costs a chain fetch, so the default is a shortlist rather than
 # the whole pass set. The screen is free; pricing is not.
@@ -292,8 +292,7 @@ def _add_strategy_selection(p: argparse.ArgumentParser) -> None:
     )
 
 
-def main() -> None:
-    _load_env()
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tau", description=__doc__)
     sub = parser.add_subparsers(dest="command")
 
@@ -334,13 +333,19 @@ def main() -> None:
     p.add_argument(
         "--sort",
         default="annualized_roc",
+        choices=sorted(METRICS),
+        metavar="METRIC",
         help="metric to rank by (default annualized_roc)",
     )
 
     sub.add_parser("strategies", help="list the shipped strategy definitions")
     sub.add_parser("tui", help="interactive triage over the screen (default)")
+    return parser
 
-    args = parser.parse_args()
+
+def main() -> None:
+    _load_env()
+    args = _parser().parse_args()
     if args.command in (None, "tui"):
         from tau.tui.app import run
 
