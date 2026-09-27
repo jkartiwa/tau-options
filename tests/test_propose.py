@@ -5,15 +5,8 @@ import pytest
 
 from tau.build import MAX_DELTA_MISS, evaluate, evaluate_all
 from tau.chain import Cycle, Leg
-from tau.payoff import OptionType, Side
-from tau.propose import (
-    Proposal,
-    naked_side_requirement,
-    ordering_value,
-    pop_between,
-    propose_on,
-    rank_proposals,
-)
+from tau.payoff import OptionType, Side, naked_side_requirement, pop_between
+from tau.propose import Proposal, ordering_value, propose_on, rank_proposals
 from tau.screen import Candidate
 from tau.strategies import STRATEGIES
 from tau.strategy import Bias, Delta, LegSpec, Require, Strategy, with_min_pop
