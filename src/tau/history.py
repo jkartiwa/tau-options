@@ -13,6 +13,7 @@ this costs a websocket round trip and no new dependency.
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from itertools import pairwise
 from math import log, sqrt
 from statistics import StatisticsError, stdev
 
@@ -22,6 +23,7 @@ from tastytrade.dxfeed import Candle
 LOOKBACK_DAYS = 420  # calendar days; ~an extra month over 52 weeks of trading
 MOVE_WINDOW = 20  # trading days in the "recent move" window
 BASELINE_DAYS = 120  # trading days of prior vol the move is measured against
+MIN_BASELINE_BARS = 30  # fewer and the baseline stdev is too noisy to divide by
 CANDLE_TIMEOUT = 20.0
 TRADING_DAYS_PER_YEAR = 252
 
@@ -97,11 +99,11 @@ class History:
         trailing volatility, and measuring the move against a denominator it
         just widened is how a three-sigma break gets reported as one sigma."""
         window = self.bars[-(MOVE_WINDOW + BASELINE_DAYS + 1) : -MOVE_WINDOW]
-        if len(window) < 30:
+        if len(window) < MIN_BASELINE_BARS:
             return None
         rets = [
             log(b.close / a.close)
-            for a, b in zip(window, window[1:])
+            for a, b in pairwise(window)
             if a.close > 0 and b.close > 0
         ]
         try:
@@ -115,8 +117,8 @@ class History:
         """The recent move in standard deviations of its own prior noise.
 
         Signed: negative is a selloff. Scaling daily vol by sqrt(time) assumes
-        independent returns, which trending markets violate — so read this as
-        a flag for a second look, not a probability."""
+        independent returns, which trending markets violate, so read this as a
+        flag for a second look, not a probability."""
         move, sd = self.move, self.baseline_vol
         if move is None or sd is None:
             return None
@@ -130,6 +132,7 @@ class History:
 
     @property
     def stretched(self) -> bool:
+        """Whether the recent move is at least STRETCHED_Z sigmas either way."""
         z = self.move_z
         return z is not None and abs(z) >= STRETCHED_Z
 

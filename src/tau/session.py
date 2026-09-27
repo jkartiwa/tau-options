@@ -1,12 +1,12 @@
-"""Tastytrade OAuth session — the only auth surface. Personal-grant scheme:
-TASTY_CLIENT_SECRET + TASTY_REFRESH_TOKEN, the refresh token never expires,
-and the SDK mints the short-lived access tokens per request, so one cached
+"""The tastytrade OAuth session, tau's only auth surface.
+
+Built from TASTY_CLIENT_SECRET and TASTY_REFRESH_TOKEN. The refresh token does
+not expire and the SDK mints short-lived access tokens as needed, so one cached
 Session serves the process.
 
-The grant carries trading scope — the order dry-run calculation is a
-*calculation* but a trading-scope call — yet tau only ever calls that
-dry-run endpoint. There is no order-placement code in this package, and the
-broker module draws the line where the code does.
+The grant needs trading scope because the order dry-run is a trading-scope
+endpoint, but that dry-run is the only trading call tau makes. There is no
+order-placement code in this package.
 """
 
 import os

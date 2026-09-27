@@ -1,12 +1,13 @@
-"""The v0 screen: bulk market-metrics pull → parse → filter → rank.
+"""The vol screen: bulk market-metrics pull, then parse, filter and rank.
 
 Filtering is split from parsing so the filter logic stays pure and testable
 without constructing SDK response models: `parse()` turns one
 MarketMetricInfo into a plain Candidate, `apply_filters()` stamps exclusion
-reasons, `evaluate()` composes and ranks. Percent-scale convention:
-everything on a Candidate is 0–100 — the API sends rank/percentile as 0–1
-(scaled here) but the 30-day vols already as percents (verified live
-2026-07-26: SMH iv30 arrives 34.81, ivr 0.938).
+reasons, `evaluate()` composes and ranks.
+
+Everything on a Candidate is percent-scale (0-100). The API sends IV rank and
+percentile as 0-1, which is scaled here, but the 30-day vols already as
+percents.
 """
 
 from dataclasses import dataclass, replace
@@ -22,15 +23,15 @@ CHUNK = 90
 @dataclass(frozen=True)
 class Candidate:
     symbol: str
-    ivr: float | None  # IV rank, 0–100
-    ivp: float | None  # IV percentile, 0–100
+    ivr: float | None  # IV rank, 0-100
+    ivp: float | None  # IV percentile, 0-100
     iv30: float | None  # 30-day implied vol, %
     hv30: float | None  # 30-day historical vol, %
     liquidity: int | None  # tasty liquidity rating, 4 best
     beta: float | None
     earnings_date: date | None  # next expected report, if any
-    # Per-expiration IV, ascending by date — arrives free with the bulk
-    # metrics pull, so term structure costs no extra call.
+    # Per-expiration IV, ascending by date. It arrives with the bulk metrics
+    # pull, so term structure costs no extra call.
     term: tuple[tuple[date, float], ...] = ()
     excluded: tuple[str, ...] = ()
 
@@ -41,8 +42,8 @@ class Candidate:
     @property
     def iv_hv(self) -> float | None:
         """Implied over realized. IV rank says rich versus this name's own
-        history; this says rich versus what the name actually does — under
-        1.0 you are selling vol below realized."""
+        history; this says rich versus what the name actually does. Under 1.0
+        the premium is priced below realized vol."""
         if self.iv30 is None or not self.hv30:
             return None
         return self.iv30 / self.hv30
@@ -62,9 +63,9 @@ def parse(m: MarketMetricInfo, today: date | None = None) -> Candidate:
     earnings = None
     if m.earnings is not None and m.earnings.expected_report_date is not None:
         earnings = m.earnings.expected_report_date
-    # Per-expiration IV arrives 0–1 (unlike the percent-scale iv30/hv30), and
-    # the list keeps a just-expired row whose IV is garbage (SMH showed 160%
-    # on an expiration two days past), so drop anything not still live.
+    # Per-expiration IV arrives 0-1 (unlike the percent-scale iv30/hv30), and
+    # the list can keep a just-expired row with a meaningless IV, so drop
+    # anything not still live.
     term = tuple(
         (v.expiration_date, float(v.implied_volatility) * 100)
         for v in sorted(
@@ -78,8 +79,12 @@ def parse(m: MarketMetricInfo, today: date | None = None) -> Candidate:
         symbol=m.symbol,
         ivr=_pct(m.implied_volatility_index_rank),
         ivp=_pct(m.implied_volatility_percentile),
-        iv30=None if m.implied_volatility_30_day is None else float(m.implied_volatility_30_day),
-        hv30=None if m.historical_volatility_30_day is None else float(m.historical_volatility_30_day),
+        iv30=None
+        if m.implied_volatility_30_day is None
+        else float(m.implied_volatility_30_day),
+        hv30=None
+        if m.historical_volatility_30_day is None
+        else float(m.historical_volatility_30_day),
         liquidity=m.liquidity_rating,
         beta=None if m.beta is None else float(m.beta),
         earnings_date=earnings,
@@ -119,9 +124,7 @@ def rank(candidates: list[Candidate]) -> list[Candidate]:
     )
 
 
-async def fetch_metrics(
-    session: Session, symbols: list[str]
-) -> list[MarketMetricInfo]:
+async def fetch_metrics(session: Session, symbols: list[str]) -> list[MarketMetricInfo]:
     out: list[MarketMetricInfo] = []
     for i in range(0, len(symbols), CHUNK):
         out.extend(await get_market_metrics(session, symbols[i : i + CHUNK]))
