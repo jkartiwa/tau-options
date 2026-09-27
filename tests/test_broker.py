@@ -23,6 +23,16 @@ C, P = OptionType.CALL, OptionType.PUT
 SHORT = Side.SHORT
 
 
+STRANGLE = Strategy(
+    name="t-strangle",
+    bias=Bias.NEUTRAL,
+    legs=[
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
+        LegSpec("short_call", type=C, side=SHORT, strike=Delta(0.20)),
+    ],
+)
+
+
 def leg(strike, option_type, delta, mid):
     return Leg(
         occ=f"SPX 26OCT26{strike:g}",
@@ -51,16 +61,8 @@ def strangle():
         ),
         fetched_at=datetime.now(UTC),
     )
-    strategy = Strategy(
-        name="t-strangle",
-        bias=Bias.NEUTRAL,
-        legs=[
-            LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
-            LegSpec("short_call", type=C, side=SHORT, strike=Delta(0.20)),
-        ],
-    )
-    label, specs = strategy.variants()[0]
-    structure = build(strategy, label, specs, cy)
+    label, specs = STRANGLE.variants()[0]
+    structure = build(STRANGLE, label, specs, cy)
     assert structure.complete
     return structure
 
@@ -197,9 +199,8 @@ def half_cent_put():
 
 
 def test_order_price_is_rounded_to_the_broker_tick():
-    """A sub-penny limit price is rejected by the broker with no
-    buying-power body, which this module can only read as "no figure" — so
-    the price that goes out has to sit on a whole cent."""
+    """The broker rejects a sub-penny limit price with no buying-power body,
+    so the price that goes out has to sit on a whole cent."""
     structure = half_cent_put()
     assert structure.net_premium == pytest.approx(2.125)
     order = order_for(structure)
@@ -226,11 +227,8 @@ async def test_account_resolution_happens_once_under_concurrency(monkeypatch):
 
 
 def test_a_debit_signed_margin_requirement_is_read_as_the_requirement():
-    """The API sends a magnitude beside an `-effect` field and the SDK folds
-    the two together, rewriting the value to `-abs(value)` when the effect is
-    `Debit` and dropping the field itself. A margin requirement is a debit, so
-    the ordinary successful response arrives negative — reading that as
-    garbage turns the whole feature off with nothing to show for it. The
+    """The SDK folds the API's `-effect` field into the sign, so a margin
+    requirement (a debit) arrives negative on every successful response. The
     magnitude is the requirement whichever way it is signed."""
     sdk_signed = SimpleNamespace(isolated_order_margin_requirement=Decimal("-3651.00"))
     assert margin_requirement(sdk_signed) == pytest.approx(3651.0)
@@ -428,10 +426,8 @@ async def test_only_one_probe_goes_out_after_a_cooldown(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_transient_account_failure_is_retried_after_the_cooldown(monkeypatch):
     """A 429 or a read timeout on the account list says nothing about the
-    token. Caching it as "no account" would end broker pricing for the rest of
-    an hours-long session over a blip, on the one path a rank pass hits
-    six-wide at its most concurrent moment — so the failure is time-boxed on
-    the breaker's clock and then tried once more."""
+    token, so the failure is held for the breaker's cooldown and then retried
+    rather than cached as "no account" for the rest of the session."""
     monkeypatch.setattr(broker_mod, "BREAKER_COOLDOWN", 0.05)
     margin = SimpleNamespace(is_closed=False, margin_or_cash="Margin")
     calls = []
@@ -478,14 +474,10 @@ async def test_a_positively_resolved_absence_of_a_margin_account_is_final(monkey
 
 @pytest.mark.asyncio
 async def test_the_trip_is_logged_once_when_the_failures_land_together(caplog):
-    """The sequential loop hides this. `_claim_probe` short-circuits calls
-    four and up, so only three failures are ever recorded there — but that is
-    not the shape production has. A shortlist starts every dry-run at once, so
-    all ten are past the breaker check before the first of them fails, and the
-    counter keeps climbing after the trip. tau calls no `basicConfig`, so a
-    line per failure goes to stderr through `logging.lastResort`, straight
-    into the middle of `tau rank`'s table — ten deep per symbol, and a rank
-    pass runs six symbols wide."""
+    """A shortlist starts every dry-run at once, so all ten are past the
+    breaker check before the first fails and the counter keeps climbing after
+    the trip. With no logging configured, a line per failure would land in
+    the middle of `tau rank`'s table."""
 
     class DeadAccount:
         async def get_order_buying_power_effect(self, session, order):
@@ -507,42 +499,32 @@ async def test_the_trip_is_logged_once_when_the_failures_land_together(caplog):
 
 
 @pytest.mark.asyncio
-async def test_a_failed_probe_after_the_cooldown_says_so_again(caplog):
-    """The trip is announced on the way in, and a probe that fails after the
-    cooldown is a new way in. Silencing that would leave a session with no
-    record of anything past the first two minutes."""
-    monkey = broker_mod.BREAKER_COOLDOWN
-    broker_mod.BREAKER_COOLDOWN = 0.05
-    try:
+async def test_a_failed_probe_after_the_cooldown_says_so_again(caplog, monkeypatch):
+    """A probe that fails after the cooldown trips the breaker anew, and each
+    trip is logged."""
+    monkeypatch.setattr(broker_mod, "BREAKER_COOLDOWN", 0.05)
 
-        class DeadAccount:
-            async def get_order_buying_power_effect(self, session, order):
-                raise TimeoutError("read timeout")
+    class DeadAccount:
+        async def get_order_buying_power_effect(self, session, order):
+            raise TimeoutError("read timeout")
 
-        account = DeadAccount()
-        with caplog.at_level(logging.WARNING, logger="tau.broker"):
-            for _ in range(5):
-                assert await broker_bpr_for(None, account, strangle()) is None
-            assert len(caplog.records) == 1
-
-            await asyncio.sleep(0.06)
-            assert not broker_mod.dry_runs_disabled()
+    account = DeadAccount()
+    with caplog.at_level(logging.WARNING, logger="tau.broker"):
+        for _ in range(5):
             assert await broker_bpr_for(None, account, strangle()) is None
-            assert broker_mod.dry_runs_disabled()
-            assert len(caplog.records) == 2
-    finally:
-        broker_mod.BREAKER_COOLDOWN = monkey
+        assert len(caplog.records) == 1
+
+        await asyncio.sleep(0.06)
+        assert not broker_mod.dry_runs_disabled()
+        assert await broker_bpr_for(None, account, strangle()) is None
+        assert broker_mod.dry_runs_disabled()
+        assert len(caplog.records) == 2
 
 
 class OnlyDryRun:
-    """An account that answers the dry-run calculation and refuses everything
-    else — `place_order`, `delete_order`, `replace_order` and any other
-    attribute the SDK exposes all raise on the way in.
-
-    The grant carries trading scope so the dry-run works, which means an
-    accidental call really would reach the live order book. This account is
-    how that stays testable rather than reviewable-by-eye.
-    """
+    """An account that answers the dry-run calculation and raises on any
+    other attribute. The token carries trading scope, so an accidental
+    `place_order` would reach the live order book."""
 
     def __init__(self):
         self.touched: list[str] = []
@@ -570,14 +552,6 @@ async def test_a_whole_proposal_is_priced_without_touching_the_order_book(monkey
     """The pipeline level: every structure in a proposal's shortlist gets a
     broker figure, and the account never sees anything but the calculation."""
     cy = strangle().cycle
-    strategy = Strategy(
-        name="t-strangle",
-        bias=Bias.NEUTRAL,
-        legs=[
-            LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
-            LegSpec("short_call", type=C, side=SHORT, strike=Delta(0.20)),
-        ],
-    )
     candidate = Candidate(
         symbol="TEST",
         ivr=None,
@@ -588,7 +562,7 @@ async def test_a_whole_proposal_is_priced_without_touching_the_order_book(monkey
         beta=None,
         earnings_date=None,
     )
-    proposal = propose_mod.propose_on(candidate, cy, [strategy])
+    proposal = propose_mod.propose_on(candidate, cy, [STRANGLE])
     account = OnlyDryRun()
 
     async def only_dry_run(session):
