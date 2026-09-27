@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 
 import pytest
 
@@ -11,7 +11,7 @@ def build(closes: list[float], start: date = date(2025, 1, 1)) -> History:
         Bar(day=start + timedelta(days=i), open=c, high=c, low=c, close=c)
         for i, c in enumerate(closes)
     )
-    return History(symbol="TEST", bars=bars, fetched_at=datetime.now(UTC))
+    return History(symbol="TEST", bars=bars)
 
 
 def test_range_position_spans_low_to_high():
@@ -80,7 +80,7 @@ def test_year_window_drops_older_bars():
 
 
 def test_empty_history_answers_none_rather_than_raising():
-    h = History(symbol="TEST", bars=(), fetched_at=datetime.now(UTC))
+    h = History(symbol="TEST", bars=())
     assert h.last is None
     assert h.range_position is None
     assert h.move_z is None

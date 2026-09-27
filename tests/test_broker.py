@@ -3,7 +3,7 @@ with every failure mode landing back on the formula estimate."""
 
 import asyncio
 import logging
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -59,7 +59,6 @@ def strangle():
             leg(90, P, -0.20, 1.20),
             leg(110, C, 0.20, 1.20),
         ),
-        fetched_at=datetime.now(UTC),
     )
     label, specs = STRANGLE.variants()[0]
     structure = build(STRANGLE, label, specs, cy)
@@ -87,7 +86,6 @@ def test_order_for_is_none_without_priced_legs():
         dte=45,
         underlying=100.0,
         legs=(),
-        fetched_at=datetime.now(UTC),
     )
     strategy = Strategy(
         name="t-none",
@@ -185,7 +183,6 @@ def half_cent_put():
         dte=45,
         underlying=100.0,
         legs=(leg(90, P, -0.20, 2.125),),
-        fetched_at=datetime.now(UTC),
     )
     strategy = Strategy(
         name="t-csp",

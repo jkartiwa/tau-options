@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import date
 
 import pytest
 
@@ -68,7 +68,6 @@ def cycle(legs=None, underlying=100.0, dte=45):
         dte=dte,
         underlying=underlying,
         legs=legs if legs is not None else ladder(),
-        fetched_at=datetime.now(UTC),
     )
 
 

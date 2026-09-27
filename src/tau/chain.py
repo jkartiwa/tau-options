@@ -17,7 +17,7 @@ or greeks is invalid rather than partially credited.
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 from itertools import pairwise
 from math import sqrt
 
@@ -153,7 +153,6 @@ class Cycle:
     dte: int
     underlying: float | None
     legs: tuple[Leg, ...]
-    fetched_at: datetime
     expirations: tuple[tuple[date, int], ...] = ()  # every cycle available
 
     @property
@@ -401,6 +400,5 @@ async def fetch_cycle(
         dte=exp.days_to_expiration,
         underlying=underlying,
         legs=tuple(legs),
-        fetched_at=datetime.now(UTC),
         expirations=available,
     )

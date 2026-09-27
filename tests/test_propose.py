@@ -1,6 +1,6 @@
 import asyncio
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import date
 from math import erf, log, sqrt
 
 import pytest
@@ -71,7 +71,6 @@ def cycle(legs=None, underlying=100.0, dte=45):
         dte=dte,
         underlying=underlying,
         legs=legs if legs is not None else ladder(),
-        fetched_at=datetime.now(UTC),
     )
 
 
@@ -291,7 +290,6 @@ def test_a_quote_dropout_does_not_change_which_structure_wins():
         dte=BS_DTE,
         underlying=BS_SPOT,
         legs=bs_ladder(),
-        fetched_at=datetime.now(UTC),
     )
     unquoted = {(k, P) for k in BS_STRIKES if k < 95}
     degraded_cycle = Cycle(
@@ -300,7 +298,6 @@ def test_a_quote_dropout_does_not_change_which_structure_wins():
         dte=BS_DTE,
         underlying=BS_SPOT,
         legs=bs_ladder(unquoted),
-        fetched_at=datetime.now(UTC),
     )
     full = propose_on(cand("FULL"), full_cycle, csp)
     degraded = propose_on(cand("DEGR"), degraded_cycle, csp)

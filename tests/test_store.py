@@ -1,7 +1,7 @@
 import json
 import sqlite3
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import date
 
 import pytest
 
@@ -63,7 +63,6 @@ def cycle(symbol="TEST", dte=45):
         dte=dte,
         underlying=100.0,
         legs=tuple(legs),
-        fetched_at=datetime.now(UTC),
     )
 
 

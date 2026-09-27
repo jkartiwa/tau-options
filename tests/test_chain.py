@@ -1,6 +1,6 @@
 import itertools
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 
 import pytest
 
@@ -47,7 +47,6 @@ def cycle(legs, underlying=100.0, dte=45):
         dte=dte,
         underlying=underlying,
         legs=tuple(legs),
-        fetched_at=datetime.now(UTC),
     )
 
 

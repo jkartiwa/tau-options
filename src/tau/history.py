@@ -47,7 +47,6 @@ class History:
 
     symbol: str
     bars: tuple[Bar, ...]
-    fetched_at: datetime
 
     @property
     def last(self) -> float | None:
@@ -184,5 +183,4 @@ async def fetch_history(
     return History(
         symbol=symbol,
         bars=_bars_from(events),
-        fetched_at=datetime.now(UTC),
     )

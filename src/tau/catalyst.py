@@ -18,7 +18,7 @@ import re
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 from email.utils import parsedate_to_datetime
 from xml.etree import ElementTree
 
@@ -160,7 +160,6 @@ class Brief:
     confidence: str
     note: str
     headlines: tuple[Headline, ...]
-    fetched_at: datetime
 
     @property
     def gloss(self) -> str:
@@ -250,7 +249,6 @@ def _unreadable(symbol: str, headlines: tuple[Headline, ...], why: str) -> Brief
         confidence="high",
         note=why,
         headlines=headlines,
-        fetched_at=datetime.now(UTC),
     )
 
 
@@ -338,7 +336,6 @@ def classify(
         confidence=confidence,
         note=note,
         headlines=headlines,
-        fetched_at=datetime.now(UTC),
     )
 
 

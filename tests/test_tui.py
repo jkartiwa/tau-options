@@ -1,6 +1,6 @@
 import asyncio
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 
 import pytest
 from textual.widgets import DataTable
@@ -156,7 +156,6 @@ async def test_detail_pane_renders_and_chain_loads_on_enter():
             Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
             Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
         ),
-        fetched_at=datetime.now(UTC),
     )
 
     calls = []
@@ -201,7 +200,6 @@ def _why_app(history=None, brief=None, calls=None):
             )
             for i in range(60, 0, -1)
         ),
-        fetched_at=datetime.now(UTC),
     )
     brief = brief or Brief(
         symbol="HIGH",
@@ -211,7 +209,6 @@ def _why_app(history=None, brief=None, calls=None):
         confidence="high",
         note="Event passed; IV should bleed.",
         headlines=(),
-        fetched_at=datetime.now(UTC),
     )
 
     async def history_loader(candidate):
@@ -292,7 +289,6 @@ async def test_why_does_not_cancel_an_in_flight_chain_load():
                 Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.3),
                 Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.3),
             ),
-            fetched_at=datetime.now(UTC),
         )
 
     a, _ = _why_app()
@@ -361,7 +357,6 @@ def _proposal(symbol, dte=40):
         dte=dte,
         underlying=100.0,
         legs=tuple(legs),
-        fetched_at=datetime.now(UTC),
     )
     candidate = Candidate(
         symbol=symbol,
@@ -536,7 +531,6 @@ async def test_variants_from_the_screen_view_loads_the_chain_first():
                 Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.3),
                 Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.3),
             ),
-            fetched_at=datetime.now(UTC),
         )
 
     async def loader():
@@ -629,7 +623,6 @@ async def test_chain_load_survives_missing_credentials(monkeypatch):
             Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
             Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
         ),
-        fetched_at=datetime.now(UTC),
     )
 
     async def chain_loader(candidate):
@@ -718,7 +711,6 @@ async def test_chain_load_renders_before_the_broker_answers(monkeypatch):
             Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
             Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
         ),
-        fetched_at=datetime.now(UTC),
     )
     release = asyncio.Event()
 
@@ -775,7 +767,6 @@ async def test_the_variants_drill_in_upgrades_when_the_broker_answers(monkeypatc
             Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
             Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
         ),
-        fetched_at=datetime.now(UTC),
     )
     release = asyncio.Event()
 
@@ -920,7 +911,6 @@ async def test_a_breaker_trip_on_the_drill_in_path_reaches_the_meta_line(monkeyp
             Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
             Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
         ),
-        fetched_at=datetime.now(UTC),
     )
 
     async def chain_loader(candidate):
