@@ -100,12 +100,8 @@ class ConstraintResult:
 
 @dataclass(frozen=True)
 class Structure:
-    """A priced variant of a strategy on one cycle.
-
-    Carries its failures rather than disappearing when it breaks a constraint:
-    "no lizard on MU today, worst_loss_up 340 > 0" is information, a missing
-    row is not.
-    """
+    """A priced variant of a strategy on one cycle. A variant that breaks a
+    constraint keeps its failures rather than disappearing."""
 
     strategy: Strategy
     variant: str

@@ -1,15 +1,14 @@
 """The scan TUI — a triage loop over the screen.
 
 One metrics pull feeds every view: raw `Candidate`s are held unfiltered, so
-moving a threshold re-filters and re-ranks in memory with no API call. That
-is the whole reason this exists rather than re-running `tau scan` with new
-flags.
+moving a threshold re-filters and re-ranks in memory with no API call.
 
-The app takes its data through a `loader` callable so tests (and a future
-cached mode) can drive it without the network.
+Every network read goes through an injectable loader, so tests drive the app
+without the network.
 """
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
 
@@ -27,7 +26,7 @@ from tau import catalyst as catalyst_mod
 from tau import chain as chain_mod
 from tau import history as history_mod
 from tau import propose as propose_mod
-from tau import screen
+from tau import screen, universe
 from tau.build import Structure
 from tau.fmt import bpr as _bpr
 from tau.fmt import fmt as _fmt
@@ -41,7 +40,9 @@ from tau.tui.picker import StrategyPicker
 
 ChainLoader = Callable[[Candidate], Awaitable[chain_mod.Cycle]]
 Loader = Callable[[], Awaitable[list[Candidate]]]
-ProposalLoader = Callable[[list[Candidate], Callable[[Proposal], None]], Awaitable[None]]
+ProposalLoader = Callable[
+    [list[Candidate], Callable[[Proposal], None]], Awaitable[None]
+]
 HistoryLoader = Callable[[Candidate], Awaitable[history_mod.History]]
 BriefLoader = Callable[[Candidate], Awaitable[catalyst_mod.Brief]]
 
@@ -56,23 +57,50 @@ SORTS = (
     ("SYM", lambda c: (False, c.symbol)),
 )
 
-COLUMNS = ("", "SYM", "IVR", "IVP", "IV/HV", "IV30", "HV30", "LIQ", "BETA", "ERN", "WHY")
+COLUMNS = (
+    "",
+    "SYM",
+    "IVR",
+    "IVP",
+    "IV/HV",
+    "IV30",
+    "HV30",
+    "LIQ",
+    "BETA",
+    "ERN",
+    "WHY",
+)
 
 # One row per symbol: the best structure any strategy found on it. STRUCTURE
-# carries the strategy and the variant that won, because "SMH 480%" without
-# saying which trade earned it is not actionable.
+# names the strategy and variant that won, since a return without the trade
+# that earned it is not actionable.
 RANK_COLUMNS = (
-    "", "SYM", "STRUCTURE", "BIAS", "DTE", "CREDIT", "BPR",
-    "ROC%", "ANN%", "POP%", "SPRD%", "BE/EM",
+    "",
+    "SYM",
+    "STRUCTURE",
+    "BIAS",
+    "DTE",
+    "CREDIT",
+    "BPR",
+    "ROC%",
+    "ANN%",
+    "POP%",
+    "SPRD%",
+    "BE/EM",
 )
-# The drill-in: every variant considered on one name, failures included.
-# Narrower than the rank view on purpose. Bias belongs to the strategy already
-# named in the label, and within one symbol the tenor is fixed, so ROC% and
-# ANN% order the rows identically — dropping both buys the width the failure
-# reason needs, and a clipped reason reads as no reason at all.
+# The drill-in: every variant considered on one name, failures included. Bias
+# is implied by the label, and with one tenor ROC% orders rows as ANN% does,
+# so both are dropped to leave the failure reason room to show unclipped.
 VARIANT_COLUMNS = (
-    "", "STRUCTURE", "CREDIT", "BPR", "ANN%", "POP%",
-    "SPRD%", "BE/EM", "WHY NOT",
+    "",
+    "STRUCTURE",
+    "CREDIT",
+    "BPR",
+    "ANN%",
+    "POP%",
+    "SPRD%",
+    "BE/EM",
+    "WHY NOT",
 )
 # (label, metric attribute, higher-is-better) — read off the winning Structure
 # in rank mode and off each variant in the drill-in; "symbol" is handled as a
@@ -87,7 +115,7 @@ RANK_SORTS = (
 
 
 async def fetch_candidates() -> list[Candidate]:
-    metrics = await screen.fetch_metrics(get_session(), _universe())
+    metrics = await screen.fetch_metrics(get_session(), universe.load_universe(None))
     today = date.today()
     return [screen.parse(m, today) for m in metrics]
 
@@ -113,22 +141,13 @@ async def fetch_brief_for(candidate: Candidate) -> catalyst_mod.Brief:
     """The company name makes a far better news query than a bare ticker,
     which collides with ordinary words, but it is not worth failing over."""
     description: str | None = None
-    try:
-        equity = await Equity.get(get_session(), candidate.symbol)
-        description = equity.description
-    except Exception:
-        pass
-    # Headline fetch and the model call are both blocking; keep them off the
-    # event loop or the TUI freezes for the duration.
+    with contextlib.suppress(Exception):
+        description = (await Equity.get(get_session(), candidate.symbol)).description
+    # Both the headline fetch and the model call block; run them off the event
+    # loop so the TUI stays responsive.
     return await asyncio.to_thread(
         catalyst_mod.brief_for, candidate.symbol, description
     )
-
-
-def _universe() -> list[str]:
-    from tau import universe
-
-    return universe.load_universe(None)
 
 
 class TauApp(App):
@@ -196,29 +215,24 @@ class TauApp(App):
         self._fetched_at: datetime | None = None
         self._status = "loading…"
         self._detail_status = ""
-        # Price context and the catalyst read, cached per symbol: the first
-        # is a websocket round trip, the second costs a model call.
+        # Price context and the catalyst read, cached per symbol.
         self._history: dict[str, history_mod.History] = {}
         self._briefs: dict[str, catalyst_mod.Brief] = {}
-        # Its own status line — one shared string would let the chain load
-        # and this one overwrite each other's message.
+        # Separate from _detail_status so the chain load and the `w` read
+        # cannot overwrite each other's message.
         self._why_status = ""
-        # A proposal is a symbol's whole chain search — the cycle plus every
-        # structure the strategies found on it — so it is the only per-symbol
-        # cache there needs to be. Chain loads and the rank pricing both fill
-        # it, which is why a name inspected with `c` costs nothing to rank.
-        # They persist across a mode exit/re-entry; only `R` forces a
-        # re-price, and a refetch clears them so stale quotes can't pass as
-        # live.
+        # The one per-symbol chain cache: a proposal holds the cycle and every
+        # structure found on it. Chain loads and rank pricing both fill it, so
+        # a name inspected with `c` costs nothing to rank. Only `R` or a
+        # refetch clears it.
         self._proposals: dict[str, Proposal] = {}
         self._passing: list[Candidate] = []  # this screen's pass set, unsorted by rank
         self._rank_rows: list[Candidate] = []
         self._pricing = False
         self._columns_mode = "screen"  # tracks which header row the table wears
         self._strategies = ALL_STRATEGIES
-        # Which strategies the views show. Every proposal is always searched
-        # over all of them, so this is a filter over results rather than over
-        # work — toggling one costs no fetch in either direction.
+        # Which strategies the views show. Proposals always search all of
+        # them, so toggling one filters results and costs no fetch.
         self._enabled: set[str] = {s.name for s in ALL_STRATEGIES}
         # The drill-in: which name is open, and its variants in display order.
         self._variants_symbol: str | None = None
@@ -251,12 +265,9 @@ class TauApp(App):
             self._status = ""
         except Exception as exc:  # surfaced, never silently empty
             self._status = f"load failed: {exc}"
-        # A refetch invalidates prior quotes/greeks — stale numbers presented
-        # as fresh would be worse than an empty rank view.
+        # A refetch invalidates every per-symbol read taken before it, so
+        # stale quotes and briefs cannot pass as fresh.
         self._proposals.clear()
-        # Same reasoning for the price and catalyst reads: a brief taken
-        # before the refresh describes the market as it was, and re-reading
-        # costs nothing until the user asks for it again with `w`.
         self._history.clear()
         self._briefs.clear()
         self.rebuild()
@@ -278,7 +289,6 @@ class TauApp(App):
         rows = scored if self.show_excluded else self._passing
         _, key = SORTS[self.sort_index]
         self._rows = sorted(rows, key=key)
-        self._passed = len(self._passing)
         self.build_rank_rows()
         self.render_current_table()
         self.refresh_meta()
@@ -292,10 +302,9 @@ class TauApp(App):
 
     def build_rank_rows(self) -> None:
         """Sort the current pass set by the active rank metric. A candidate
-        with no proposal yet (or one that failed to price) sorts last rather
-        than vanishing — the rank view is the same shortlist, just ordered
-        differently once numbers exist."""
-        label, attr, desc = RANK_SORTS[self.rank_sort_index]
+        not yet priced, or that failed to price, sorts last rather than
+        vanishing."""
+        _, attr, desc = RANK_SORTS[self.rank_sort_index]
         on_broker = propose_mod.broker_priced_pass(
             p for c in self._passing if (p := self.proposal_for(c.symbol))
         )
@@ -314,14 +323,9 @@ class TauApp(App):
         self._rank_rows = sorted(self._passing, key=keyfn)
 
     def cache_proposal(self, proposal: Proposal) -> None:
-        """Store a symbol's proposal and rebuild whatever was derived from the
-        one it replaces.
-
-        Both row lists are snapshots — `_variant_rows` holds `Structure`
-        objects, not a live view — so a proposal swapped in behind them
-        repaints the old numbers. Anything that caches a proposal goes through
-        here for that reason.
-        """
+        """Store a symbol's proposal and rebuild the row lists derived from
+        the one it replaces. Both lists are snapshots, so caching a proposal
+        any other way would leave the old numbers on screen."""
         self._proposals[proposal.symbol] = proposal
         self.build_rank_rows()
         if self.mode == "variants" and proposal.symbol == self._variants_symbol:
@@ -329,11 +333,7 @@ class TauApp(App):
 
     def build_variant_rows(self) -> None:
         """The open name's whole search, ranked by the active metric. Failed
-        and unbuildable variants stay in the list — "no lizard on MU today,
-        worst_loss_up 340 > 0" is information; a missing row is not."""
-        if self._variants_symbol is None:
-            self._variant_rows = []
-            return
+        and unbuildable variants stay in the list with their reasons."""
         proposal = self.proposal_for(self._variants_symbol)
         if proposal is None:
             self._variant_rows = []
@@ -420,30 +420,28 @@ class TauApp(App):
         table, cursor = self._reset_columns("variants", VARIANT_COLUMNS)
         for i, s in enumerate(self._variant_rows):
             if not s.complete:
-                # Never built — no numbers to show. The reason is a sentence
-                # about the ladder, so it goes to the detail pane in full.
+                # Never built, so no numbers. The full reason is in the
+                # detail pane.
                 cells = ["✗", s.label] + ["—"] * 6 + ["not built"]
-                table.add_row(*(Text(str(x), style="dim") for x in cells), key=str(i))
-                continue
-            # Which constraint bit, not the whole sentence — the numbers behind
-            # it are in the detail pane for the highlighted row.
-            why = " ".join(dict.fromkeys(f.require.metric for f in s.failures))
-            cells = [
-                "·" if s.ok else "✗",
-                s.label,
-                _fmt(s.credit, ".2f"),
-                _bpr(s.bpr, s.bpr_source),
-                _pct(s.annualized_roc, ".0f"),
-                _pct(s.pop, ".0f"),
-                _pct(s.spread_cost, ".0f"),
-                _fmt(s.be_over_em, ".2f"),
-                why,
-            ]
+            else:
+                # Only the metrics that failed; the numbers behind them are
+                # in the detail pane.
+                why = " ".join(dict.fromkeys(f.require.metric for f in s.failures))
+                cells = [
+                    "·" if s.ok else "✗",
+                    s.label,
+                    _fmt(s.credit, ".2f"),
+                    _bpr(s.bpr, s.bpr_source),
+                    _pct(s.annualized_roc, ".0f"),
+                    _pct(s.pop, ".0f"),
+                    _pct(s.spread_cost, ".0f"),
+                    _fmt(s.be_over_em, ".2f"),
+                    why,
+                ]
             if s.ok:
                 table.add_row(*cells, key=str(i))
             else:
-                # Greyed, not hidden: a rejected variant and its reason are
-                # the answer to "why is there no condor on this name today".
+                # Rejected variants are greyed, not hidden.
                 table.add_row(*(Text(str(x), style="dim") for x in cells), key=str(i))
         if self._variant_rows:
             table.move_cursor(row=min(cursor, len(self._variant_rows) - 1))
@@ -453,9 +451,8 @@ class TauApp(App):
         c = self.selected
         p = self.proposal_for(c.symbol) if c else None
         status = self._detail_status
-        if not status and self.mode in ("rank", "variants") and p is not None:
-            if not p.ok and p.error:
-                status = f"pricing failed: {p.error}"
+        if not status and self.mode != "screen" and p is not None and p.error:
+            status = f"pricing failed: {p.error}"
         self.query_one("#detail", DetailPane).show(
             c,
             p,
@@ -472,10 +469,9 @@ class TauApp(App):
         self.render_detail()
 
     def on_data_table_row_selected(self, _: DataTable.RowSelected) -> None:
-        # Enter reaches the focused table as a row selection, never the
-        # app-level binding, so these hang off this instead. In the rank view
-        # a name is already priced, so Enter drills into its variants rather
-        # than re-fetching the chain it already has.
+        # The focused table consumes Enter as a row selection before any
+        # app-level binding sees it. In the rank view the name is priced, so
+        # Enter drills into its variants instead of loading the chain.
         if self.mode == "rank":
             self.action_show_variants()
         elif self.mode == "screen":
@@ -487,34 +483,25 @@ class TauApp(App):
         self.render_detail()
         try:
             cycle = await self._chain_loader(candidate)
-            # Searching every strategy over the fetched cycle is in-memory
-            # arithmetic, so a chain load produces the same full proposal the
-            # rank view would — one cache, filled from either direction.
+            # In-memory search, so a chain load yields the same proposal the
+            # rank view would build.
             proposal = propose_mod.propose_on(candidate, cycle, self._strategies)
         except Exception as exc:
             self._detail_status = f"chain failed: {exc}"
             # The cursor may have moved on; only repaint what is selected now.
             self.render_current_table()
             return
-        # The chain is in hand, so the variants are showable now. Every row
-        # renders with the `~` that marks a formula estimate, and the account
-        # API — which can hang for as long as its read timeout allows —
-        # upgrades the rows it answers for afterwards. The drill-in never
-        # waits on it.
+        # Show the formula estimates now; the broker dry-run, which can be
+        # slow, upgrades the figures afterwards. Without a session, or when
+        # the account API fails, the formula figures stand.
         self.cache_proposal(proposal)
         self._detail_status = ""
         self.render_current_table()
         session = None
-        try:
+        with contextlib.suppress(Exception):
             session = get_session()
-        except Exception:
-            pass  # no credentials — the formula estimate is the whole story
-        # The broker dry-run is an upgrade, never a requirement: without a
-        # session, or with one that cannot reach the account API, the
-        # proposal keeps its formula figures untouched.
         enriched = await propose_mod.enrich_with_broker_bpr(session, proposal)
-        # Even when nothing came back the chrome may have news: this is the
-        # path a breaker trip happens on, and its marker lives on the meta
+        # Refresh even when nothing changed: a breaker trip shows on the meta
         # line.
         self.refresh_meta()
         if enriched is proposal:
@@ -531,10 +518,9 @@ class TauApp(App):
     # exclusive worker here would cancel an in-flight chain load.
     @work(exclusive=True, group="why")
     async def load_why(self, candidate: Candidate) -> None:
-        """Price position and the catalyst read, together. They run
-        concurrently because the price side lands in about a second and the
-        model call takes a good deal longer; waiting on both to show either
-        would make the fast half feel slow."""
+        """Price position and the catalyst read, run concurrently. The price
+        side is shown as soon as it lands, without waiting on the slower
+        model call."""
         symbol = candidate.symbol
         self._why_status = f"reading {symbol}…"
         self.render_detail()
@@ -547,8 +533,6 @@ class TauApp(App):
                 self._history[symbol] = await history_task
             except Exception as exc:
                 failures.append(f"history failed: {exc}")
-            # Repaint so the price context appears without waiting on the
-            # model; the cursor may have moved, and render_detail re-reads it.
             self._why_status = f"classifying {symbol}…"
             self.render_detail()
             try:
@@ -608,9 +592,8 @@ class TauApp(App):
             self.price_shortlist_worker(list(self._passing))
 
     def action_show_variants(self) -> None:
-        """Open the highlighted name's full search. Needs a proposal, so from
-        the screen view it loads the chain first and the keypress is repeated
-        once the numbers exist rather than opening an empty table."""
+        """Open the highlighted name's full search. An unpriced name loads
+        its chain instead; press again once it is in."""
         c = self.selected
         if c is None or self.mode == "variants":
             return
@@ -628,8 +611,6 @@ class TauApp(App):
             if enabled is None or enabled == self._enabled:
                 return
             self._enabled = enabled
-            # No refetch: the structures are already in hand, so this only
-            # changes which of them the views consider.
             self.build_rank_rows()
             self.build_variant_rows()
             self.render_current_table()
@@ -654,8 +635,8 @@ class TauApp(App):
     # ---- chrome ----
 
     def strategy_summary(self) -> str:
-        """Names the filter when one is on, so a short list never looks like a
-        thin market when it is really a setting."""
+        """Names the strategy filter, so a short list is not mistaken for a
+        thin market."""
         total = len(self._strategies)
         if len(self._enabled) == total:
             return f"all {total} strategies"
@@ -665,17 +646,13 @@ class TauApp(App):
 
     def refresh_meta(self) -> None:
         fetched = (
-            self._fetched_at.astimezone().strftime("%H:%M")
-            if self._fetched_at
-            else "—"
+            self._fetched_at.astimezone().strftime("%H:%M") if self._fetched_at else "—"
         )
-        passed = getattr(self, "_passed", 0)
         if self.mode == "variants":
             rows = self._variant_rows
             passing = sum(1 for s in rows if s.ok)
             bits = [
-                f"tau · {self._variants_symbol} · "
-                f"{passing}/{len(rows)} variants passed",
+                f"tau · {self._variants_symbol} · {passing}/{len(rows)} variants passed",
                 self.strategy_summary(),
                 f"fetched {fetched}",
             ]
@@ -688,17 +665,15 @@ class TauApp(App):
             bits += [f"★ {len(self._starred)}", f"fetched {fetched}"]
         else:
             bits = [
-                f"tau · {passed}/{len(self._raw)} pass",
+                f"tau · {len(self._passing)}/{len(self._raw)} pass",
                 f"showing {len(self._rows)}"
                 + (" (incl. excluded)" if self.show_excluded else ""),
                 f"★ {len(self._starred)}",
                 f"fetched {fetched}",
             ]
         if broker_mod.dry_runs_disabled():
-            # The breaker's own warning goes to a logger, and Textual
-            # redirects stderr for the life of the app — so on screen this
-            # line is the only thing that separates "the broker stopped
-            # answering" from "these were always estimates".
+            # Textual swallows the breaker's log warning, so this is the only
+            # on-screen sign that the figures fell back to estimates.
             bits.append("broker BPR off")
         if self._status:
             bits.append(self._status)
@@ -707,8 +682,7 @@ class TauApp(App):
         if self.mode == "variants":
             label = RANK_SORTS[self.rank_sort_index][0]
             self.query_one("#filters", Static).update(
-                f"sort {label}  ·  greyed rows failed a constraint  "
-                f"·  esc back to rank"
+                f"sort {label}  ·  greyed rows failed a constraint  ·  esc back to rank"
             )
         elif self.mode == "rank":
             label = RANK_SORTS[self.rank_sort_index][0]
@@ -771,8 +745,7 @@ class TauApp(App):
     @property
     def current_rows(self) -> list[Candidate]:
         """The candidate behind each visible row. In the drill-in every row
-        belongs to the one open name, so they are all the same candidate —
-        the row identity there is the variant, not the symbol."""
+        is a variant of the one open name."""
         if self.mode == "variants":
             here = [c for c in self._raw if c.symbol == self._variants_symbol]
             return here * len(self._variant_rows)
