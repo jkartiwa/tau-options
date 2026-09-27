@@ -240,7 +240,7 @@ async def variants(args: argparse.Namespace) -> None:
     print(f"\n{passing} of {len(proposal.structures)} variants passed")
 
 
-def strategies(args: argparse.Namespace) -> None:
+def strategies() -> None:
     """What ships, and what each one is looking for."""
     for s in ALL_STRATEGIES:
         print(f"{s.name}  [{s.bias}]  {s.variant_count} variants, ranked on {s.rank}")
@@ -356,7 +356,7 @@ def main() -> None:
         run()
         return
     if args.command == "strategies":
-        strategies(args)
+        strategies()
         return
     asyncio.run({"scan": scan, "rank": rank, "variants": variants}[args.command](args))
 
