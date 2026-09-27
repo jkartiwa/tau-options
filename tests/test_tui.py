@@ -15,6 +15,7 @@ from tau.propose import propose_on
 from tau.screen import Candidate
 from tau.tui.app import TauApp, _fmt
 from tau.tui.detail import DetailPane
+from tests.factories import cycle
 
 C, P = OptionType.CALL, OptionType.PUT
 
@@ -314,38 +315,11 @@ def _proposal_loader_factory(proposals_by_symbol):
     return loader
 
 
-PUT_DELTAS = {80: -0.08, 85: -0.12, 90: -0.20, 95: -0.32, 100: -0.50}
-CALL_DELTAS = {100: 0.50, 105: 0.30, 110: 0.20, 115: 0.12, 120: 0.08}
-PUT_MIDS = {80: 0.50, 85: 0.80, 90: 1.20, 95: 2.00, 100: 3.50}
-CALL_MIDS = {100: 3.50, 105: 2.00, 110: 1.20, 115: 0.80, 120: 0.50}
-
-
 def _proposal(symbol, dte=40):
     """A real proposal off a real ladder, run through the real engine, since
     the rank view reads structures. Return on capital is identical across
     these, so `dte` alone decides the annualized ordering."""
-
-    def leg(strike, option_type, delta, mid):
-        return Leg(
-            occ=f"{option_type}{strike:g}{symbol}",
-            streamer=f"s{option_type}{strike:g}{symbol}",
-            strike=float(strike),
-            type=option_type,
-            bid=mid - 0.01,
-            ask=mid + 0.01,
-            delta=delta,
-            iv=0.30,
-        )
-
-    legs = [leg(k, P, d, PUT_MIDS[k]) for k, d in PUT_DELTAS.items()]
-    legs += [leg(k, C, d, CALL_MIDS[k]) for k, d in CALL_DELTAS.items()]
-    cy = Cycle(
-        symbol=symbol,
-        expiration=date(2026, 9, 4),
-        dte=dte,
-        underlying=100.0,
-        legs=tuple(legs),
-    )
+    cy = cycle(dte=dte, symbol=symbol)
     return propose_on(cand(symbol, 50.0), cy)
 
 

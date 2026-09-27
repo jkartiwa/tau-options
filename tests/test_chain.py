@@ -7,7 +7,6 @@ import pytest
 from tau.chain import (
     MAX_STRIKES_PER_SIDE,
     UNSTRIDED_CORE,
-    Cycle,
     Leg,
     _stride,
     choose_expiration,
@@ -15,6 +14,7 @@ from tau.chain import (
     strike_ladder,
 )
 from tau.payoff import OptionType
+from tests.factories import cycle
 
 C, P = OptionType.CALL, OptionType.PUT
 
@@ -38,16 +38,6 @@ def leg(strike, option_type, delta, bid=1.0, ask=1.2, iv=0.30):
         ask=ask,
         delta=delta,
         iv=iv,
-    )
-
-
-def cycle(legs, underlying=100.0, dte=45):
-    return Cycle(
-        symbol="TEST",
-        expiration=date(2026, 9, 4),
-        dte=dte,
-        underlying=underlying,
-        legs=tuple(legs),
     )
 
 
@@ -95,7 +85,7 @@ def test_iv_at_is_flat_outside_the_quoted_strike_range():
 
 
 def test_iv_at_is_none_when_that_side_carries_no_iv():
-    calls_only = tuple(leg for leg in EM_LEGS if leg.type is C)
+    calls_only = tuple(lg for lg in EM_LEGS if lg.type is C)
     assert cycle(calls_only).iv_at(95.0, P) is None
     assert cycle((leg(100, C, 0.50, iv=None),)).iv_at(100.0, C) is None
 
