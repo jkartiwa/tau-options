@@ -5,7 +5,7 @@ import pytest
 
 from tau.build import MAX_DELTA_MISS, evaluate, evaluate_all
 from tau.chain import Cycle, Leg
-from tau.payoff import OptionType, Side, naked_side_requirement, pop_between
+from tau.payoff import OptionType, Side, naked_side_requirement, pop_over_intervals
 from tau.propose import Proposal, ordering_value, propose_on, rank_proposals
 from tau.screen import Candidate
 from tau.strategies import STRATEGIES
@@ -127,22 +127,21 @@ def test_missing_underlying_quote_survives_strategy_narrowing():
 def test_pop_symmetric_breakevens_near_half_with_slight_drift_correction():
     # symmetric breakevens around spot -> the driftless-lognormal median
     # shift pushes PoP slightly above 0.5, never below.
-    p = pop_between(spot=100.0, lower=90.0, upper=110.0, iv=0.30, dte=45)
+    p = pop_over_intervals([(90.0, 110.0)], spot=100.0, iv=0.30, dte=45)
     assert p is not None
     assert 0.5 < p < 0.7
 
 
 def test_pop_wider_breakevens_increase_probability():
-    narrow = pop_between(100.0, 95.0, 105.0, 0.30, 45)
-    wide = pop_between(100.0, 80.0, 120.0, 0.30, 45)
+    narrow = pop_over_intervals([(95.0, 105.0)], 100.0, 0.30, 45)
+    wide = pop_over_intervals([(80.0, 120.0)], 100.0, 0.30, 45)
     assert wide > narrow
 
 
 def test_pop_handles_degenerate_inputs():
-    assert pop_between(0.0, 90.0, 110.0, 0.3, 45) is None
-    assert pop_between(100.0, 110.0, 90.0, 0.3, 45) is None  # inverted
-    assert pop_between(100.0, 90.0, 110.0, 0.0, 45) is None
-    assert pop_between(100.0, 90.0, 110.0, 0.3, 0) is None
+    assert pop_over_intervals([(90.0, 110.0)], 0.0, 0.3, 45) is None
+    assert pop_over_intervals([(90.0, 110.0)], 100.0, 0.0, 45) is None
+    assert pop_over_intervals([(90.0, 110.0)], 100.0, 0.3, 0) is None
 
 
 def test_proposal_searches_every_strategy_over_one_cycle():

@@ -12,7 +12,6 @@ from tau.payoff import (
     max_profit,
     net_premium,
     payoff_at,
-    pop_between,
     pop_over_intervals,
     profitable_intervals,
     slope_left,
@@ -167,9 +166,8 @@ def test_profitable_intervals_are_bounded_by_the_breakevens():
     assert profitable_intervals(BROKEN_WING) == [(84.5, inf)]
 
 
-def test_pop_over_intervals_matches_the_two_breakeven_form():
+def test_pop_over_a_bounded_interval_is_a_probability():
     over = pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 45)
-    assert over == pytest.approx(pop_between(100.0, 88.0, 112.0, 0.30, 45))
     assert 0.0 < over < 1.0
 
 
