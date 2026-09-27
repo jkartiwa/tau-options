@@ -157,9 +157,8 @@ top-ranked structures are sent to your account's order **dry-run** endpoint —
 one POST per structure, a calculation preview that places, modifies, and
 cancels nothing — and the broker's isolated margin requirement replaces the
 in-house estimate. The real number matters because the formula is a standard
-naked-margin model and the account runs on portfolio margin; measured against
-the broker's figure on 2026-08-20, the formula was $3,980 where the broker
-said $3,651 on an AAPL strangle and $28,335 where it said $37,010 on MU.
+naked-margin model, and on a portfolio-margin account the broker's requirement
+can land well above or below it.
 
 When the broker does not answer — read-scoped token, network error, timeout,
 rate limit, missing credentials — tau silently falls back to the formula and
