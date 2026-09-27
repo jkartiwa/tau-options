@@ -78,6 +78,17 @@ def test_todays_date_reaches_the_prompt():
     assert "2026-07-26" in client.calls[0]["system"]
 
 
+def test_the_prompt_horizon_follows_the_target_tenor(monkeypatch):
+    """The event horizon the model is asked about is the tenor tau trades, so
+    changing TARGET_DTE must not leave the prompt asking about a stale one."""
+    monkeypatch.setattr(catalyst, "TARGET_DTE", 30)
+    client = FakeClient(VERDICT)
+    classify("INTC", headlines(), today=date(2026, 7, 26), client=client)
+    system = client.calls[0]["system"]
+    assert "30-day" in system and "about 30 days" in system
+    assert "45" not in system
+
+
 def test_the_output_budget_leaves_room_for_thinking_and_the_verdict():
     """Adaptive thinking spends from max_tokens before the JSON verdict is
     written; a budget that runs out mid-verdict degrades to

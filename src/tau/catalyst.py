@@ -22,6 +22,8 @@ from datetime import date
 from email.utils import parsedate_to_datetime
 from xml.etree import ElementTree
 
+from tau.chain import TARGET_DTE
+
 MODEL = "claude-sonnet-5"
 NEWS_URL = "https://news.google.com/rss/search"
 NEWS_WINDOW_DAYS = 14
@@ -38,7 +40,7 @@ RESOLVED = "resolved"
 NO_CATALYST = "no_idiosyncratic"
 UNKNOWN = "insufficient_signal"
 
-# How each verdict bears on selling a 45-DTE strangle.
+# How each verdict bears on selling premium at the target tenor.
 VERDICT_GLOSS = {
     PENDING: "event risk ahead — premium is payment for a binary",
     RESOLVED: "event passed — IV usually bleeds slower than the risk left",
@@ -47,7 +49,7 @@ VERDICT_GLOSS = {
 }
 
 SYSTEM = """You are an analyst supporting a systematic options premium seller. \
-The trader sells roughly 45-day short premium (strangles, iron condors, \
+The trader sells roughly {horizon}-day short premium (strangles, iron condors, \
 verticals, jade lizards and similar structures) on liquid names screened for \
 high IV rank. Elevated implied volatility always has a cause; your job is to \
 classify that cause so the trader knows whether the premium is harvestable \
@@ -86,7 +88,7 @@ Further rules:
 - Weigh headline DATES against today's date. Earnings reported three days ago \
 are resolved; earnings expected next week are pending.
 - If both apply — earnings just passed, but another dated event falls within \
-about 45 days — classify pending_binary. Forward risk dominates the structure.
+about {horizon} days — classify pending_binary. Forward risk dominates the structure.
 - Analyst commentary, price targets, and ranked-list articles are not \
 catalysts. Ignore them.
 - Be decisive about the classification and express any doubt through \
@@ -123,7 +125,7 @@ SCHEMA = {
                 "required": ["date", "event"],
                 "additionalProperties": False,
             },
-            "description": "Dated events falling within roughly 45 days",
+            "description": f"Dated events falling within roughly {TARGET_DTE} days",
         },
         "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
         "note": {"type": "string"},
@@ -302,7 +304,7 @@ def classify(
         response = client.messages.create(
             model=MODEL,
             max_tokens=16000,
-            system=SYSTEM.format(today=today.isoformat()),
+            system=SYSTEM.format(today=today.isoformat(), horizon=TARGET_DTE),
             messages=[{"role": "user", "content": body}],
             output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
         )
