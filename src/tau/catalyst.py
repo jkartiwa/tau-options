@@ -47,7 +47,8 @@ VERDICT_GLOSS = {
 }
 
 SYSTEM = """You are an analyst supporting a systematic options premium seller. \
-The trader sells roughly 45-day short strangles on liquid names screened for \
+The trader sells roughly 45-day short premium (strangles, iron condors, \
+verticals, jade lizards and similar structures) on liquid names screened for \
 high IV rank. Elevated implied volatility always has a cause; your job is to \
 classify that cause so the trader knows whether the premium is harvestable \
 edge or fair compensation for a binary event.
@@ -58,7 +59,7 @@ Classify the volatility driver into exactly one of:
 
 - "pending_binary": a dated or strongly expected FUTURE event with \
 discontinuous outcomes lands soon — upcoming earnings, an FDA decision, a \
-court ruling, in-progress M&A, a guidance event. Selling a strangle across \
+court ruling, in-progress M&A, a guidance event. Selling premium across \
 this is selling event risk.
 - "resolved": the catalyst ALREADY HAPPENED — earnings reported, ruling \
 issued, news broke and is being digested. Implied vol typically stays \
@@ -318,7 +319,7 @@ def classify(
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=2000,
+            max_tokens=16000,
             system=SYSTEM.format(today=today.isoformat()),
             messages=[{"role": "user", "content": body}],
             output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
