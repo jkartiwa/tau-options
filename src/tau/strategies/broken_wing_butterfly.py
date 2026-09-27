@@ -4,9 +4,9 @@ Two short bodies with an unequal wing on either side. The widths *are* the
 trade and which pair pays depends on today's skew, so both are searched
 rather than pinned.
 
-Its return is measured as `max_profit / bpr` rather than `credit / bpr`: max
-profit sits at the body strike, well above the credit taken in, and the
-structure can legitimately price as a debit.
+It is why every structure's return is `max_profit / bpr` rather than
+`credit / bpr`: here max profit sits at the body strike, well above the credit
+taken in, and the structure can legitimately price as a debit.
 """
 
 from tau.payoff import OptionType, Side
