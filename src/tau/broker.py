@@ -98,8 +98,9 @@ def _gate() -> _LoopGate:
 class _State:
     """What the process has learned about the account and the broker's health.
 
-    Process-wide, because neither varies by symbol. `margin_account` is False
-    until resolved, then an `Account` or `None`. An answer from the API is
+    Process-wide, because neither varies by symbol. `margin_account` is
+    meaningful once `account_resolved` is set: an `Account`, or `None` when
+    there is no open margin account. An answer from the API is
     cached for the life of the process, since the account list does not change
     under a fixed token; a failed request is not an answer, so it is held until
     `account_retry_at` and then retried. The breaker counts consecutive
@@ -107,7 +108,8 @@ class _State:
     `probing` call through once the cooldown is up.
     """
 
-    margin_account: Account | None | bool = False
+    account_resolved: bool = False
+    margin_account: Account | None = None
     account_retry_at: float = 0.0
     consecutive_failures: int = 0
     tripped_until: float = 0.0
@@ -176,13 +178,13 @@ async def margin_account(session: Session) -> Account | None:
     cached for the life of the process; a failure is held for
     `BREAKER_COOLDOWN` and then retried.
     """
-    if _state.margin_account is not False:
-        return _state.margin_account or None
+    if _state.account_resolved:
+        return _state.margin_account
     if time.monotonic() < _state.account_retry_at:
         return None
     async with _gate().resolving:
-        if _state.margin_account is not False:
-            return _state.margin_account or None
+        if _state.account_resolved:
+            return _state.margin_account
         if time.monotonic() < _state.account_retry_at:
             return None
         try:
@@ -200,6 +202,7 @@ async def margin_account(session: Session) -> Account | None:
             (a for a in accounts if not a.is_closed and a.margin_or_cash == "Margin"),
             None,
         )
+        _state.account_resolved = True
         return _state.margin_account
 
 
