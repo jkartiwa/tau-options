@@ -24,6 +24,7 @@ as such either way. Any broker failure falls back to the formula.
 import asyncio
 from collections import Counter
 from dataclasses import dataclass, replace
+from functools import cached_property
 
 from tastytrade import Session
 
@@ -97,7 +98,7 @@ class Proposal:
     def symbol(self) -> str:
         return self.candidate.symbol
 
-    @property
+    @cached_property
     def best(self) -> Structure | None:
         """The trade to do on this name, chosen in two stages.
 
@@ -110,6 +111,9 @@ class Proposal:
         The winners can carry figures from two margin models (the broker
         prices a bounded shortlist); `comparable_on` keeps the final
         comparison to one of them.
+
+        Cached: every figure the rank table shows delegates here, and the
+        instance is frozen, so the answer cannot change.
         """
         by_strategy: dict[str, list[Structure]] = {}
         for structure in self.structures:
