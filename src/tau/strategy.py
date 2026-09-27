@@ -106,7 +106,7 @@ class Delta:
         return f"{abs(float(self.value)) * 100:g}Δ"
 
     def describe(self) -> str:
-        return "/".join(f"{abs(float(v)) * 100:g}Δ" for v in _as_list(self.value))
+        return "/".join(v.label() for v in self.variants())
 
 
 @dataclass(frozen=True)
@@ -122,7 +122,7 @@ class Moneyness:
         return f"{float(self.value) * 100:+g}%"
 
     def describe(self) -> str:
-        return "/".join(f"{float(v) * 100:+g}%" for v in _as_list(self.value))
+        return "/".join(v.label() for v in self.variants())
 
 
 @dataclass(frozen=True)
