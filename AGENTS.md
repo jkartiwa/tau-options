@@ -3,8 +3,6 @@
 This file is the project's committed home for project-intrinsic agent knowledge: build, test, release, architecture, and sharp-edge notes that should travel with the code.
 
 - Add durable project-specific notes here as they are discovered through real work.
-- This repo has no CI. `.no-mistakes.yaml` declares `no_ci: true`; if the pipeline's `ci` step
-  still waits on `gh pr checks`, run `no-mistakes axi run --intent "..." --skip ci`.
 - The tastytrade token is trading-scoped (the buying-power dry-run is a trading-scope call).
   Broker buying power comes only from the order dry-run in `src/tau/broker.py`; never add
   order-placement code — the token can trade. `payoff.bpr()` stays as the offline formula
