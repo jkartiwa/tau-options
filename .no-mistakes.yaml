@@ -1,0 +1,5 @@
+# no-mistakes trusted repo config (read from the default branch only).
+# This project has no GitHub Actions CI configured. Declaring no_ci here
+# tells the pipeline to treat its own local review/test/lint gate as
+# sufficient instead of waiting for GitHub checks that will never arrive.
+no_ci: true
