@@ -11,7 +11,7 @@ percents.
 """
 
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date
 
 from tastytrade import Session
 from tastytrade.metrics import MarketMetricInfo, get_market_metrics
@@ -105,11 +105,8 @@ def apply_filters(
         reasons.append("no liquidity rating")
     elif c.liquidity < min_liquidity:
         reasons.append(f"liquidity {c.liquidity} < {min_liquidity}")
-    if (
-        earnings_days > 0
-        and c.earnings_date is not None
-        and today <= c.earnings_date <= today + timedelta(days=earnings_days)
-    ):
+    days = c.days_to_earnings(today)
+    if earnings_days > 0 and days is not None and days <= earnings_days:
         reasons.append(f"earnings {c.earnings_date.isoformat()}")
     return replace(c, excluded=tuple(reasons))
 
