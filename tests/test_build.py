@@ -404,9 +404,9 @@ def test_best_never_returns_a_variant_that_fails_the_pop_floor():
 
 
 def test_a_flat_smile_leaves_pop_on_the_atm_number():
-    """Requirement: a symmetric chain must be unchanged. The default ladder
-    quotes 30% on every strike, so the per-boundary read has to land exactly
-    where the single-ATM-vol read did."""
+    """The default ladder quotes 30% on every strike, so pricing each
+    breakeven under its local vol has to land exactly on the ATM-only
+    number."""
     structure = one(STRANGLE_20, cycle(), "20Δ/20Δ")
     cy = structure.cycle
     assert cy.atm_iv == pytest.approx(0.30)
@@ -416,9 +416,8 @@ def test_a_flat_smile_leaves_pop_on_the_atm_number():
 
 
 def test_put_over_call_skew_pulls_pop_below_the_atm_only_number():
-    """Requirement: a skewed chain must report a lower POP. Same strikes,
-    same credit, same `atm_iv` — only the wings' own vols differ, and the
-    fatter downside has to show up as worse odds."""
+    """Same strikes, same credit, same `atm_iv` — only the wings' own vols
+    differ, and the fatter downside has to show up as worse odds."""
     structure = one(STRANGLE_20, cycle(legs=skewed_ladder()), "20Δ/20Δ")
     assert structure.cycle.atm_iv == pytest.approx(0.30)  # unchanged by the smile
     atm_only = pop_over_intervals(
@@ -447,9 +446,8 @@ def test_pop_falls_back_to_atm_when_only_the_atm_strike_carries_iv():
 
 
 def test_be_over_em_measures_the_nearer_breakeven_in_expected_moves():
-    """Moved down from the strangle-era chain tests: the same read, now
-    derived from the payoff's breakevens rather than a structure that knew
-    it had exactly two."""
+    """Derived from the payoff's breakevens, so it holds for any number of
+    them, not only a strangle's two."""
     cy = cycle()
     # straddle 7.00, 1st OTM strangle 4.00, 2nd 2.40, weighted 60/30/10
     em = 0.6 * 7.00 + 0.3 * 4.00 + 0.1 * 2.40
@@ -499,7 +497,7 @@ def test_a_partly_priced_ladder_orders_on_the_formula_throughout():
 
 def test_a_fully_priced_ladder_orders_on_the_broker_figures():
     structures = evaluate(LADDERED_STRANGLE, cycle())
-    # every passing row priced, and the widest one flattered enough to lead
+    # every passing row priced, and the last-ranked one flattered enough to lead
     passing = rank([s for s in structures if s.ok])
     laggard = passing[-1]
     priced = [
