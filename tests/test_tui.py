@@ -12,36 +12,22 @@ from tau.chain import Cycle, Leg
 from tau.history import Bar, History
 from tau.payoff import OptionType
 from tau.propose import propose_on
-from tau.screen import Candidate
 from tau.tui.app import TauApp, _fmt
 from tau.tui.detail import DetailPane
-from tests.factories import cycle
+from tests.factories import cand, cycle
 
 C, P = OptionType.CALL, OptionType.PUT
 
 TODAY = date.today()
 
 
-def cand(symbol, ivr, liq=4, iv30=30.0, hv30=25.0, earnings=None):
-    return Candidate(
-        symbol=symbol,
-        ivr=ivr,
-        ivp=50.0,
-        iv30=iv30,
-        hv30=hv30,
-        liquidity=liq,
-        beta=1.0,
-        earnings_date=earnings,
-    )
-
-
 FIXTURE = [
-    cand("HIGH", 90.0),
-    cand("MID", 45.0),
-    cand("LOW", 10.0),
-    cand("ILLIQ", 80.0, liq=1),
-    cand("ERN", 70.0, earnings=TODAY + timedelta(days=10)),
-    cand("CHEAP", 60.0, iv30=20.0, hv30=40.0),
+    cand("HIGH", ivr=90.0),
+    cand("MID", ivr=45.0),
+    cand("LOW", ivr=10.0),
+    cand("ILLIQ", ivr=80.0, liquidity=1),
+    cand("ERN", ivr=70.0, earnings_date=TODAY + timedelta(days=10)),
+    cand("CHEAP", ivr=60.0, iv30=20.0, hv30=40.0),
 ]
 
 
@@ -320,7 +306,7 @@ def _proposal(symbol, dte=40):
     the rank view reads structures. Return on capital is identical across
     these, so `dte` alone decides the annualized ordering."""
     cy = cycle(dte=dte, symbol=symbol)
-    return propose_on(cand(symbol, 50.0), cy)
+    return propose_on(cand(symbol), cy)
 
 
 @pytest.mark.asyncio
