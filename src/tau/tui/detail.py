@@ -22,6 +22,7 @@ TERM_NEAR_DTE = 7
 TERM_FAR_DTE = 60
 TERM_FLAT_BAND = 2.0  # vol points; inside this the curve reads flat
 HEADLINE_LINES = 8  # shown only when there is no verdict to show instead
+RANGE_EDGE = 0.05  # within this fraction of the 52-week high or low
 
 
 def _fmt(value, spec: str = ".2f") -> str:
@@ -129,8 +130,8 @@ class DetailPane(Static):
         pos = h.range_position
         band = _fmt(h.low_52w) + "–" + _fmt(h.high_52w)
         pos_txt = "—" if pos is None else f"{pos:.0%}"
-        if pos is not None and (pos >= 0.95 or pos <= 0.05):
-            edge = "high" if pos >= 0.95 else "low"
+        if pos is not None and (pos >= 1 - RANGE_EDGE or pos <= RANGE_EDGE):
+            edge = "high" if pos >= 1 - RANGE_EDGE else "low"
             pos_txt = f"[yellow]{pos_txt} ({edge} of range)[/yellow]"
         lines = [
             f"[b]price[/b] {_fmt(h.last)} · 52w {band} · at {pos_txt}",
@@ -276,11 +277,11 @@ class DetailPane(Static):
         lines = [f"[b]{s.label}[/b] [dim]{s.strategy.bias}[/dim]"]
         lines += [f"  {_leg_line(b)}" for b in s.legs]
         be = " / ".join(f"{value:g}" for value in s.breakevens) or "—"
-        premium = s.net_premium
+        # A complete structure always has a net premium; zero reads as a debit.
         taken = (
             f"credit {_fmt(s.credit)}"
             if s.credit is not None
-            else f"[yellow]debit {_fmt(abs(premium)) if premium else '—'}[/yellow]"
+            else f"[yellow]debit {_fmt(abs(s.net_premium))}[/yellow]"
         )
         lines.append(f"{taken} · BE {be}")
         # Premium is per share, the dollar figures per contract. `BPR~` is the
