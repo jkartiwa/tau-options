@@ -9,10 +9,11 @@ from tau import broker as broker_mod
 from tau import propose as propose_mod
 from tau.catalyst import Brief
 from tau.chain import Cycle, Leg
+from tau.fmt import fmt
 from tau.history import Bar, History
 from tau.payoff import OptionType
 from tau.propose import propose_on
-from tau.tui.app import TauApp, _fmt
+from tau.tui.app import TauApp
 from tau.tui.detail import DetailPane
 from tests.factories import cand, cycle
 
@@ -597,7 +598,7 @@ async def test_rank_table_marks_broker_and_formula_bpr_sources(monkeypatch):
         assert "BPR" in [c.label.plain for c in table.columns.values()]
         best = enriched.best
         row = list(table.get_row_at(0))
-        assert row[6] == _fmt(best.bpr, ",.0f")  # plain: broker-sourced
+        assert row[6] == fmt(best.bpr, ",.0f")  # plain: broker-sourced
 
     # the same shortlist un-enriched falls back to the formula — tilde on
     a2 = app([FIXTURE[0]], proposal_loader=_proposal_loader_factory({"HIGH": base}))

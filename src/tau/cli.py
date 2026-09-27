@@ -22,9 +22,7 @@ from tastytrade.metrics import MarketMetricInfo
 from tau import chain as chain_mod
 from tau import propose as propose_mod
 from tau import screen, store, universe
-from tau.fmt import bpr as _bpr
-from tau.fmt import fmt as _fmt
-from tau.fmt import pct as _pct
+from tau.fmt import bpr, fmt, pct
 from tau.session import get_session
 from tau.strategies import ALL as ALL_STRATEGIES
 from tau.strategies import MIN_POP, STRATEGIES
@@ -65,10 +63,10 @@ def _print_table(rows: list[screen.Candidate], show_reasons: bool) -> None:
     print(header + ("  EXCLUDED" if show_reasons else ""))
     for c in rows:
         line = (
-            f"{c.symbol:<6} {_fmt(c.ivr):>5} {_fmt(c.ivp):>5} "
-            f"{_fmt(c.iv30):>5} {_fmt(c.hv30):>5} "
+            f"{c.symbol:<6} {fmt(c.ivr):>5} {fmt(c.ivp):>5} "
+            f"{fmt(c.iv30):>5} {fmt(c.hv30):>5} "
             f"{c.liquidity if c.liquidity is not None else '—':>3} "
-            f"{_fmt(c.beta, '.2f'):>5}  "
+            f"{fmt(c.beta, '.2f'):>5}  "
             f"{c.earnings_date.isoformat() if c.earnings_date else '—':<10}"
         )
         if show_reasons:
@@ -169,10 +167,10 @@ async def rank(args: argparse.Namespace) -> None:
             continue
         print(
             f"{p.symbol:<6} {s.label:<{w}} {s.strategy.bias!s:<8} "
-            f"{p.cycle.dte:>3}d {_fmt(s.credit, '.2f'):>7} "
-            f"{_bpr(s.bpr, s.bpr_source):>8} {_pct(s.roc, '.1f'):>6} "
-            f"{_pct(s.annualized_roc):>7} {_pct(s.pop):>5} "
-            f"{_pct(s.spread_cost):>6} {_fmt(s.be_over_em, '.2f'):>6}"
+            f"{p.cycle.dte:>3}d {fmt(s.credit, '.2f'):>7} "
+            f"{bpr(s.bpr, s.bpr_source):>8} {pct(s.roc, '.1f'):>6} "
+            f"{pct(s.annualized_roc):>7} {pct(s.pop):>5} "
+            f"{pct(s.spread_cost):>6} {fmt(s.be_over_em, '.2f'):>6}"
         )
     priced = sum(1 for p in ordered if p.best is not None)
     print(f"\n{_rank_summary(priced, len(ordered))}")
@@ -214,7 +212,7 @@ async def variants(args: argparse.Namespace) -> None:
     proposal = await propose_mod.enrich_with_broker_bpr(
         session, propose_mod.propose_on(candidate, cycle, strategies)
     )
-    spot = _fmt(cycle.underlying, ".2f")
+    spot = fmt(cycle.underlying, ".2f")
     print(f"{symbol} · {cycle.expiration} · {cycle.dte} DTE · spot {spot}\n")
     ordered = proposal.variants(args.sort)
     w = _label_width(s.label for s in ordered)
@@ -235,9 +233,9 @@ async def variants(args: argparse.Namespace) -> None:
         why = "; ".join(f.reason for f in s.failures)
         print(
             f"{mark}{s.label:<{w}} "
-            f"{s.strategy.bias!s:<8} {_fmt(s.credit, '.2f'):>7} "
-            f"{_bpr(s.bpr, s.bpr_source):>8} {_pct(s.annualized_roc):>7} "
-            f"{_pct(s.pop):>5} {_pct(s.spread_cost):>6}  {why}"
+            f"{s.strategy.bias!s:<8} {fmt(s.credit, '.2f'):>7} "
+            f"{bpr(s.bpr, s.bpr_source):>8} {pct(s.annualized_roc):>7} "
+            f"{pct(s.pop):>5} {pct(s.spread_cost):>6}  {why}"
         )
     print(f"\n{passing} of {len(proposal.structures)} variants passed")
 

@@ -27,9 +27,7 @@ from tau import history as history_mod
 from tau import propose as propose_mod
 from tau import screen, universe
 from tau.build import Structure
-from tau.fmt import bpr as _bpr
-from tau.fmt import fmt as _fmt
-from tau.fmt import pct as _pct
+from tau.fmt import bpr, fmt, pct
 from tau.propose import Proposal
 from tau.screen import Candidate
 from tau.session import get_session
@@ -383,13 +381,13 @@ class TauApp(App):
             table.add_row(
                 "★" if c.symbol in self._starred else ("·" if c.passed else "✗"),
                 c.symbol,
-                _fmt(c.ivr, ".0f"),
-                _fmt(c.ivp, ".0f"),
-                _fmt(c.iv_hv, ".2f"),
-                _fmt(c.iv30),
-                _fmt(c.hv30),
+                fmt(c.ivr, ".0f"),
+                fmt(c.ivp, ".0f"),
+                fmt(c.iv_hv, ".2f"),
+                fmt(c.iv30),
+                fmt(c.hv30),
                 "—" if c.liquidity is None else str(c.liquidity),
-                _fmt(c.beta, ".2f"),
+                fmt(c.beta, ".2f"),
                 "—" if dte is None else f"{dte}d",
                 "; ".join(c.excluded),
                 key=c.symbol,
@@ -415,13 +413,13 @@ class TauApp(App):
                 best.label,
                 str(best.strategy.bias),
                 f"{p.cycle.dte}d",
-                _fmt(best.credit, ".2f"),
-                _bpr(best.bpr, best.bpr_source),
-                _pct(best.roc, ".1f"),
-                _pct(best.annualized_roc, ".0f"),
-                _pct(best.pop, ".0f"),
-                _pct(best.spread_cost, ".0f"),
-                _fmt(best.be_over_em, ".2f"),
+                fmt(best.credit, ".2f"),
+                bpr(best.bpr, best.bpr_source),
+                pct(best.roc, ".1f"),
+                pct(best.annualized_roc, ".0f"),
+                pct(best.pop, ".0f"),
+                pct(best.spread_cost, ".0f"),
+                fmt(best.be_over_em, ".2f"),
                 key=c.symbol,
             )
         if self._rank_rows:
@@ -442,12 +440,12 @@ class TauApp(App):
                 cells = [
                     "·" if s.ok else "✗",
                     s.label,
-                    _fmt(s.credit, ".2f"),
-                    _bpr(s.bpr, s.bpr_source),
-                    _pct(s.annualized_roc, ".0f"),
-                    _pct(s.pop, ".0f"),
-                    _pct(s.spread_cost, ".0f"),
-                    _fmt(s.be_over_em, ".2f"),
+                    fmt(s.credit, ".2f"),
+                    bpr(s.bpr, s.bpr_source),
+                    pct(s.annualized_roc, ".0f"),
+                    pct(s.pop, ".0f"),
+                    pct(s.spread_cost, ".0f"),
+                    fmt(s.be_over_em, ".2f"),
                     why,
                 ]
             if s.ok:
