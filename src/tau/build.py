@@ -28,7 +28,7 @@ comparison against a trade that was never on offer.
 from dataclasses import dataclass, replace
 from math import inf
 
-from tau.chain import DELTA_TOLERANCE, Cycle, Leg
+from tau.chain import Cycle, Leg
 from tau.payoff import (
     DAYS_PER_YEAR,
     OptionType,
@@ -49,7 +49,6 @@ from tau.strategy import (
     Delta,
     LegSpec,
     Moneyness,
-    Ref,
     Require,
     Strategy,
 )
@@ -74,7 +73,7 @@ MAX_REF_MISS = 0.25
 # `worst_off_target` is None and which a constraint would therefore auto-fail;
 # and it refuses before pricing, so no downstream number is ever derived from
 # a contract the label misdescribes.
-MAX_DELTA_MISS = DELTA_TOLERANCE
+MAX_DELTA_MISS = 0.05
 
 
 @dataclass(frozen=True)

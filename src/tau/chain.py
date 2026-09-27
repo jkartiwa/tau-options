@@ -1,23 +1,24 @@
 """Option-chain reads for one symbol: the quoted ladder every structure is
 built over.
 
-Fetching is one DXLink pass per symbol, measured at ~1.4s all-in (0.4s chain
-metadata, 1.0s quotes+greeks over ~40 legs), which is what makes per-symbol
-on-demand viable in the TUI instead of batch-pulling the whole shortlist.
+Fetching is one DXLink pass per symbol, measured at 1.0-1.75s all-in, which
+is what makes per-symbol on-demand viable in the TUI instead of batch-pulling
+the whole shortlist.
 
 Spot has to be known before strikes can be chosen sensibly, so the pass is
 two-phase over a single connection: underlying quote first, then a strike
 window around it.
 
-Degradation follows the same rule as the rest of the stack: a leg missing a
-quote or greeks is dropped rather than defaulted. What gets built over the
-ladder lives in `build.py`, which applies the matching rule one level up — a
-structure missing any leg is invalid rather than partially credited.
+A leg missing a quote or greeks keeps those fields as `None` rather than
+defaulting them. What gets built over the ladder lives in `build.py`, which
+applies the matching rule one level up — a structure missing any leg's quote
+or greeks is invalid rather than partially credited.
 """
 
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from itertools import pairwise
 from math import sqrt
 
 from tastytrade import DXLinkStreamer, Session
@@ -30,34 +31,25 @@ EVENT_TIMEOUT = 10.0
 TARGET_DTE = 45
 # The strike window is scaled by expected move, not by a fixed percentage:
 # a 16-delta wing sits near one standard deviation, so 2.5 sigma contains it
-# on any name. Capping by strike *count* instead was the original bug — on a
-# densely struck name like QQQ the window stopped well inside the wings and
-# the delta pick silently degraded to the nearest available strike (0.38 in
-# place of 0.16). Count is capped by striding the window instead, which keeps
-# the streamer pass ~1s while still spanning it.
+# on any name. Capping by strike *count* instead stops inside the wings on a
+# densely struck name like QQQ, and the delta pick degrades to the nearest
+# available strike (0.38 in place of 0.16). Count is capped by striding the
+# window instead, so it still spans the wings.
 SIGMA_SPAN = 2.5
 MIN_WINDOW = 0.08  # floor, for a low-vol name or a missing IV hint
 FALLBACK_IV = 0.35
-# Raised from 26 to 45 once multi-leg structures existed, then to 80 once the
-# rank view's concurrent load could be measured. Measured live 2026-08-03: the
-# two-phase pass costs 1.0-1.75s whether it carries 64 legs or 322, and six
-# symbols in flight finish in the time one takes — it is dominated by
-# connection setup, not by leg count, at every budget tried. Meanwhile the cap
-# decides how much of the ladder exists: on SPY, 45/30 built 33 of 56 variants
-# and 60/45 built 52, while 80/60 builds all 56. Sparse ladders (SMH, MU,
-# AAPL, TLT) are unaffected — the sigma window bounds them, not the count — so
-# the only thing a smaller budget bought was throttling the densely struck
-# names for nothing.
+# The fetch costs about the same whether it carries 64 legs or 322 (connection
+# setup dominates), while this cap decides how much of the ladder exists: on
+# SPY, 45/30 built 33 of 56 variants, 60/45 built 52 and 80/60 builds all 56.
+# Sparse ladders are bounded by the sigma window, not by this count.
 MAX_STRIKES_PER_SIDE = 80
 # Strikes nearest spot are kept contiguous rather than strided, so that a
 # multi-leg structure placing a wing a fixed number of dollars from its short
 # leg has an unbroken ladder to land on. This has to reach past the short
 # strike, not just around the money: at 30 on SPY the 16-delta put sat 40
 # points out, in the strided region, and every 5-wide condor and vertical was
-# correctly refused for a ladder that only looked coarse because of the
-# thinning.
+# refused for a ladder that only looked coarse because of the thinning.
 UNSTRIDED_CORE = 60
-DELTA_TOLERANCE = 0.05  # beyond this the variant is refused: build.MAX_DELTA_MISS
 DAYS_PER_YEAR = 365.0
 
 # tastytrade's own expected-move convention: the ATM straddle blended with
@@ -203,7 +195,7 @@ class Cycle:
             return points[0][1]
         if price >= points[-1][0]:
             return points[-1][1]
-        for (k0, v0), (k1, v1) in zip(points, points[1:]):
+        for (k0, v0), (k1, v1) in pairwise(points):
             if k0 <= price <= k1:
                 if k1 == k0:
                     return v0
@@ -316,10 +308,14 @@ def is_monthly(expiration) -> bool:
     return expiration.expiration_type == MONTHLY_EXPIRATION_TYPE
 
 
-def choose_expiration(chain, target_dte: int):
-    live = [
+def _live_monthlies(chain) -> list:
+    return [
         e for e in chain.expirations if e.days_to_expiration >= 0 and is_monthly(e)
     ]
+
+
+def choose_expiration(chain, target_dte: int):
+    live = _live_monthlies(chain)
     if not live:
         return None
     return min(live, key=lambda e: abs(e.days_to_expiration - target_dte))
@@ -341,16 +337,11 @@ async def fetch_cycle(
     chain = max(chains, key=lambda c: len(c.expirations))
     available = tuple(
         (e.expiration_date, e.days_to_expiration)
-        for e in sorted(chain.expirations, key=lambda e: e.expiration_date)
-        if e.days_to_expiration >= 0 and is_monthly(e)
+        for e in sorted(_live_monthlies(chain), key=lambda e: e.expiration_date)
     )
     if expiration is not None:
         exp = next(
-            (
-                e
-                for e in chain.expirations
-                if e.expiration_date == expiration and is_monthly(e)
-            ),
+            (e for e in _live_monthlies(chain) if e.expiration_date == expiration),
             None,
         )
     else:
