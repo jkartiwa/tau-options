@@ -175,11 +175,9 @@ class Cycle:
         rather than under the ATM average.
 
         Linear in strike between the two bracketing quoted strikes, flat
-        outside the quoted range. Interpolating rather than snapping to the
-        nearest strike is worth the handful of extra lines here: a breakeven is
-        pushed off the strike grid by the credit almost by construction, so
-        nearest-strike would quantise the vol to the ladder spacing on exactly
-        the boundaries this exists to price.
+        outside the quoted range. Interpolated rather than snapped to the
+        nearest strike because the credit pushes a breakeven off the strike
+        grid, so snapping would quantise the vol on exactly these boundaries.
 
         `None` when that side of the chain carries no IV at all, which is the
         caller's cue to fall back to `atm_iv` for that boundary.
@@ -251,12 +249,10 @@ def _stride(items: list, cap: int, core: int = 0) -> list:
     sample still lands within a strike or two of the target.
 
     `core` entries at the head are kept contiguous. The caller orders each
-    side outward from spot, so the core is the near-the-money region — where
-    multi-leg structures resolve their wings by dollar offset. A strided
-    ladder can silently drop the strike a `ref + 10` leg points at, and the
-    resulting spread is narrower than the label says. Keeping the core intact
-    reduces that; `build.py` reports the residual miss rather than folding it
-    into a number that lies.
+    side outward from spot, so the core is the near-the-money region, where
+    multi-leg structures place wings by dollar offset from a short strike.
+    Striding there could drop the strike a `ref + 10` leg points at;
+    `build.py` reports any remaining miss.
     """
     if len(items) <= cap:
         return items
