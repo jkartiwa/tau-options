@@ -1,7 +1,7 @@
 """Short strangle — two naked short wings, neutral.
 
-The baseline every other structure is compared against. No references between
-the legs; each wing searches a small delta ladder.
+Undefined risk on both sides. No references between the legs; each wing
+searches its own small delta ladder.
 """
 
 from tau.payoff import OptionType, Side
