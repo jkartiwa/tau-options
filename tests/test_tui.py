@@ -1,11 +1,20 @@
 import asyncio
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from textual.widgets import DataTable
 
+from tau import broker as broker_mod
+from tau import propose as propose_mod
+from tau.catalyst import Brief
+from tau.chain import Cycle, Leg
+from tau.history import Bar, History
 from tau.payoff import OptionType
+from tau.propose import propose_on
 from tau.screen import Candidate
-from tau.tui.app import TauApp
+from tau.tui.app import TauApp, _fmt
+from tau.tui.detail import DetailPane
 
 C, P = OptionType.CALL, OptionType.PUT
 
@@ -47,7 +56,6 @@ def _no_broker_network(monkeypatch):
     """The broker dry-run talks to the live account API; the test suite must
     never. The enrichment falls back to the formula estimate when the account
     is unreachable, and these stubs simulate exactly that."""
-    from tau import broker as broker_mod
 
     async def no_account(session):
         return None
@@ -64,8 +72,6 @@ def symbols(a: TauApp) -> list[str]:
 
 
 def _row_text(a: TauApp, index: int) -> str:
-    from textual.widgets import DataTable
-
     table = a.query_one("#table", DataTable)
     return " ".join(str(cell) for cell in table.get_row_at(index))
 
@@ -141,13 +147,9 @@ async def test_detail_pane_renders_and_chain_loads_on_enter():
     """Guards the Textual base-class collision that silently deadlocked the
     app: mounting a widget whose helper shadowed MessagePump._context stopped
     message dispatch entirely."""
-    from datetime import date as _date
-
-    from tau.chain import Cycle, Leg
-
     cycle = Cycle(
         symbol="HIGH",
-        expiration=_date(2026, 9, 4),
+        expiration=date(2026, 9, 4),
         dte=40,
         underlying=100.0,
         legs=(
@@ -186,11 +188,6 @@ async def test_detail_pane_renders_and_chain_loads_on_enter():
 
 
 def _why_app(history=None, brief=None, calls=None):
-    from datetime import UTC as _UTC
-
-    from tau.catalyst import Brief
-    from tau.history import Bar, History
-
     calls = calls if calls is not None else []
     history = history or History(
         symbol="HIGH",
@@ -204,7 +201,7 @@ def _why_app(history=None, brief=None, calls=None):
             )
             for i in range(60, 0, -1)
         ),
-        fetched_at=datetime.now(_UTC),
+        fetched_at=datetime.now(UTC),
     )
     brief = brief or Brief(
         symbol="HIGH",
@@ -214,7 +211,7 @@ def _why_app(history=None, brief=None, calls=None):
         confidence="high",
         note="Event passed; IV should bleed.",
         headlines=(),
-        fetched_at=datetime.now(_UTC),
+        fetched_at=datetime.now(UTC),
     )
 
     async def history_loader(candidate):
@@ -237,8 +234,6 @@ def _trip_broker_breaker() -> None:
     """Put the breaker in the state consecutive dry-run failures put it in.
     What counts as a failure and how it recovers is covered in test_broker;
     these tests are about what the screen says once it has tripped."""
-    from tau import broker as broker_mod
-
     for _ in range(broker_mod.MAX_CONSECUTIVE_FAILURES):
         broker_mod._record_failure()
 
@@ -281,8 +276,6 @@ async def test_why_is_cached_per_symbol():
 async def test_why_does_not_cancel_an_in_flight_chain_load():
     """Both are exclusive workers; sharing the default group would make one
     keypress silently kill the other's fetch."""
-    from tau.chain import Cycle, Leg
-
     started = asyncio.Event()
     chain_calls = []
 
@@ -348,9 +341,6 @@ def _proposal(symbol, dte=40):
     rank view reads structures now, and a duck-typed stand-in would only prove
     the stand-in works. Return on capital is identical across these, so `dte`
     alone decides the annualized ordering."""
-    from tau.chain import Cycle, Leg
-    from tau.propose import propose_on
-    from tau.screen import Candidate as Cand
 
     def leg(strike, option_type, delta, mid):
         return Leg(
@@ -374,7 +364,7 @@ def _proposal(symbol, dte=40):
         legs=tuple(legs),
         fetched_at=datetime.now(UTC),
     )
-    candidate = Cand(
+    candidate = Candidate(
         symbol=symbol,
         ivr=50.0,
         ivp=50.0,
@@ -534,8 +524,6 @@ async def test_variants_from_the_screen_view_loads_the_chain_first():
     """`v` on an unpriced name has nothing to show, so it fetches rather than
     opening an empty table — and the fetched cycle becomes a full proposal,
     so ranking it afterwards costs nothing."""
-    from tau.chain import Cycle, Leg
-
     calls = []
 
     async def chain_loader(candidate):
@@ -633,8 +621,6 @@ async def test_picker_will_not_leave_every_strategy_disabled():
 async def test_chain_load_survives_missing_credentials(monkeypatch):
     """No env, no broker dry-run, no crash: the chain load still caches the
     proposal with its formula figures and the detail pane renders."""
-    from tau.chain import Cycle, Leg
-
     cycle = Cycle(
         symbol="HIGH",
         expiration=date(2026, 9, 4),
@@ -674,11 +660,6 @@ async def test_rank_table_marks_broker_and_formula_bpr_sources(monkeypatch):
     """Broker-sourced buying power renders plain under the `BPR` header;
     the formula estimate carries a tilde. The row itself has to say which
     model the number came from."""
-    from textual.widgets import DataTable
-
-    from tau import broker as broker_mod
-    from tau import propose as propose_mod
-    from tau.tui.app import _fmt
 
     async def loader():
         return [FIXTURE[0]]  # just HIGH
@@ -729,11 +710,6 @@ async def test_chain_load_renders_before_the_broker_answers(monkeypatch):
     """The drill-in must never wait on the account API. The variants show up
     on the formula figures the `~` marks as estimates, and the broker upgrades
     the rows it answers for afterwards."""
-    from dataclasses import replace
-
-    from tau import propose as propose_mod
-    from tau.chain import Cycle, Leg
-
     cycle = Cycle(
         symbol="HIGH",
         expiration=date(2026, 9, 4),
@@ -791,11 +767,6 @@ async def test_the_variants_drill_in_upgrades_when_the_broker_answers(monkeypatc
     """Opening the drill-in before enrichment returns freezes a snapshot of
     the formula structures. The broker figures landing behind it must reach
     the rendered rows, not just the proposal cache."""
-    from dataclasses import replace
-
-    from tau import propose as propose_mod
-    from tau.chain import Cycle, Leg
-
     cycle = Cycle(
         symbol="HIGH",
         expiration=date(2026, 9, 4),
@@ -856,8 +827,6 @@ async def test_the_meta_line_says_when_the_broker_stopped_pricing(monkeypatch):
     stderr for the life of the app. On screen the meta line is the only thing
     separating "the broker stopped answering" from "these were always
     estimates"."""
-    from tau import broker as broker_mod
-
     a = app()
     async with a.run_test() as pilot:
         await pilot.pause()
@@ -873,8 +842,6 @@ async def test_the_meta_line_says_when_the_broker_stopped_pricing(monkeypatch):
 def _pane_lines(proposal):
     """The detail pane as it renders for a name in the rank view — the whole
     pane, because the winner is shown twice in it."""
-    from tau.tui.detail import DetailPane
-
     return DetailPane()._cycle_lines(proposal.candidate, proposal)
 
 
@@ -907,8 +874,6 @@ def test_the_detail_ladder_compares_siblings_on_one_margin_model():
     straddle the cut. `ANN` is read off the buying-power figure and this
     column carries no source marker, so a mixed ladder would read as though
     the unpriced strikes pay more when the whole gap is the margin model."""
-    from dataclasses import replace
-
     p = _proposal("HIGH")
     family = _family(p)
     assert len(family) > 2
@@ -948,9 +913,6 @@ async def test_a_breaker_trip_on_the_drill_in_path_reaches_the_meta_line(monkeyp
     """Working from screen mode, a user presses `c` on one name after
     another. That is a path the breaker can trip on, and nothing else
     repaints the chrome."""
-    from tau import broker as broker_mod
-    from tau.chain import Cycle, Leg
-
     cycle = Cycle(
         symbol="HIGH",
         expiration=date(2026, 9, 4),
@@ -997,8 +959,6 @@ def test_the_detail_pane_never_shows_two_different_anns_for_one_trade():
     This is the ordinary shape on any name with more passing variants than
     the pull covers, not an edge case.
     """
-    from dataclasses import replace
-
     p = _proposal("HIGH")
     family = _family(p)
     unpriced = next(s for s in reversed(family) if s.ok)
@@ -1028,8 +988,6 @@ def test_a_uniformly_priced_pane_keeps_the_broker_figure():
     """The fallback is the mixed ladder's, not a blanket retreat: when the
     broker priced the whole ladder the pane stays on its numbers and says so.
     """
-    from dataclasses import replace
-
     p = _proposal("HIGH")
     family = _family(p)
     uniform = replace(

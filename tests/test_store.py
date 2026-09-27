@@ -1,4 +1,6 @@
 import json
+import sqlite3
+from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import pytest
@@ -155,8 +157,6 @@ def test_an_open_profit_tail_is_stored_as_absent_not_as_a_number():
 def test_a_pick_records_which_margin_model_produced_its_figures():
     """`bpr`, `roc` and `annualized_roc` mean different things depending on
     whether the broker or the formula produced them, so the row says which."""
-    from dataclasses import replace
-
     p = propose_on(cand("SPY"), cycle("SPY"))
     formula_scan = store.log_scan({}, [])
     store.log_picks(formula_scan, [p])
@@ -182,8 +182,6 @@ def test_a_log_written_before_the_column_existed_still_opens_and_appends():
     """The migration is additive: an existing database gains the column, its
     rows keep every value they had, and the absent figure reads as unknown
     rather than as a guess."""
-    import sqlite3
-
     path = store.db_path()
     legacy_columns = [c for c in store._PICK_COLUMNS if c != "bpr_source"]
     legacy_schema = store._SCHEMA.replace("    bpr_source TEXT,\n", "")

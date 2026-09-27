@@ -1,32 +1,26 @@
 """The broker dry-run layer: order construction and the buying-power pull,
 with every failure mode landing back on the formula estimate."""
 
+import asyncio
+import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from tastytrade.order import InstrumentType, OrderAction, OrderTimeInForce
 
-from tau.broker import broker_bpr_for, margin_account, order_for
+from tau import broker as broker_mod
+from tau import propose as propose_mod
+from tau.broker import broker_bpr_for, margin_account, margin_requirement, order_for
 from tau.build import build
 from tau.chain import Cycle, Leg
 from tau.payoff import OptionType, Side
+from tau.screen import Candidate
 from tau.strategy import Bias, Delta, LegSpec, Strategy
 
 C, P = OptionType.CALL, OptionType.PUT
 SHORT = Side.SHORT
-
-
-@pytest.fixture(autouse=True)
-def _reset_account_cache():
-    """`margin_account` resolves once per process; each test starts clean."""
-    from tau import broker as broker_mod
-
-    broker_mod._margin_account = False
-    broker_mod._account_retry_at = 0.0
-    yield
-    broker_mod._margin_account = False
-    broker_mod._account_retry_at = 0.0
 
 
 def leg(strike, option_type, delta, mid):
@@ -72,8 +66,6 @@ def strangle():
 
 
 def test_order_for_builds_a_dry_run_limit_order():
-    from tastytrade.order import InstrumentType, OrderAction, OrderTimeInForce
-
     order = order_for(strangle())
     assert order is not None
     assert order.price == Decimal("2.4")  # net credit per share
@@ -144,8 +136,6 @@ async def test_broker_bpr_falls_back_on_a_generic_exception():
 
 @pytest.mark.asyncio
 async def test_margin_account_picks_the_open_margin_account(monkeypatch):
-    from tau import broker as broker_mod
-
     cash = SimpleNamespace(is_closed=False, margin_or_cash="Cash")
     margin = SimpleNamespace(is_closed=False, margin_or_cash="Margin")
     closed_margin = SimpleNamespace(is_closed=True, margin_or_cash="Margin")
@@ -168,8 +158,6 @@ async def test_margin_account_picks_the_open_margin_account(monkeypatch):
 async def test_margin_account_falls_back_when_the_account_list_cannot_be_read(
     monkeypatch,
 ):
-    from tau import broker as broker_mod
-
     async def fake_get(session):
         raise RuntimeError("403: insufficient scopes")
 
@@ -179,8 +167,6 @@ async def test_margin_account_falls_back_when_the_account_list_cannot_be_read(
 
 @pytest.mark.asyncio
 async def test_margin_account_is_none_when_there_is_no_margin_account(monkeypatch):
-    from tau import broker as broker_mod
-
     async def fake_get(session):
         return [SimpleNamespace(is_closed=False, margin_or_cash="Cash")]
 
@@ -225,10 +211,6 @@ def test_order_price_is_rounded_to_the_broker_tick():
 async def test_account_resolution_happens_once_under_concurrency(monkeypatch):
     """Six pipelines start at once at the top of a scan. They must produce
     one account-list request between them, not six."""
-    import asyncio
-
-    from tau import broker as broker_mod
-
     margin = SimpleNamespace(is_closed=False, margin_or_cash="Margin")
     calls = []
 
@@ -250,8 +232,6 @@ def test_a_debit_signed_margin_requirement_is_read_as_the_requirement():
     the ordinary successful response arrives negative — reading that as
     garbage turns the whole feature off with nothing to show for it. The
     magnitude is the requirement whichever way it is signed."""
-    from tau.broker import margin_requirement
-
     sdk_signed = SimpleNamespace(isolated_order_margin_requirement=Decimal("-3651.00"))
     assert margin_requirement(sdk_signed) == pytest.approx(3651.0)
 
@@ -260,8 +240,6 @@ def test_a_debit_signed_margin_requirement_is_read_as_the_requirement():
 
 
 def test_a_missing_zero_or_unusable_margin_requirement_is_no_figure():
-    from tau.broker import margin_requirement
-
     assert margin_requirement(SimpleNamespace()) is None
     assert (
         margin_requirement(SimpleNamespace(isolated_order_margin_requirement=None))
@@ -301,10 +279,6 @@ async def test_a_debit_signed_dry_run_produces_a_broker_figure():
 async def test_the_breaker_stops_calling_after_consecutive_failures(caplog):
     """Three failures in a row is a broker that is not answering. Every call
     after that is skipped, and the reason is said once."""
-    import logging
-
-    from tau import broker as broker_mod
-
     attempts = []
 
     class DeadAccount:
@@ -326,7 +300,6 @@ async def test_the_breaker_stops_calling_after_consecutive_failures(caplog):
 async def test_a_success_between_failures_keeps_the_breaker_closed():
     """The breaker counts *consecutive* failures: an API that answers most of
     the time is working, not broken."""
-    from tau import broker as broker_mod
 
     class FakeEffect:
         isolated_order_margin_requirement = Decimal("-3651.00")
@@ -350,10 +323,6 @@ async def test_the_breaker_re_enables_itself_after_the_cooldown(monkeypatch):
     """A TUI session runs for hours. One rough patch must not end broker
     pricing for the rest of it, so the trip is time-boxed and a single probe
     decides whether it stays."""
-    import asyncio
-
-    from tau import broker as broker_mod
-
     monkeypatch.setattr(broker_mod, "BREAKER_COOLDOWN", 0.05)
 
     class FakeEffect:
@@ -390,10 +359,6 @@ async def test_the_breaker_re_enables_itself_after_the_cooldown(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_failed_probe_trips_the_breaker_again(monkeypatch):
-    import asyncio
-
-    from tau import broker as broker_mod
-
     monkeypatch.setattr(broker_mod, "BREAKER_COOLDOWN", 0.05)
 
     attempts = []
@@ -423,10 +388,6 @@ async def test_a_failed_probe_trips_the_breaker_again(monkeypatch):
 async def test_only_one_probe_goes_out_after_a_cooldown(monkeypatch):
     """A rank pass has several dry-runs in flight at once. They must not all
     become probes the instant the cooldown lapses."""
-    import asyncio
-
-    from tau import broker as broker_mod
-
     monkeypatch.setattr(broker_mod, "BREAKER_COOLDOWN", 0.05)
 
     started = asyncio.Event()
@@ -471,10 +432,6 @@ async def test_a_transient_account_failure_is_retried_after_the_cooldown(monkeyp
     an hours-long session over a blip, on the one path a rank pass hits
     six-wide at its most concurrent moment — so the failure is time-boxed on
     the breaker's clock and then tried once more."""
-    import asyncio
-
-    from tau import broker as broker_mod
-
     monkeypatch.setattr(broker_mod, "BREAKER_COOLDOWN", 0.05)
     margin = SimpleNamespace(is_closed=False, margin_or_cash="Margin")
     calls = []
@@ -506,8 +463,6 @@ async def test_a_positively_resolved_absence_of_a_margin_account_is_final(monkey
     """The account list answering with no open margin account is an answer,
     not a failure: the token and the account list are fixed for the process,
     so re-asking every batch would only stack requests."""
-    from tau import broker as broker_mod
-
     calls = []
 
     async def fake_get(session):
@@ -531,10 +486,6 @@ async def test_the_trip_is_logged_once_when_the_failures_land_together(caplog):
     line per failure goes to stderr through `logging.lastResort`, straight
     into the middle of `tau rank`'s table — ten deep per symbol, and a rank
     pass runs six symbols wide."""
-    import asyncio
-    import logging
-
-    from tau import broker as broker_mod
 
     class DeadAccount:
         async def get_order_buying_power_effect(self, session, order):
@@ -560,11 +511,6 @@ async def test_a_failed_probe_after_the_cooldown_says_so_again(caplog):
     """The trip is announced on the way in, and a probe that fails after the
     cooldown is a new way in. Silencing that would leave a session with no
     record of anything past the first two minutes."""
-    import asyncio
-    import logging
-
-    from tau import broker as broker_mod
-
     monkey = broker_mod.BREAKER_COOLDOWN
     broker_mod.BREAKER_COOLDOWN = 0.05
     try:
@@ -623,10 +569,6 @@ async def test_pricing_a_structure_touches_only_the_dry_run_calculation():
 async def test_a_whole_proposal_is_priced_without_touching_the_order_book(monkeypatch):
     """The pipeline level: every structure in a proposal's shortlist gets a
     broker figure, and the account never sees anything but the calculation."""
-    from tau import broker as broker_mod
-    from tau import propose as propose_mod
-    from tau.screen import Candidate
-
     cy = strangle().cycle
     strategy = Strategy(
         name="t-strangle",

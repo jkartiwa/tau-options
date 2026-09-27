@@ -6,6 +6,7 @@ import pytest
 
 from tau.chain import (
     MAX_STRIKES_PER_SIDE,
+    UNSTRIDED_CORE,
     Cycle,
     Leg,
     choose_expiration,
@@ -153,8 +154,6 @@ def test_strike_window_keeps_the_near_money_ladder_unbroken():
     """Multi-leg structures place a wing a fixed number of dollars from their
     short leg. Striding right through the money would delete the strike that
     wing points at, and the spread would come back narrower than its label."""
-    from tau.chain import UNSTRIDED_CORE
-
     strikes = [FakeStrike(s) for s in range(500, 900)]
     sel = select_strikes(strikes, underlying=684.0, dte=40, iv_hint=0.194)
     prices = sorted(s.strike_price for s in sel)

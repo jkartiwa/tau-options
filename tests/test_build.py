@@ -3,7 +3,15 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from tau.build import MAX_DELTA_MISS, MAX_REF_MISS, best, build, evaluate, rank
+from tau.build import (
+    MAX_DELTA_MISS,
+    MAX_REF_MISS,
+    best,
+    build,
+    evaluate,
+    rank,
+    uniformly_broker_priced,
+)
 from tau.chain import Cycle, Leg
 from tau.payoff import OptionType, Side, pop_over_intervals, profitable_intervals
 from tau.strategies import ALL, STRATEGIES
@@ -525,8 +533,6 @@ def _shortlist_priced(structures, count):
     """The first `count` passing variants carrying a broker figure, the rest
     left on the formula — the shape `enrich_with_broker_bpr` produces on a
     name with more passing variants than the bounded pull covers."""
-    from dataclasses import replace
-
     priced = 0
     out = []
     for s in rank(structures):
@@ -543,8 +549,6 @@ def test_a_partly_priced_ladder_orders_on_the_formula_throughout():
     ones above them carry the broker figure. Interleaving the two floats
     whichever was priced by the more generous model to the top of its own
     drill-in."""
-    from tau.build import uniformly_broker_priced
-
     structures = evaluate(LADDERED_STRANGLE, cycle())
     passing = [s for s in structures if s.ok]
     assert len(passing) > 2  # a real ladder, not a single row
@@ -557,10 +561,6 @@ def test_a_partly_priced_ladder_orders_on_the_formula_throughout():
 
 
 def test_a_fully_priced_ladder_orders_on_the_broker_figures():
-    from dataclasses import replace
-
-    from tau.build import uniformly_broker_priced
-
     structures = evaluate(LADDERED_STRANGLE, cycle())
     # every passing row priced, and the widest one flattered enough to lead
     passing = rank([s for s in structures if s.ok])
@@ -573,8 +573,6 @@ def test_a_fully_priced_ladder_orders_on_the_broker_figures():
 
 
 def test_ordering_on_a_metric_that_ignores_buying_power_is_unaffected():
-    from tau.build import uniformly_broker_priced
-
     structures = evaluate(LADDERED_STRANGLE, cycle())
     mixed = _shortlist_priced(structures, 1)
     assert uniformly_broker_priced(mixed, "credit")

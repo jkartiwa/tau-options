@@ -9,11 +9,11 @@ disable enrichment for every test after it.
 
 import pytest
 
+from tau import broker as broker_mod
+
 
 @pytest.fixture(autouse=True)
 def _fresh_broker_state():
-    from tau import broker as broker_mod
-
     def reset():
         broker_mod._margin_account = False
         broker_mod._account_retry_at = 0.0
