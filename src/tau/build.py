@@ -20,7 +20,6 @@ a variant that survives to be priced is one whose label describes the
 contracts it holds. Fewer rows on a thin day is the accepted cost.
 """
 
-import operator
 from dataclasses import dataclass, replace
 from math import inf
 
@@ -40,7 +39,8 @@ from tau.payoff import (
     worst_loss_up,
 )
 from tau.strategy import (
-    UNCONSTRAINABLE_METRICS,
+    BPR_METRICS,
+    OPS,
     Atm,
     Delta,
     LegSpec,
@@ -64,14 +64,6 @@ MAX_REF_MISS = 0.25
 # strategy, including one with no delta leg (whose `worst_off_target` is None
 # and would fail any constraint), and because it refuses before pricing.
 MAX_DELTA_MISS = 0.05
-
-_OPS = {
-    "<": operator.lt,
-    "<=": operator.le,
-    ">": operator.gt,
-    ">=": operator.ge,
-    "==": operator.eq,
-}
 
 
 @dataclass(frozen=True)
@@ -405,7 +397,7 @@ def _check(structure: Structure) -> tuple[ConstraintResult, ...]:
             if isinstance(rule.value, str)
             else float(rule.value)
         )
-        if actual is None or limit is None or not _OPS[rule.op](actual, limit):
+        if actual is None or limit is None or not OPS[rule.op](actual, limit):
             results.append(ConstraintResult(rule, actual))
     return tuple(results)
 
@@ -485,24 +477,16 @@ def evaluate_all(strategies, cycle: Cycle) -> list[Structure]:
     return [s for strategy in strategies for s in evaluate(strategy, cycle)]
 
 
-# Metrics computed from the buying-power figure, so two structures whose
-# `bpr` came from different margin models do not compare on them. The same
-# set `strategy` refuses a `Require` on, and for the same underlying reason —
-# one name each for the two consequences, but never two definitions to keep
-# in step.
-MODEL_SENSITIVE_METRICS = UNCONSTRAINABLE_METRICS
-
-
 def comparable_on(structures: list[Structure], key: str) -> list[Structure]:
     """`structures` narrowed to one margin model when `key` depends on which
     model produced it.
 
     The broker-priced structures when there are any, everything otherwise —
     so a formula estimate can never beat a broker figure on a comparison that
-    reads buying power, and a run with no broker figures at all ranks exactly
-    as it did before the dry-run existed.
+    reads buying power, and a run with no broker figures ranks on the formula
+    alone.
     """
-    if key not in MODEL_SENSITIVE_METRICS:
+    if key not in BPR_METRICS:
         return structures
     priced = [s for s in structures if s.bpr_source == "broker"]
     return priced or structures
@@ -526,7 +510,7 @@ def uniformly_broker_priced(structures: list[Structure], key: str) -> bool:
     (`propose.BROKER_BPR_TOP`), so a name with more passing variants than that
     has some rows on one margin model and some on the other.
     """
-    if key not in MODEL_SENSITIVE_METRICS:
+    if key not in BPR_METRICS:
         return True
     passing = [s for s in structures if s.ok]
     return bool(passing) and all(s.bpr_source == "broker" for s in passing)
