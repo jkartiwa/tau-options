@@ -337,10 +337,9 @@ CALL_MIDS = {100: 3.50, 105: 2.00, 110: 1.20, 115: 0.80, 120: 0.50}
 
 
 def _proposal(symbol, dte=40):
-    """A real proposal off a real ladder, run through the real engine — the
-    rank view reads structures now, and a duck-typed stand-in would only prove
-    the stand-in works. Return on capital is identical across these, so `dte`
-    alone decides the annualized ordering."""
+    """A real proposal off a real ladder, run through the real engine, since
+    the rank view reads structures. Return on capital is identical across
+    these, so `dte` alone decides the annualized ordering."""
 
     def leg(strike, option_type, delta, mid):
         return Leg(
@@ -870,10 +869,9 @@ def _family(proposal):
 
 
 def test_the_detail_ladder_compares_siblings_on_one_margin_model():
-    """The broker prices a bounded shortlist, so a strategy's ladder can
-    straddle the cut. `ANN` is read off the buying-power figure and this
-    column carries no source marker, so a mixed ladder would read as though
-    the unpriced strikes pay more when the whole gap is the margin model."""
+    """A ladder straddling the broker's bounded shortlist is shown on the
+    formula estimate throughout. The `ANN` column has no source marker, so a
+    mixed ladder would show a margin-model gap as a return difference."""
     p = _proposal("HIGH")
     family = _family(p)
     assert len(family) > 2
@@ -950,15 +948,9 @@ async def test_a_breaker_trip_on_the_drill_in_path_reaches_the_meta_line(monkeyp
 
 
 def test_the_detail_pane_never_shows_two_different_anns_for_one_trade():
-    """The winner is printed twice in this pane: once in its own summary line
-    and again as the marked row of the ladder below it. `ANN` is read off the
-    buying-power figure, and a ladder straddling the bounded pull is shown on
-    the formula — so the summary has to follow it there, or the same trade
-    carries two different numbers under the same label four lines apart.
-
-    This is the ordinary shape on any name with more passing variants than
-    the pull covers, not an edge case.
-    """
+    """The winner appears twice in this pane: in its summary line and as the
+    marked ladder row. When the ladder falls back to the formula estimate, the
+    summary must follow, so one trade never shows two `ANN` figures."""
     p = _proposal("HIGH")
     family = _family(p)
     unpriced = next(s for s in reversed(family) if s.ok)
