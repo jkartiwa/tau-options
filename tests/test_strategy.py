@@ -23,6 +23,10 @@ def spec(id_, type_=P, side=SHORT, strike=None, qty=1):
     return LegSpec(id_, type=type_, side=side, strike=strike or Delta(0.16), qty=qty)
 
 
+def strat(*legs, bias=Bias.NEUTRAL, **kwargs):
+    return Strategy(name="s", bias=bias, legs=list(legs), **kwargs)
+
+
 def test_every_shipped_strategy_parses_and_validates():
     """The loader test that matters: a malformed definition must fail at
     import, not halfway through a scan."""
@@ -60,41 +64,31 @@ def test_with_min_pop_overrides_every_selected_strategy_floor():
 
 
 def test_with_min_pop_appends_a_rule_when_a_strategy_has_none():
-    strategy = Strategy(name="s", bias=Bias.NEUTRAL, legs=[spec("a")])
-    (overridden,) = with_min_pop((strategy,), 0.65)
+    (overridden,) = with_min_pop((strat(spec("a")),), 0.65)
     assert overridden.require == (Require("pop", ">=", 0.65),)
 
 
 def test_scalar_selector_is_a_one_element_search():
-    strategy = Strategy(
-        name="s", bias=Bias.NEUTRAL, legs=[spec("a", strike=Delta(0.16))]
-    )
+    strategy = strat(spec("a", strike=Delta(0.16)))
     assert strategy.variant_count == 1
     assert len(strategy.variants()) == 1
 
 
 def test_list_selectors_multiply_into_variants():
-    strategy = Strategy(
-        name="s",
-        bias=Bias.NEUTRAL,
-        legs=[
-            spec("a", strike=Delta([0.16, 0.30])),
-            spec("b", type_=C, strike=Delta([0.16, 0.20, 0.30])),
-        ],
+    strategy = strat(
+        spec("a", strike=Delta([0.16, 0.30])),
+        spec("b", type_=C, strike=Delta([0.16, 0.20, 0.30])),
     )
     assert strategy.variant_count == 6
     assert len(strategy.variants()) == 6
 
 
 def test_variant_labels_name_the_shape():
-    strategy = Strategy(
-        name="s",
+    strategy = strat(
+        spec("short_put", strike=Delta(0.20)),
+        spec("short_call", type_=C, strike=Delta(0.25)),
+        spec("long_call", type_=C, side=LONG, strike=Ref("short_call", offset=10)),
         bias=Bias.BULLISH,
-        legs=[
-            spec("short_put", strike=Delta(0.20)),
-            spec("short_call", type_=C, strike=Delta(0.25)),
-            spec("long_call", type_=C, side=LONG, strike=Ref("short_call", offset=10)),
-        ],
     )
     assert [label for label, _ in strategy.variants()] == ["20Δ/25Δ+10"]
 
@@ -109,66 +103,42 @@ def test_selector_labels():
 
 def test_forward_reference_is_a_load_time_error():
     with pytest.raises(ValueError, match="not declared before it"):
-        Strategy(
-            name="s",
-            bias=Bias.NEUTRAL,
-            legs=[
-                spec("a", strike=Ref("b", offset=5)),
-                spec("b", strike=Delta(0.16)),
-            ],
-        )
+        strat(spec("a", strike=Ref("b", offset=5)), spec("b"))
 
 
 def test_duplicate_leg_id_is_rejected():
     with pytest.raises(ValueError, match="duplicate leg id"):
-        Strategy(name="s", bias=Bias.NEUTRAL, legs=[spec("a"), spec("a")])
+        strat(spec("a"), spec("a"))
 
 
 def test_ref_needs_exactly_one_of_offset_or_strikes():
     with pytest.raises(ValueError, match="exactly one"):
-        Strategy(
-            name="s",
-            bias=Bias.NEUTRAL,
-            legs=[spec("a"), spec("b", strike=Ref("a", offset=5, strikes=1))],
-        )
+        strat(spec("a"), spec("b", strike=Ref("a", offset=5, strikes=1)))
     with pytest.raises(ValueError, match="exactly one"):
-        Strategy(
-            name="s",
-            bias=Bias.NEUTRAL,
-            legs=[spec("a"), spec("b", strike=Ref("a"))],
-        )
+        strat(spec("a"), spec("b", strike=Ref("a")))
 
 
 def test_unknown_metric_in_a_constraint_is_rejected():
     with pytest.raises(ValueError, match="unknown metric"):
-        Strategy(
-            name="s",
-            bias=Bias.NEUTRAL,
-            legs=[spec("a")],
-            require=[Require("worst_loss_upp", "<=", 0)],
-        )
+        strat(spec("a"), require=[Require("worst_loss_upp", "<=", 0)])
 
 
 def test_unknown_rank_metric_is_rejected():
     with pytest.raises(ValueError, match="unknown rank metric"):
-        Strategy(name="s", bias=Bias.NEUTRAL, legs=[spec("a")], rank="sharpe")
+        strat(spec("a"), rank="sharpe")
 
 
 def test_variant_cap_fails_loudly_rather_than_truncating():
     ladder = [round(0.05 * i, 2) for i in range(1, 10)]  # 9 values
     with pytest.raises(ValueError, match="exceeds the"):
-        Strategy(
-            name="s",
-            bias=Bias.NEUTRAL,
-            legs=[
-                spec("a", strike=Delta(ladder)),
-                spec("b", type_=C, strike=Delta(ladder)),
-            ],
+        strat(
+            spec("a", strike=Delta(ladder)),
+            spec("b", type_=C, strike=Delta(ladder)),
         )
 
 
 def test_legs_are_frozen_into_tuples_for_a_stable_identity():
-    strategy = Strategy(name="s", bias=Bias.NEUTRAL, legs=[spec("a")])
+    strategy = strat(spec("a"))
     assert isinstance(strategy.legs, tuple)
     assert isinstance(strategy.require, tuple)
 
@@ -180,25 +150,9 @@ def test_a_constraint_cannot_be_built_on_a_buying_power_metric():
     row on a number it no longer displays."""
     for metric in ("bpr", "roc", "annualized_roc"):
         with pytest.raises(ValueError, match="cannot be required"):
-            Strategy(
-                name="t",
-                bias=Bias.NEUTRAL,
-                legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
-                require=[Require(metric, ">=", 0.05)],
-            )
+            strat(spec("p"), require=[Require(metric, ">=", 0.05)])
     # naming one as the comparison value is the same trap
     with pytest.raises(ValueError, match="cannot be required"):
-        Strategy(
-            name="t",
-            bias=Bias.NEUTRAL,
-            legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
-            require=[Require("credit", ">=", "bpr")],
-        )
+        strat(spec("p"), require=[Require("credit", ">=", "bpr")])
     # ranking on one is fine: nothing has been decided yet when it is read
-    ranked = Strategy(
-        name="t",
-        bias=Bias.NEUTRAL,
-        legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
-        rank="annualized_roc",
-    )
-    assert ranked.rank == "annualized_roc"
+    assert strat(spec("p"), rank="annualized_roc").rank == "annualized_roc"
