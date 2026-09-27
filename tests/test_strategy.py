@@ -11,9 +11,9 @@ from tau.strategy import (
     Moneyness,
     Ref,
     Require,
-    Strategy,
     with_min_pop,
 )
+from tests.factories import strat
 
 C, P = OptionType.CALL, OptionType.PUT
 LONG, SHORT = Side.LONG, Side.SHORT
@@ -21,10 +21,6 @@ LONG, SHORT = Side.LONG, Side.SHORT
 
 def spec(id_, type_=P, side=SHORT, strike=None, qty=1):
     return LegSpec(id_, type=type_, side=side, strike=strike or Delta(0.16), qty=qty)
-
-
-def strat(*legs, bias=Bias.NEUTRAL, **kwargs):
-    return Strategy(name="s", bias=bias, legs=list(legs), **kwargs)
 
 
 def test_every_shipped_strategy_parses_and_validates():

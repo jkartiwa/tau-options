@@ -9,6 +9,7 @@ from datetime import date
 from tau.chain import Cycle, Leg
 from tau.payoff import OptionType
 from tau.screen import Candidate
+from tau.strategy import Bias, Strategy
 
 C, P = OptionType.CALL, OptionType.PUT
 
@@ -59,3 +60,8 @@ def cycle(legs=None, underlying=100.0, dte=45, symbol="TEST") -> Cycle:
         underlying=underlying,
         legs=legs if legs is not None else ladder(),
     )
+
+
+def strat(*legs, bias=Bias.NEUTRAL, **kwargs) -> Strategy:
+    """A test strategy: the legs positionally, neutral unless told otherwise."""
+    return Strategy(name="s", bias=bias, legs=list(legs), **kwargs)

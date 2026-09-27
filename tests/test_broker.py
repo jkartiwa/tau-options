@@ -17,19 +17,16 @@ from tau.build import build
 from tau.chain import Cycle, Leg
 from tau.payoff import OptionType, Side
 from tau.screen import Candidate
-from tau.strategy import Bias, Delta, LegSpec, Strategy
+from tau.strategy import Delta, LegSpec
+from tests.factories import strat
 
 C, P = OptionType.CALL, OptionType.PUT
 SHORT = Side.SHORT
 
 
-STRANGLE = Strategy(
-    name="t-strangle",
-    bias=Bias.NEUTRAL,
-    legs=[
-        LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
-        LegSpec("short_call", type=C, side=SHORT, strike=Delta(0.20)),
-    ],
+STRANGLE = strat(
+    LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
+    LegSpec("short_call", type=C, side=SHORT, strike=Delta(0.20)),
 )
 
 
@@ -87,11 +84,7 @@ def test_order_for_is_none_without_priced_legs():
         underlying=100.0,
         legs=(),
     )
-    strategy = Strategy(
-        name="t-none",
-        bias=Bias.NEUTRAL,
-        legs=[LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20))],
-    )
+    strategy = strat(LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)))
     label, specs = strategy.variants()[0]
     assert order_for(build(strategy, label, specs, cy)) is None
 
@@ -184,11 +177,7 @@ def half_cent_put():
         underlying=100.0,
         legs=(leg(90, P, -0.20, 2.125),),
     )
-    strategy = Strategy(
-        name="t-csp",
-        bias=Bias.NEUTRAL,
-        legs=[LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20))],
-    )
+    strategy = strat(LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)))
     label, specs = strategy.variants()[0]
     structure = build(strategy, label, specs, cy)
     assert structure.complete

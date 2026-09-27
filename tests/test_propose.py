@@ -19,8 +19,8 @@ from tau.propose import (
     rank_proposals,
 )
 from tau.strategies import STRATEGIES
-from tau.strategy import Bias, Delta, LegSpec, Require, Strategy, with_min_pop
-from tests.factories import cand, cycle, ladder, leg
+from tau.strategy import Delta, LegSpec, Require, with_min_pop
+from tests.factories import cand, cycle, ladder, leg, strat
 
 C, P = OptionType.CALL, OptionType.PUT
 SHORT = Side.SHORT
@@ -69,13 +69,9 @@ def test_a_strategy_picks_its_own_winner_before_the_cross_comparison():
     """`rank` decides which of a strategy's own variants competes; the common
     metric decides between families. A strategy ranking on POP must put its
     highest-POP variant forward, not its highest-returning one."""
-    wide = Strategy(
-        name="t-pop-strangle",
-        bias=Bias.NEUTRAL,
-        legs=[
-            LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.32])),
-            LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.32])),
-        ],
+    wide = strat(
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.32])),
+        LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.32])),
         rank="pop",
     )
     cy = cycle()
@@ -91,13 +87,9 @@ def test_best_across_strategies_never_picks_a_pop_floor_failure():
     strategy's own `best()` already rejected for its pop: the naive
     highest-annualized_roc variant here fails the floor, so the winner has to
     be a lower-returning, passing one instead."""
-    wide = Strategy(
-        name="t-pop-gate",
-        bias=Bias.NEUTRAL,
-        legs=[
-            LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.32])),
-            LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.32])),
-        ],
+    wide = strat(
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.32])),
+        LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.32])),
         require=[Require("pop", ">=", 0.70)],
     )
     cy = cycle()
@@ -144,10 +136,8 @@ def test_proposal_reports_error_and_is_not_ok():
 def test_a_cycle_where_every_variant_fails_says_so_rather_than_going_blank():
     """A market condition, not a data problem — and the two read differently
     in the rank view, so they must not collapse into one silence."""
-    impossible = Strategy(
-        name="t-impossible",
-        bias=Bias.NEUTRAL,
-        legs=[LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20))],
+    impossible = strat(
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
         require=[Require("credit", ">=", 1_000)],
     )
     cy = cycle()

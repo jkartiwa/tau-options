@@ -9,8 +9,8 @@ from tau import store
 from tau.payoff import OptionType, Side
 from tau.propose import Proposal, propose_on
 from tau.strategies import STRATEGIES
-from tau.strategy import Bias, Delta, LegSpec, Require, Strategy
-from tests.factories import cand, cycle
+from tau.strategy import Delta, LegSpec, Require
+from tests.factories import cand, cycle, strat
 
 C, P = OptionType.CALL, OptionType.PUT
 SHORT = Side.SHORT
@@ -37,22 +37,16 @@ def test_identity_is_stable_for_the_same_definition():
 
 
 def test_identity_changes_when_a_leg_or_a_constraint_changes():
-    base = Strategy(
-        name="t",
-        bias=Bias.NEUTRAL,
-        legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
+    base = strat(
+        LegSpec("p", type=P, side=SHORT, strike=Delta(0.16)),
         require=[Require("pop", ">=", 0.5)],
     )
-    wider = Strategy(
-        name="t",
-        bias=Bias.NEUTRAL,
-        legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.30))],
+    wider = strat(
+        LegSpec("p", type=P, side=SHORT, strike=Delta(0.30)),
         require=[Require("pop", ">=", 0.5)],
     )
-    stricter = Strategy(
-        name="t",
-        bias=Bias.NEUTRAL,
-        legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
+    stricter = strat(
+        LegSpec("p", type=P, side=SHORT, strike=Delta(0.16)),
         require=[Require("pop", ">=", 0.7)],
     )
     digests = {store.strategy_identity(s)[1] for s in (base, wider, stricter)}
