@@ -6,25 +6,21 @@ engine exists. Every combination of selector values is enumerated, since any
 selector may carry a list. And each built variant is priced through the payoff
 engine and checked against its constraints.
 
-Two rules carry over from the single-structure version and matter more now
-that structures have four legs:
+Two rules hold throughout:
 
 A variant missing any leg's quote or greeks is invalid with its reason kept,
 never a partial credit — half a structure's credit is a wrong number, not an
 imprecise one.
 
 A strike that misses what was asked for by more than its tolerance is
-refused, never folded into the label. That was the original bug in this
-codebase, where a 0.38-delta leg came back labelled 16-delta, and a referenced
-wing landing on the wrong strike is the same failure wearing a different hat:
-the spread is narrower than the name says and the margin figure is wrong with
-it. Both selectors are gated the same way — see `MAX_DELTA_MISS` and
-`MAX_REF_MISS` — so a variant that survives to be priced is one whose label
-describes the contracts it holds. Fewer rows on a thin day is the price, and
-it is the right one: a row is a comparison, and a mislabelled row is a
-comparison against a trade that was never on offer.
+refused, never folded into the label. A 0.38-delta leg labelled 16-delta, or
+a 10-wide wing that resolved 7 wide, is a different trade with a different
+margin figure. Both selectors are gated (`MAX_DELTA_MISS`, `MAX_REF_MISS`), so
+a variant that survives to be priced is one whose label describes the
+contracts it holds. Fewer rows on a thin day is the accepted cost.
 """
 
+import operator
 from dataclasses import dataclass, replace
 from math import inf
 
@@ -60,20 +56,22 @@ from tau.strategy import (
 MAX_REF_MISS = 0.25
 
 # How far a delta-selected leg may land from the delta it asked for before the
-# variant is thrown out. The same rule as MAX_REF_MISS above, applied to the
-# other selector: a variant labelled 16Δ holding a 29.5-delta contract is a
-# different trade with a different probability of profit, and the label is the
-# thing a trader reads. On a partially quoted chain this is the routine
-# outcome rather than the rare one — the far wings are exactly the contracts
-# with no resting market, so they are the ones that never quote, and the
-# nearest surviving delta can be most of the way to the money.
+# variant is thrown out: the same rule as MAX_REF_MISS, for the other selector.
+# On a partially quoted chain the far wings are the contracts that never
+# quote, so the nearest surviving delta can be most of the way to the money.
 #
-# Gated here rather than in each strategy's `require` tuple on purpose. It
-# holds for every strategy including one with no delta leg at all, whose
-# `worst_off_target` is None and which a constraint would therefore auto-fail;
-# and it refuses before pricing, so no downstream number is ever derived from
-# a contract the label misdescribes.
+# Gated here rather than as a `Require` because it must hold for every
+# strategy, including one with no delta leg (whose `worst_off_target` is None
+# and would fail any constraint), and because it refuses before pricing.
 MAX_DELTA_MISS = 0.05
+
+_OPS = {
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+    "==": operator.eq,
+}
 
 
 @dataclass(frozen=True)
@@ -98,8 +96,9 @@ class BuiltLeg:
 
 @dataclass(frozen=True)
 class ConstraintResult:
+    """A constraint a structure failed, with the value it actually had."""
+
     require: Require
-    passed: bool
     actual: float | None
 
     @property
@@ -396,6 +395,8 @@ def _resolve_leg(
 
 
 def _check(structure: Structure) -> tuple[ConstraintResult, ...]:
+    """The constraints `structure` fails. A metric that cannot be computed
+    fails rather than passing by default."""
     results = []
     for rule in structure.strategy.require:
         actual = structure.metric(rule.metric)
@@ -404,22 +405,9 @@ def _check(structure: Structure) -> tuple[ConstraintResult, ...]:
             if isinstance(rule.value, str)
             else float(rule.value)
         )
-        passed = actual is not None and limit is not None and _compare(actual, rule.op, limit)
-        if not passed:
-            results.append(ConstraintResult(rule, False, actual))
+        if actual is None or limit is None or not _OPS[rule.op](actual, limit):
+            results.append(ConstraintResult(rule, actual))
     return tuple(results)
-
-
-def _compare(actual: float, op: str, limit: float) -> bool:
-    if op == "<":
-        return actual < limit
-    if op == "<=":
-        return actual <= limit
-    if op == ">":
-        return actual > limit
-    if op == ">=":
-        return actual >= limit
-    return actual == limit
 
 
 def build(
@@ -457,9 +445,7 @@ def _asked_miss(structure: Structure) -> tuple[float, float]:
 
 
 def _contracts(structure: Structure) -> tuple:
-    return tuple(
-        (b.leg.occ, b.spec.side, b.spec.qty) for b in structure.legs
-    )
+    return tuple((b.leg.occ, b.spec.side, b.spec.qty) for b in structure.legs)
 
 
 def evaluate(strategy: Strategy, cycle: Cycle) -> list[Structure]:
@@ -467,13 +453,9 @@ def evaluate(strategy: Strategy, cycle: Cycle) -> list[Structure]:
     Failures are kept, with their reasons.
 
     Variants that resolve to the same contracts are collapsed to one, keeping
-    whichever asked for closest to what it got — measured on the delta it
-    asked for as well as the strike, since a coarse ladder collapses a delta
-    ladder onto one contract exactly as readily as it collapses two widths. A
-    coarse ladder maps several requested offsets onto a single strike, and
-    showing a 25-wide wing and a 20-wide wing as two rows when they are the
-    same three contracts is the label-that-lies problem again — two rows, one
-    trade, and one of the labels wrong.
+    whichever asked for closest to what it got (see `_asked_miss`). A coarse
+    ladder maps several requested deltas or widths onto one strike, and two
+    rows for the same contracts means one of the labels is wrong.
     """
     seen: dict[tuple, int] = {}
     out: list[Structure] = []
@@ -540,9 +522,9 @@ def uniformly_broker_priced(structures: list[Structure], key: str) -> bool:
     """Whether every candidate that `key` would compare came from the broker.
 
     Asked of the passing rows only, because failures sort behind them as a
-    block and are never priced anyway. The broker pull is bounded at ten per
-    symbol, so a name with more passing variants than that has some rows on
-    one margin model and some on the other.
+    block and are never priced anyway. The broker pull is bounded per symbol
+    (`propose.BROKER_BPR_TOP`), so a name with more passing variants than that
+    has some rows on one margin model and some on the other.
     """
     if key not in MODEL_SENSITIVE_METRICS:
         return True
@@ -556,12 +538,10 @@ def rank(structures: list[Structure], key: str = "annualized_roc") -> list[Struc
     than vanishing.
 
     Ordered on one margin model throughout: the broker's when it priced every
-    passing variant, the formula's the moment it did not. Ranking a
-    broker-priced row against an estimate would float whichever was measured
-    by the more generous model — the broker's figure ran 30% above the
-    formula on MU, which costs that row a quarter of its annualized return
-    against a neighbour the broker never saw. Each row still displays and
-    labels its own figure; this is the sort key only.
+    passing variant, the formula's otherwise. The two models can differ by
+    30% or more, so mixing them would float whichever row was measured by the
+    more generous one. Each row still displays and labels its own figure;
+    this is the sort key only.
     """
     on_formula = not uniformly_broker_priced(structures, key)
 
