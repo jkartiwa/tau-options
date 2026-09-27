@@ -37,7 +37,8 @@ row costs a chain fetch), `--log`.
 `tau variants SYMBOL` — `--strategy NAME` (repeatable), `--dte`, `--min-pop`,
 `--sort METRIC`.
 
-An unknown `--strategy` is an error rather than an empty result.
+An unknown `--strategy` or `--sort` is an error rather than an empty or
+unsorted result.
 
 ## TUI keys
 
@@ -330,7 +331,7 @@ overlapping.
 
 ## Reference
 
-Scan parameters are constants rather than flags:
+Scan parameters live in code as constants; two have flag overrides:
 
 | Parameter | Value | Constant |
 |---|---|---|
