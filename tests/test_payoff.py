@@ -191,17 +191,9 @@ def test_naked_requirement_otm_term_is_side_aware():
 def test_naked_requirement_charges_an_itm_short_no_otm_credit():
     # ITM has no out-of-the-money distance to subtract: the 20% term is
     # charged in full. A short put at 110 against spot 100 is ITM.
-    itm_put = naked_side_requirement(100.0, 110.0, 2.00, P)
-    assert itm_put == pytest.approx(
-        max((0.20 * 100 - 0.0 + 2.00) * 100, (0.10 * 110 + 2.00) * 100, 50.0)
-    )
-    assert itm_put == pytest.approx(2200.0)
-
-    itm_call = naked_side_requirement(100.0, 90.0, 2.00, C)
-    assert itm_call == pytest.approx(
-        max((0.20 * 100 - 0.0 + 2.00) * 100, (0.10 * 90 + 2.00) * 100, 50.0)
-    )
-    assert itm_call == pytest.approx(2200.0)
+    # max((0.20*100 + 2.00)*100, (0.10*K + 2.00)*100, 50) = 2200 either way.
+    assert naked_side_requirement(100.0, 110.0, 2.00, P) == pytest.approx(2200.0)
+    assert naked_side_requirement(100.0, 90.0, 2.00, C) == pytest.approx(2200.0)
 
 
 def test_profitable_intervals_are_bounded_by_the_breakevens():
@@ -226,7 +218,6 @@ def test_pop_symmetric_breakevens_near_half_with_slight_drift_correction():
     # symmetric breakevens around spot -> the driftless-lognormal median
     # shift pushes PoP slightly above 0.5, never below.
     p = pop_over_intervals([(90.0, 110.0)], spot=100.0, iv=0.30, dte=45)
-    assert p is not None
     assert 0.5 < p < 0.7
 
 
@@ -247,9 +238,8 @@ def _flat_smile(vol):
 
 
 def test_a_flat_smile_reproduces_the_single_vol_answer_exactly():
-    """Requirement: a symmetric chain must be unchanged. Put-side and
-    call-side vol equal to the ATM vol has to land on the old number, not
-    near it."""
+    """Put-side and call-side vol equal to the ATM vol has to land on the
+    single-vol number exactly, not near it."""
     single = pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 45)
     local = pop_over_intervals(
         [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=_flat_smile(0.30)
@@ -261,7 +251,7 @@ def test_put_over_call_skew_lowers_pop_for_a_short_strangle():
     """A realistic 45-DTE equity smile: 30% ATM, the 88 breakeven priced off
     a 36% put and the 112 breakeven off a 27% call. The downside is fatter
     than the ATM lognormal says, so the estimate has to come down."""
-    smile = {OptionType.PUT: 0.36, OptionType.CALL: 0.27}
+    smile = {P: 0.36, C: 0.27}
     skewed = pop_over_intervals(
         [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=lambda price, t: smile[t]
     )
@@ -276,14 +266,14 @@ def test_a_missing_local_vol_falls_back_to_the_atm_vol_per_boundary():
     reverts to the ATM vol while the upper keeps its own."""
 
     def half_smile(price, option_type):
-        return None if option_type is OptionType.PUT else 0.27
+        return None if option_type is P else 0.27
 
     both_sides = pop_over_intervals(
         [(88.0, 112.0)],
         100.0,
         0.30,
         45,
-        iv_at=lambda price, t: {OptionType.PUT: 0.30, OptionType.CALL: 0.27}[t],
+        iv_at=lambda price, t: {P: 0.30, C: 0.27}[t],
     )
     degraded = pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 45, iv_at=half_smile)
     assert degraded == both_sides
