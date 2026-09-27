@@ -80,6 +80,15 @@ def test_todays_date_reaches_the_prompt():
     assert "2026-07-26" in client.calls[0]["system"]
 
 
+def test_the_output_budget_leaves_room_for_thinking_and_the_verdict():
+    """Adaptive thinking spends from max_tokens before the JSON verdict is
+    written; a budget that runs out mid-verdict degrades to
+    insufficient_signal, so the request must leave generous headroom."""
+    client = FakeClient(VERDICT)
+    classify("INTC", headlines(), today=date(2026, 7, 26), client=client)
+    assert client.calls[0]["max_tokens"] >= 16000
+
+
 def test_key_dates_are_carried_through():
     payload = dict(
         VERDICT,
