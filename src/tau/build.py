@@ -365,15 +365,14 @@ def _resolve_leg(
                 f"{spec.id}: {int(selector.strikes):+d} strikes from "
                 f"{reference.leg.strike:g} runs off the ladder"
             )
-        chosen = legs[index]
-        return BuiltLeg(spec, chosen, strike_miss=0.0)
+        return BuiltLeg(spec, legs[index], strike_miss=0.0)
 
     offset = float(selector.offset)
     target = reference.leg.strike + offset
     chosen = _nearest_by_strike(legs, target)
     achieved = chosen.strike - reference.leg.strike
     miss = abs(chosen.strike - target)
-    if offset and abs(achieved - offset) > MAX_REF_MISS * abs(offset):
+    if offset and miss > MAX_REF_MISS * abs(offset):
         return (
             f"{spec.id}: asked {offset:+g} from {reference.leg.strike:g}, "
             f"nearest strike is {achieved:+g} — ladder too coarse"
