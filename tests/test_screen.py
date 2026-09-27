@@ -1,24 +1,10 @@
 from datetime import date
 
-from tau.screen import Candidate, apply_filters, rank
+from tau.screen import apply_filters, rank
+from tests.factories import cand
 
 TODAY = date(2026, 7, 24)
-FILTERS = dict(min_ivr=30.0, min_liquidity=3, earnings_days=45, today=TODAY)
-
-
-def cand(**kw) -> Candidate:
-    base = dict(
-        symbol="TEST",
-        ivr=50.0,
-        ivp=60.0,
-        iv30=25.0,
-        hv30=20.0,
-        liquidity=4,
-        beta=1.0,
-        earnings_date=None,
-    )
-    base.update(kw)
-    return Candidate(**base)
+FILTERS = {"min_ivr": 30.0, "min_liquidity": 3, "earnings_days": 45, "today": TODAY}
 
 
 def test_clean_candidate_passes():
@@ -64,5 +50,11 @@ def test_past_earnings_date_ignored():
 
 
 def test_rank_ivr_desc_none_last():
-    ranked = rank([cand(symbol="A", ivr=None), cand(symbol="B", ivr=80.0), cand(symbol="C", ivr=90.0)])
+    ranked = rank(
+        [
+            cand(symbol="A", ivr=None),
+            cand(symbol="B", ivr=80.0),
+            cand(symbol="C", ivr=90.0),
+        ]
+    )
     assert [c.symbol for c in ranked] == ["C", "B", "A"]

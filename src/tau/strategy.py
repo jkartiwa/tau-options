@@ -1,9 +1,9 @@
 """What a strategy *is*, as data.
 
-The payoff engine made every derived number generic, so the only thing left
-that differs between a strangle and a broken wing butterfly is which strikes
-to pick. That is what a `Strategy` describes: a flat list of leg specs, with
-references between them, plus scalar constraints on the pricing outcome.
+The payoff engine derives every number generically, so what differs between a
+strangle and a broken wing butterfly is which strikes to pick. That is what a
+`Strategy` describes: a flat list of leg specs, with references between them,
+plus scalar constraints on the pricing outcome.
 
 A flat list plus references expresses every structure worth trading — a
 strangle has no references, a vertical one, a condor two, a broken wing two
@@ -23,6 +23,7 @@ For a broken wing the widths *are* the trade, and which width pays depends on
 today's skew.
 """
 
+import operator
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from itertools import product
@@ -53,29 +54,26 @@ Metric = Literal[
     "leg_count",
 ]
 
-# Metrics computed from the buying-power figure, which is the one figure that
-# has two models behind it — the broker's portfolio margin ran 30% above the
-# naked-margin formula on MU and 8% below it on AAPL. Two consequences, one
-# set, defined here because this is the module `build` imports from:
-#
-# A `Require` may not name one. `build` settles `ok` and `failures` off the
-# formula estimate and the broker's dry-run number arrives afterwards, so a
-# rule on one of these would judge a row on a figure it no longer displays —
-# a green row whose shown ROC is below its own floor. `_validate` refuses
-# them for that reason.
-#
-# And two structures whose `bpr` came from different models do not compare on
-# one: the gap is enough to hand the win to whichever happened to be measured
-# by the more generous model. `build.comparable_on` and `build.rank` use the
-# set for that, under the name `MODEL_SENSITIVE_METRICS`. Metrics that never
-# read `bpr` are unaffected on both counts.
-UNCONSTRAINABLE_METRICS = frozenset({"bpr", "roc", "annualized_roc"})
+# Metrics computed from buying power, the one figure with two models behind
+# it: the broker's dry-run and the naked-margin formula, which can differ by
+# tens of percent. Constraints are settled off the formula before the broker
+# figure arrives, so a `Require` on one of these would judge a row on a number
+# it no longer displays; `_validate` refuses them. And two structures whose
+# `bpr` came from different models do not compare on them, which is what
+# `build.comparable_on` enforces.
+BPR_METRICS = frozenset({"bpr", "roc", "annualized_roc"})
 
 METRICS: frozenset[str] = frozenset(get_args(Metric))
 
 Op = Literal["<", "<=", ">", ">=", "=="]
 
-OPS: frozenset[str] = frozenset(get_args(Op))
+OPS = {
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+    "==": operator.eq,
+}
 
 # A three-selector strategy with careless lists multiplies fast. The cap fails
 # loudly at load time rather than silently truncating the search.
@@ -91,7 +89,7 @@ class Bias(StrEnum):
     NEUTRAL = "neutral"
 
 
-def _as_list(value):
+def _as_list[T](value: T | list[T] | tuple[T, ...]) -> list[T]:
     return list(value) if isinstance(value, (list, tuple)) else [value]
 
 
@@ -108,7 +106,7 @@ class Delta:
         return f"{abs(float(self.value)) * 100:g}Δ"
 
     def describe(self) -> str:
-        return "/".join(f"{abs(float(v)) * 100:g}Δ" for v in _as_list(self.value))
+        return "/".join(v.label() for v in self.variants())
 
 
 @dataclass(frozen=True)
@@ -124,7 +122,7 @@ class Moneyness:
         return f"{float(self.value) * 100:+g}%"
 
     def describe(self) -> str:
-        return "/".join(f"{float(v) * 100:+g}%" for v in _as_list(self.value))
+        return "/".join(v.label() for v in self.variants())
 
 
 @dataclass(frozen=True)
@@ -180,9 +178,8 @@ Selector = Delta | Moneyness | Atm | Ref
 class LegSpec:
     """A spec for *choosing* a contract.
 
-    Deliberately not named `Leg`: `chain.Leg` already exists and means a
-    quoted contract. Two different concepts one word apart is how the
-    0.38-delta-labelled-16-delta class of confusion starts.
+    Deliberately not named `Leg`: `chain.Leg` is the quoted contract this
+    spec picks.
     """
 
     id: str
@@ -271,19 +268,15 @@ class Strategy:
             if isinstance(rule.value, str) and rule.value not in METRICS:
                 raise ValueError(f"{where}: unknown metric {rule.value!r}")
             for named in (rule.metric, rule.value):
-                if named in UNCONSTRAINABLE_METRICS:
+                if named in BPR_METRICS:
                     raise ValueError(
-                        f"{where}: {named!r} cannot be required. Constraints "
-                        "are decided when the structure is built, off the "
-                        "formula buying-power estimate; the broker's dry-run "
-                        "figure arrives afterwards and would leave the row "
-                        "judged on a number it no longer displays. Rank on "
-                        "it instead."
+                        f"{where}: {named!r} cannot be required: it depends "
+                        "on buying power, which the broker reprices after "
+                        "constraints are checked. Rank on it instead."
                     )
         if self.variant_count > MAX_VARIANTS:
             raise ValueError(
-                f"{where}: {self.variant_count} variants exceeds the "
-                f"{MAX_VARIANTS} cap"
+                f"{where}: {self.variant_count} variants exceeds the {MAX_VARIANTS} cap"
             )
 
     @property
@@ -296,13 +289,15 @@ class Strategy:
     def variants(self) -> list[tuple[str, tuple[LegSpec, ...]]]:
         """Every combination of selector values, each labelled by its shape —
         `20Δ/25Δ+10`. A strategy with no lists yields exactly one."""
-        out = []
-        for combo in product(*(spec.variants() for spec in self.legs)):
-            out.append((_label(combo), combo))
-        return out
+        return [
+            (_label(combo), combo)
+            for combo in product(*(spec.variants() for spec in self.legs))
+        ]
 
 
-def with_min_pop(strategies: tuple[Strategy, ...], min_pop: float) -> tuple[Strategy, ...]:
+def with_min_pop(
+    strategies: tuple[Strategy, ...], min_pop: float
+) -> tuple[Strategy, ...]:
     """`strategies`, each with its pop floor swapped to `min_pop`.
 
     Every shipped strategy already carries a `pop >= ...` requirement (see

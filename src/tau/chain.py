@@ -1,28 +1,31 @@
 """Option-chain reads for one symbol: the quoted ladder every structure is
 built over.
 
-Fetching is one DXLink pass per symbol, measured at ~1.4s all-in (0.4s chain
-metadata, 1.0s quotes+greeks over ~40 legs), which is what makes per-symbol
-on-demand viable in the TUI instead of batch-pulling the whole shortlist.
+Fetching is one DXLink pass per symbol, measured at 1.0-1.75s all-in, which
+is what makes per-symbol on-demand viable in the TUI instead of batch-pulling
+the whole shortlist.
 
 Spot has to be known before strikes can be chosen sensibly, so the pass is
 two-phase over a single connection: underlying quote first, then a strike
 window around it.
 
-Degradation follows the same rule as the rest of the stack: a leg missing a
-quote or greeks is dropped rather than defaulted. What gets built over the
-ladder lives in `build.py`, which applies the matching rule one level up — a
-structure missing any leg is invalid rather than partially credited.
+A leg missing a quote or greeks keeps those fields as `None` rather than
+defaulting them. What gets built over the ladder lives in `build.py`, which
+applies the matching rule one level up — a structure missing any leg's quote
+or greeks is invalid rather than partially credited.
 """
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
+from decimal import Decimal
+from functools import cached_property
+from itertools import pairwise
 from math import sqrt
 
 from tastytrade import DXLinkStreamer, Session
 from tastytrade.dxfeed import Greeks, Quote
-from tastytrade.instruments import NestedOptionChain
+from tastytrade.instruments import NestedOptionChain, NestedOptionChainExpiration
 
 from tau.payoff import OptionType
 
@@ -30,45 +33,29 @@ EVENT_TIMEOUT = 10.0
 TARGET_DTE = 45
 # The strike window is scaled by expected move, not by a fixed percentage:
 # a 16-delta wing sits near one standard deviation, so 2.5 sigma contains it
-# on any name. Capping by strike *count* instead was the original bug — on a
-# densely struck name like QQQ the window stopped well inside the wings and
-# the delta pick silently degraded to the nearest available strike (0.38 in
-# place of 0.16). Count is capped by striding the window instead, which keeps
-# the streamer pass ~1s while still spanning it.
+# on any name. Capping by strike count instead would stop inside the wings on
+# a densely struck name, and a delta pick would silently land nearer the
+# money than asked. The count is capped by striding the window instead.
 SIGMA_SPAN = 2.5
 MIN_WINDOW = 0.08  # floor, for a low-vol name or a missing IV hint
 FALLBACK_IV = 0.35
-# Raised from 26 to 45 once multi-leg structures existed, then to 80 once the
-# rank view's concurrent load could be measured. Measured live 2026-08-03: the
-# two-phase pass costs 1.0-1.75s whether it carries 64 legs or 322, and six
-# symbols in flight finish in the time one takes — it is dominated by
-# connection setup, not by leg count, at every budget tried. Meanwhile the cap
-# decides how much of the ladder exists: on SPY, 45/30 built 33 of 56 variants
-# and 60/45 built 52, while 80/60 builds all 56. Sparse ladders (SMH, MU,
-# AAPL, TLT) are unaffected — the sigma window bounds them, not the count — so
-# the only thing a smaller budget bought was throttling the densely struck
-# names for nothing.
+# The fetch costs about the same whether it carries 60 legs or 300 (connection
+# setup dominates), while this cap decides how much of a dense ladder exists
+# to build structures on. Sparse ladders are bounded by the sigma window.
 MAX_STRIKES_PER_SIDE = 80
-# Strikes nearest spot are kept contiguous rather than strided, so that a
-# multi-leg structure placing a wing a fixed number of dollars from its short
-# leg has an unbroken ladder to land on. This has to reach past the short
-# strike, not just around the money: at 30 on SPY the 16-delta put sat 40
-# points out, in the strided region, and every 5-wide condor and vertical was
-# correctly refused for a ladder that only looked coarse because of the
-# thinning.
+# Strikes nearest spot are kept contiguous rather than strided, so a wing
+# placed a fixed number of dollars from its short leg has an unbroken ladder
+# to land on. This must reach past a 16-delta short strike, not just around
+# the money, or fixed-width condors and verticals are refused on a ladder
+# that only looks coarse because of the thinning.
 UNSTRIDED_CORE = 60
-DELTA_TOLERANCE = 0.05  # beyond this the variant is refused: build.MAX_DELTA_MISS
 DAYS_PER_YEAR = 365.0
 
-# tastytrade's own expected-move convention: the ATM straddle blended with
-# the first two OTM strangles, weighted 60/30/10 — not the plainer
-# straddle*0.85 heuristic (Brenner-Subrahmanyam gives ~0.7979 as the more
-# precise version of that constant, and different desks round it
-# differently). Weighting in the wings is a cheap skew correction: a
-# single-strike straddle only samples the smile at one point. Falls back to
-# the 0.85 straddle-only heuristic when the wing strikes are not both
-# priced, since that can still happen on a thin chain or a narrow fetch
-# window; falls back to None only if even the straddle is unpriced.
+# tastytrade's expected-move convention: the ATM straddle blended with the
+# first two OTM strangles, weighted 60/30/10. Weighting in the wings is a
+# cheap skew correction, since a single straddle samples the smile at one
+# strike. Falls back to straddle * 0.85 when the wing strikes are not both
+# priced, and to None only if the straddle itself is unpriced.
 EM_WEIGHTS = (0.6, 0.3, 0.1)  # straddle, 1st OTM strangle, 2nd OTM strangle
 STRADDLE_ONLY_FACTOR = 0.85
 
@@ -161,19 +148,24 @@ class Cycle:
     dte: int
     underlying: float | None
     legs: tuple[Leg, ...]
-    fetched_at: datetime
     expirations: tuple[tuple[date, int], ...] = ()  # every cycle available
 
-    @property
+    # The derived figures below are cached: every variant built over this
+    # cycle reads them, and the cycle is frozen, so they cannot change.
+
+    @cached_property
+    def _ladder(self) -> list[StrikeRow]:
+        return strike_ladder(self.legs)
+
+    @cached_property
     def atm_iv(self) -> float | None:
         """Call and put IV at the nearest strike to spot, averaged — a
         single leg's IV is skew-biased (puts richer than calls, typically),
         so blending both sides of the same strike is the honest read."""
-        ladder = strike_ladder(self.legs)
-        idx = _atm_index(ladder, self.underlying) if self.underlying else None
+        idx = _atm_index(self._ladder, self.underlying) if self.underlying else None
         if idx is None:
             return None
-        row = ladder[idx]
+        row = self._ladder[idx]
         ivs = [leg.iv for leg in (row.call, row.put) if leg and leg.iv is not None]
         return sum(ivs) / len(ivs) if ivs else None
 
@@ -183,47 +175,54 @@ class Cycle:
         rather than under the ATM average.
 
         Linear in strike between the two bracketing quoted strikes, flat
-        outside the quoted range. Interpolating rather than snapping to the
-        nearest strike is worth the handful of extra lines here: a breakeven is
-        pushed off the strike grid by the credit almost by construction, so
-        nearest-strike would quantise the vol to the ladder spacing on exactly
-        the boundaries this exists to price.
+        outside the quoted range. Interpolated rather than snapped to the
+        nearest strike because the credit pushes a breakeven off the strike
+        grid, so snapping would quantise the vol on exactly these boundaries.
 
         `None` when that side of the chain carries no IV at all, which is the
         caller's cue to fall back to `atm_iv` for that boundary.
         """
-        points = sorted(
-            (leg.strike, leg.iv)
-            for leg in self.legs
-            if leg.type is option_type and leg.iv is not None and leg.iv > 0
-        )
+        points = self._iv_points[option_type]
         if not points:
             return None
         if price <= points[0][0]:
             return points[0][1]
         if price >= points[-1][0]:
             return points[-1][1]
-        for (k0, v0), (k1, v1) in zip(points, points[1:]):
+        for (k0, v0), (k1, v1) in pairwise(points):
             if k0 <= price <= k1:
                 if k1 == k0:
                     return v0
                 return v0 + (v1 - v0) * (price - k0) / (k1 - k0)
         return None
 
+    @cached_property
+    def _iv_points(self) -> dict[OptionType, list[tuple[float, float]]]:
+        """(strike, iv) per side, sorted by strike, for `iv_at`."""
+        return {
+            option_type: sorted(
+                (leg.strike, leg.iv)
+                for leg in self.legs
+                if leg.type is option_type and leg.iv is not None and leg.iv > 0
+            )
+            for option_type in OptionType
+        }
+
     @property
     def expected_move(self) -> float | None:
-        value = self._expected_move_calc()
+        value = self._expected_move
         return None if value is None else value[0]
 
     @property
     def expected_move_method(self) -> str | None:
-        value = self._expected_move_calc()
+        value = self._expected_move
         return None if value is None else value[1]
 
-    def _expected_move_calc(self) -> tuple[float, str] | None:
+    @cached_property
+    def _expected_move(self) -> tuple[float, str] | None:
         if self.underlying is None:
             return None
-        ladder = strike_ladder(self.legs)
+        ladder = self._ladder
         idx = _atm_index(ladder, self.underlying)
         if idx is None:
             return None
@@ -238,7 +237,13 @@ class Cycle:
         return (straddle * STRADDLE_ONLY_FACTOR, "straddle×0.85")
 
 
-async def _collect(streamer, cls, want: set[str], out: dict, timeout: float) -> None:
+async def _collect(
+    streamer: DXLinkStreamer,
+    cls: type[Quote] | type[Greeks],
+    want: set[str],
+    out: dict[str, Quote | Greeks],
+    timeout: float,
+) -> None:
     try:
         async with asyncio.timeout(timeout):
             while want - out.keys():
@@ -249,33 +254,32 @@ async def _collect(streamer, cls, want: set[str], out: dict, timeout: float) -> 
         pass
 
 
-def _f(value) -> float | None:
+def _f(value: Decimal | None) -> float | None:
     return None if value is None else float(value)
 
 
 def _stride(items: list, cap: int, core: int = 0) -> list:
-    """Thin a list to at most `cap` entries, keeping the outermost one so the
-    window's edge survives. Delta moves smoothly across strikes, so a strided
-    sample still lands within a strike or two of the target.
+    """Thin a list to at most `cap` entries, evenly spaced and keeping the
+    outermost one so the window's edge survives. Delta moves smoothly across
+    strikes, so a strided sample still lands within a strike or two of the
+    target.
 
     `core` entries at the head are kept contiguous. The caller orders each
-    side outward from spot, so the core is the near-the-money region — where
-    multi-leg structures resolve their wings by dollar offset. A strided
-    ladder can silently drop the strike a `ref + 10` leg points at, and the
-    resulting spread is narrower than the label says. Keeping the core intact
-    reduces that; `build.py` reports the residual miss rather than folding it
-    into a number that lies.
+    side outward from spot, so the core is the near-the-money region, where
+    multi-leg structures place wings by dollar offset from a short strike.
+    Striding there could drop the strike a `ref + 10` leg points at;
+    `build.py` reports any remaining miss.
     """
     if len(items) <= cap:
         return items
     core = max(0, min(core, cap - 1))
     head, rest = items[:core], items[core:]
-    remaining = max(cap - len(head), 1)
-    step = -(-len(rest) // remaining)  # ceil
-    thinned = rest[::step]
-    if rest and rest[-1] not in thinned:
-        thinned.append(rest[-1])
-    return head + thinned
+    slots = cap - core
+    if slots == 1:
+        return [*head, rest[-1]]
+    # len(rest) > slots, so the spacing exceeds one and no index repeats.
+    last = len(rest) - 1
+    return head + [rest[round(i * last / (slots - 1))] for i in range(slots)]
 
 
 def select_strikes(
@@ -308,7 +312,7 @@ def select_strikes(
 MONTHLY_EXPIRATION_TYPE = "Regular"
 
 
-def is_monthly(expiration) -> bool:
+def is_monthly(expiration: NestedOptionChainExpiration) -> bool:
     """True for a standard monthly (3rd-Friday) expiration. Weeklies and
     quarterlies are excluded — monthly-only for now, since liquidity and
     the rest of the pipeline haven't been verified against the thinner
@@ -316,10 +320,14 @@ def is_monthly(expiration) -> bool:
     return expiration.expiration_type == MONTHLY_EXPIRATION_TYPE
 
 
-def choose_expiration(chain, target_dte: int):
-    live = [
-        e for e in chain.expirations if e.days_to_expiration >= 0 and is_monthly(e)
-    ]
+def _live_monthlies(chain: NestedOptionChain) -> list[NestedOptionChainExpiration]:
+    return [e for e in chain.expirations if e.days_to_expiration >= 0 and is_monthly(e)]
+
+
+def choose_expiration(
+    chain: NestedOptionChain, target_dte: int
+) -> NestedOptionChainExpiration | None:
+    live = _live_monthlies(chain)
     if not live:
         return None
     return min(live, key=lambda e: abs(e.days_to_expiration - target_dte))
@@ -341,16 +349,11 @@ async def fetch_cycle(
     chain = max(chains, key=lambda c: len(c.expirations))
     available = tuple(
         (e.expiration_date, e.days_to_expiration)
-        for e in sorted(chain.expirations, key=lambda e: e.expiration_date)
-        if e.days_to_expiration >= 0 and is_monthly(e)
+        for e in sorted(_live_monthlies(chain), key=lambda e: e.expiration_date)
     )
     if expiration is not None:
         exp = next(
-            (
-                e
-                for e in chain.expirations
-                if e.expiration_date == expiration and is_monthly(e)
-            ),
+            (e for e in _live_monthlies(chain) if e.expiration_date == expiration),
             None,
         )
     else:
@@ -374,9 +377,7 @@ async def fetch_cycle(
             if bid is not None and ask is not None:
                 underlying = (bid + ask) / 2
 
-        selected = select_strikes(
-            strikes, underlying, exp.days_to_expiration, iv_hint
-        )
+        selected = select_strikes(strikes, underlying, exp.days_to_expiration, iv_hint)
 
         streamer_symbols = [s.call_streamer_symbol for s in selected] + [
             s.put_streamer_symbol for s in selected
@@ -418,6 +419,5 @@ async def fetch_cycle(
         dte=exp.days_to_expiration,
         underlying=underlying,
         legs=tuple(legs),
-        fetched_at=datetime.now(UTC),
         expirations=available,
     )

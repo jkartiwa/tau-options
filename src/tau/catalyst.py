@@ -4,23 +4,29 @@ High IV rank is never free. Something put it there, and the something decides
 whether the premium is harvestable or fair payment for a coin flip: a pending
 binary is a landmine, a just-resolved event is often the best sale on the
 screen, and sector sympathy is the textbook mean-reversion case. That judgment
-is the step a trader otherwise does by alt-tabbing to a browser for every
-candidate, so it is worth one model call and a cache.
+is otherwise a manual news search per candidate, so it is worth one model
+call and a cache.
 
 Headlines come from Google News RSS over stdlib http; the classification is a
-single structured-output call. Both are on demand — nothing here runs during a
-scan.
+single structured-output call. Both run on demand, never during a scan.
 """
 
+import http.client
 import json
 import os
 import re
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 from email.utils import parsedate_to_datetime
+from typing import TYPE_CHECKING
 from xml.etree import ElementTree
+
+from tau.chain import TARGET_DTE
+
+if TYPE_CHECKING:
+    import anthropic  # optional: the `catalyst` extra
 
 MODEL = "claude-sonnet-5"
 NEWS_URL = "https://news.google.com/rss/search"
@@ -38,7 +44,7 @@ RESOLVED = "resolved"
 NO_CATALYST = "no_idiosyncratic"
 UNKNOWN = "insufficient_signal"
 
-# How each verdict bears on selling a 45-DTE strangle.
+# How each verdict bears on selling premium at the target tenor.
 VERDICT_GLOSS = {
     PENDING: "event risk ahead — premium is payment for a binary",
     RESOLVED: "event passed — IV usually bleeds slower than the risk left",
@@ -47,7 +53,7 @@ VERDICT_GLOSS = {
 }
 
 SYSTEM = """You are an analyst supporting a systematic options premium seller. \
-The trader sells roughly 45-day short premium (strangles, iron condors, \
+The trader sells roughly {horizon}-day short premium (strangles, iron condors, \
 verticals, jade lizards and similar structures) on liquid names screened for \
 high IV rank. Elevated implied volatility always has a cause; your job is to \
 classify that cause so the trader knows whether the premium is harvestable \
@@ -86,7 +92,7 @@ Further rules:
 - Weigh headline DATES against today's date. Earnings reported three days ago \
 are resolved; earnings expected next week are pending.
 - If both apply — earnings just passed, but another dated event falls within \
-about 45 days — classify pending_binary. Forward risk dominates the structure.
+about {horizon} days — classify pending_binary. Forward risk dominates the structure.
 - Analyst commentary, price targets, and ranked-list articles are not \
 catalysts. Ignore them.
 - Be decisive about the classification and express any doubt through \
@@ -123,7 +129,7 @@ SCHEMA = {
                 "required": ["date", "event"],
                 "additionalProperties": False,
             },
-            "description": "Dated events falling within roughly 45 days",
+            "description": f"Dated events falling within roughly {TARGET_DTE} days",
         },
         "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
         "note": {"type": "string"},
@@ -160,7 +166,6 @@ class Brief:
     confidence: str
     note: str
     headlines: tuple[Headline, ...]
-    fetched_at: datetime
 
     @property
     def gloss(self) -> str:
@@ -215,15 +220,10 @@ def fetch_headlines(
 
 
 def _api_errors() -> tuple[type[BaseException], ...]:
-    """What a model call can legitimately raise.
-
-    `anthropic.APIError` is the base of every provider-side failure the SDK
-    reports — auth, quota, rate limit, overload, and connection/timeout — so
-    the one entry covers them all without a blanket `except Exception` that
-    would also swallow a NameError or AttributeError from a future refactor.
-    The import is deliberately not cached: the package is optional, and a
-    caller may inject a client from somewhere else entirely. OSError covers a
-    transport failure raised by anything that is not the anthropic SDK.
+    """What a model call can legitimately raise: `anthropic.APIError` covers
+    every provider-side failure (auth, quota, rate limit, connection), and
+    OSError a transport failure from an injected non-SDK client. Anything else
+    is a bug and propagates. The package is optional, hence the local import.
     """
     try:
         import anthropic
@@ -233,10 +233,8 @@ def _api_errors() -> tuple[type[BaseException], ...]:
 
 
 def _call_failed(exc: BaseException) -> str:
-    """A short, honest reason for a failed model call. Quota, rate limits and a
-    rejected key are called out separately from everything else because they
-    tell the reader what the generic case does not: whether waiting is the
-    remedy. For a rejected key it is not — that one needs a new key."""
+    """A short reason for a failed model call. Rate limits, quota and a
+    rejected key are named because each has a different remedy."""
     kind = getattr(exc, "type", None)
     status = getattr(exc, "status_code", None)
     if kind == "rate_limit_error" or status == 429:
@@ -257,7 +255,6 @@ def _unreadable(symbol: str, headlines: tuple[Headline, ...], why: str) -> Brief
         confidence="high",
         note=why,
         headlines=headlines,
-        fetched_at=datetime.now(UTC),
     )
 
 
@@ -265,7 +262,7 @@ def classify(
     symbol: str,
     headlines: tuple[Headline, ...],
     today: date | None = None,
-    client=None,
+    client: "anthropic.Anthropic | None" = None,
 ) -> Brief:
     """Classify the vol driver from headlines. Never guesses: too little to
     read on returns insufficient_signal without spending a model call."""
@@ -280,47 +277,38 @@ def classify(
 
     if client is None:
         if not os.getenv("ANTHROPIC_API_KEY"):
-            # No key is not an error: the headlines are the bulk of the value
-            # and they cost nothing, so hand them back unclassified rather
-            # than failing. insufficient_signal is the right verdict — nothing
-            # looked at these.
+            # No key is not an error: the headlines are still worth showing,
+            # unclassified.
             return _unreadable(
                 symbol, headlines, "no ANTHROPIC_API_KEY — headlines only"
             )
         try:
             import anthropic
         except ImportError:
-            # A key is set but the optional extra isn't installed. Same
-            # degradation as no key at all: headlines, no verdict.
+            # Key set but the optional extra not installed: same degradation.
             return _unreadable(
                 symbol, headlines, "anthropic not installed — headlines only"
             )
 
         client = anthropic.Anthropic()
 
-    # Headlines are untrusted: anyone able to place an indexed article for a
-    # ticker can write whatever they like here. Fencing them keeps the model's
-    # instructions and the data it classifies distinguishable — the tag is
-    # what the system prompt's "never instructions" rule points at.
-    # A title containing a literal </headlines> would close the fence early and
-    # put the rest outside it, so the delimiter is neutralised in the data.
+    # Headlines are untrusted text, so they are fenced in the tag the system
+    # prompt's "never instructions" rule points at. Angle brackets are replaced
+    # so a title cannot close the fence early.
     rendered = "\n".join(
-        "- " + h.render().replace("<", "‹").replace(">", "›")
-        for h in headlines
+        "- " + h.render().replace("<", "‹").replace(">", "›") for h in headlines
     )
     body = (
         f"Symbol: {symbol}\n\n"
         f"<headlines>\n{rendered}\n</headlines>\n\n"
         "Classify the volatility driver from the headlines above."
     )
-    # The headlines are already in hand and cost nothing, so a failed call
-    # degrades to them rather than taking the whole request down with it —
-    # the same bargain the no-key and no-package paths above strike.
+    # A failed call degrades to headlines only, like the no-key path above.
     try:
         response = client.messages.create(
             model=MODEL,
             max_tokens=16000,
-            system=SYSTEM.format(today=today.isoformat()),
+            system=SYSTEM.format(today=today.isoformat(), horizon=TARGET_DTE),
             messages=[{"role": "user", "content": body}],
             output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
         )
@@ -333,12 +321,9 @@ def classify(
     text = next((b.text for b in response.content if b.type == "text"), None)
     if not text:
         return _unreadable(symbol, headlines, "model returned no verdict")
-    # The schema is enforced server-side, so a payload that does not parse or
-    # does not have the shape asked for is a failure of the call, not of this
-    # code. ValueError covers json.JSONDecodeError; KeyError and TypeError are
-    # what a wrong shape raises on the lookups below. Only the untrusted
-    # payload is read in here — the dataclasses are built afterwards, so a
-    # TypeError from their own signatures stays the programming error it is.
+    # A payload that does not parse or has the wrong shape is a failed call.
+    # Only the payload is read inside the try, so a TypeError from building
+    # the dataclasses below still surfaces as the bug it would be.
     try:
         data = json.loads(text)
         classification = data["classification"]
@@ -357,7 +342,6 @@ def classify(
         confidence=confidence,
         note=note,
         headlines=headlines,
-        fetched_at=datetime.now(UTC),
     )
 
 
@@ -383,11 +367,11 @@ def brief_for(
     symbol: str,
     description: str | None = None,
     today: date | None = None,
-    client=None,
+    client: "anthropic.Anthropic | None" = None,
 ) -> Brief:
     """Headlines plus classification for one symbol."""
     try:
         headlines = fetch_headlines(news_query(symbol, description))
-    except Exception as exc:
+    except (OSError, http.client.HTTPException, ElementTree.ParseError) as exc:
         return _unreadable(symbol, (), f"headline fetch failed: {exc}")
     return classify(symbol, headlines, today=today, client=client)

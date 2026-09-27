@@ -1,13 +1,12 @@
-"""Short strangle — the structure tau shipped with, now expressed as data.
+"""Short strangle — two naked short wings, neutral.
 
-Two naked short wings, no references between them. This is the baseline every
-other structure is compared against, so it searches a small delta ladder
-rather than pinning 16 the way the hardcoded version did.
+Undefined risk on both sides. No references between the legs; each wing
+searches its own small delta ladder.
 """
 
 from tau.payoff import OptionType, Side
-from tau.strategy import Bias, Delta, LegSpec, Require, Strategy
 from tau.strategies.defaults import MAX_SPREAD_COST, MIN_POP
+from tau.strategy import Bias, Delta, LegSpec, Require, Strategy
 
 C, P = OptionType.CALL, OptionType.PUT
 SHORT = Side.SHORT

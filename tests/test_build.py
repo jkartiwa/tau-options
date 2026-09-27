@@ -1,44 +1,34 @@
 from dataclasses import replace
-from datetime import UTC, date, datetime
 
 import pytest
 
-from tau.build import MAX_DELTA_MISS, MAX_REF_MISS, best, build, evaluate, rank
-from tau.chain import Cycle, Leg
+from tau.build import (
+    MAX_DELTA_MISS,
+    MAX_REF_MISS,
+    best,
+    build,
+    evaluate,
+    rank,
+    uniformly_broker_priced,
+)
+from tau.chain import Leg
 from tau.payoff import OptionType, Side, pop_over_intervals, profitable_intervals
 from tau.strategies import ALL, STRATEGIES
-from tau.strategy import Bias, Delta, LegSpec, Ref, Require, Strategy
+from tau.strategy import Bias, Delta, LegSpec, Ref, Require
+from tests.factories import (
+    CALL_DELTAS,
+    CALL_MIDS,
+    PUT_DELTAS,
+    PUT_MIDS,
+    SPREAD,
+    cycle,
+    ladder,
+    leg,
+    strat,
+)
 
 C, P = OptionType.CALL, OptionType.PUT
 LONG, SHORT = Side.LONG, Side.SHORT
-
-# A 5-point ladder around a spot of 100, with deltas that fall away
-# symmetrically and mids that make each structure hand-checkable.
-PUT_DELTAS = {80: -0.08, 85: -0.12, 90: -0.20, 95: -0.32, 100: -0.50}
-CALL_DELTAS = {100: 0.50, 105: 0.30, 110: 0.20, 115: 0.12, 120: 0.08}
-PUT_MIDS = {80: 0.50, 85: 0.80, 90: 1.20, 95: 2.00, 100: 3.50}
-CALL_MIDS = {100: 3.50, 105: 2.00, 110: 1.20, 115: 0.80, 120: 0.50}
-SPREAD = 0.02  # tight enough that the shipped spread_cost constraints pass
-
-
-def leg(strike, option_type, delta, mid, spread=SPREAD, iv=0.30):
-    return Leg(
-        occ=f"{option_type}{strike:g}",
-        streamer=f"s{option_type}{strike:g}",
-        strike=float(strike),
-        type=option_type,
-        bid=mid - spread / 2,
-        ask=mid + spread / 2,
-        delta=delta,
-        iv=iv,
-    )
-
-
-def ladder():
-    legs = [leg(k, P, d, PUT_MIDS[k]) for k, d in PUT_DELTAS.items()]
-    legs += [leg(k, C, d, CALL_MIDS[k]) for k, d in CALL_DELTAS.items()]
-    return tuple(legs)
-
 
 # The same ladder with a realistic equity smile laid over it: puts bid over
 # calls in the wings, both sides meeting at 30% on the 100 strike so `atm_iv`
@@ -53,17 +43,6 @@ def skewed_ladder():
     return tuple(legs)
 
 
-def cycle(legs=None, underlying=100.0, dte=45):
-    return Cycle(
-        symbol="TEST",
-        expiration=date(2026, 9, 18),
-        dte=dte,
-        underlying=underlying,
-        legs=legs if legs is not None else ladder(),
-        fetched_at=datetime.now(UTC),
-    )
-
-
 def one(strategy, cy, variant):
     """The single named variant of a strategy, built against a cycle."""
     for label, specs in strategy.variants():
@@ -72,13 +51,9 @@ def one(strategy, cy, variant):
     raise AssertionError(f"no variant {variant!r} in {strategy.name}")
 
 
-STRANGLE_20 = Strategy(
-    name="t-strangle",
-    bias=Bias.NEUTRAL,
-    legs=[
-        LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
-        LegSpec("short_call", type=C, side=SHORT, strike=Delta(0.20)),
-    ],
+STRANGLE_20 = strat(
+    LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
+    LegSpec("short_call", type=C, side=SHORT, strike=Delta(0.20)),
 )
 
 
@@ -91,10 +66,9 @@ def test_delta_selection_picks_the_nearest_strike_and_reports_no_miss():
 
 
 def test_delta_miss_beyond_tolerance_is_refused_not_folded_into_the_label():
-    """The original bug in this codebase: a 0.38-delta leg returned labelled
-    16-delta. A coarse ladder must not be quietly relabelled, and the rule is
-    now the same one `MAX_REF_MISS` applies to a missed width — refuse the
-    variant rather than return it under a name it does not have."""
+    """A coarse ladder must not be quietly relabelled: a 0.38-delta leg asked
+    for as 16-delta is refused, the same rule `MAX_REF_MISS` applies to a
+    missed width."""
     coarse = (leg(70, P, -0.40, 1.0), leg(130, C, 0.38, 1.0))
     structure = one(STRANGLE_20, cycle(coarse), "20Δ/20Δ")
     assert not structure.complete
@@ -113,13 +87,10 @@ def test_a_delta_miss_inside_tolerance_is_still_built_and_reported():
 
 
 def test_reference_leg_resolves_by_dollar_offset():
-    vertical = Strategy(
-        name="t-vertical",
+    vertical = strat(
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
+        LegSpec("long_put", type=P, side=LONG, strike=Ref("short_put", offset=-5)),
         bias=Bias.BULLISH,
-        legs=[
-            LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
-            LegSpec("long_put", type=P, side=LONG, strike=Ref("short_put", offset=-5)),
-        ],
     )
     structure = one(vertical, cycle(), "20Δ-5")
     assert [b.leg.strike for b in structure.legs] == [90.0, 85.0]
@@ -129,34 +100,28 @@ def test_reference_leg_resolves_by_dollar_offset():
 
 
 def test_reference_leg_resolves_by_strike_count():
-    vertical = Strategy(
-        name="t-vertical-k",
+    vertical = strat(
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
+        LegSpec("long_put", type=P, side=LONG, strike=Ref("short_put", strikes=-2)),
         bias=Bias.BULLISH,
-        legs=[
-            LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
-            LegSpec("long_put", type=P, side=LONG, strike=Ref("short_put", strikes=-2)),
-        ],
     )
     structure = one(vertical, cycle(), "20Δ-2k")
     assert [b.leg.strike for b in structure.legs] == [90.0, 80.0]
 
 
 def test_a_coarse_ladder_kills_the_variant_rather_than_mislabelling_the_width():
-    """Same failure shape as the delta bug: asking for a 5-wide wing and
-    silently getting a 10-wide one changes the margin and the max loss."""
+    """Asking for a 5-wide wing and silently getting a 10-wide one changes the
+    margin and the max loss."""
     wide = (
         leg(80, P, -0.08, 0.50),
         leg(90, P, -0.20, 1.20),
         leg(100, P, -0.50, 3.50),
         leg(110, C, 0.20, 1.20),
     )
-    vertical = Strategy(
-        name="t-vertical",
+    vertical = strat(
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
+        LegSpec("long_put", type=P, side=LONG, strike=Ref("short_put", offset=-5)),
         bias=Bias.BULLISH,
-        legs=[
-            LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
-            LegSpec("long_put", type=P, side=LONG, strike=Ref("short_put", offset=-5)),
-        ],
     )
     structure = one(vertical, cycle(wide), "20Δ-5")
     assert not structure.complete
@@ -165,13 +130,10 @@ def test_a_coarse_ladder_kills_the_variant_rather_than_mislabelling_the_width():
 
 
 def test_reference_running_off_the_ladder_is_a_reason_not_a_crash():
-    vertical = Strategy(
-        name="t-vertical-k",
+    vertical = strat(
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
+        LegSpec("long_put", type=P, side=LONG, strike=Ref("short_put", strikes=-9)),
         bias=Bias.BULLISH,
-        legs=[
-            LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
-            LegSpec("long_put", type=P, side=LONG, strike=Ref("short_put", strikes=-9)),
-        ],
     )
     structure = one(vertical, cycle(), "20Δ-9k")
     assert not structure.complete
@@ -193,8 +155,14 @@ def test_an_unpriced_leg_never_yields_a_partial_credit():
 
 def test_a_leg_without_greeks_is_not_selectable():
     no_greeks = tuple(
-        Leg(occ=x.occ, streamer=x.streamer, strike=x.strike, type=x.type,
-            bid=x.bid, ask=x.ask)
+        Leg(
+            occ=x.occ,
+            streamer=x.streamer,
+            strike=x.strike,
+            type=x.type,
+            bid=x.bid,
+            ask=x.ask,
+        )
         if x.type is P
         else x
         for x in ladder()
@@ -247,14 +215,11 @@ def test_spread_cost_counts_every_leg_it_has_to_cross():
 
 
 def test_spread_cost_weights_a_doubled_leg_twice():
-    fly = Strategy(
-        name="t-fly",
+    fly = strat(
+        LegSpec("body", type=P, side=SHORT, strike=Delta(0.32), qty=2),
+        LegSpec("near", type=P, side=LONG, strike=Ref("body", offset=5)),
+        LegSpec("far", type=P, side=LONG, strike=Ref("body", offset=-10)),
         bias=Bias.BULLISH,
-        legs=[
-            LegSpec("body", type=P, side=SHORT, strike=Delta(0.32), qty=2),
-            LegSpec("near", type=P, side=LONG, strike=Ref("body", offset=5)),
-            LegSpec("far", type=P, side=LONG, strike=Ref("body", offset=-10)),
-        ],
     )
     structure = one(fly, cycle(), "32Δ+5-10")
     assert structure.leg_count == 4
@@ -265,7 +230,7 @@ def test_spread_cost_weights_a_doubled_leg_twice():
 
 
 def test_a_structure_that_costs_too_much_to_cross_is_failed_not_ranked():
-    """The live AAPL case: two legs cost ~99% of the credit to cross. On a
+    """Wide markets can cost nearly the whole credit to cross. On a
     four-legger it is worse, and return on capital cannot see it."""
     wide = tuple(
         leg(x.strike, x.type, x.delta, (x.bid + x.ask) / 2, spread=0.30)
@@ -278,14 +243,11 @@ def test_a_structure_that_costs_too_much_to_cross_is_failed_not_ranked():
 
 
 def test_a_zero_premium_structure_reports_no_spread_share_rather_than_dividing():
-    fly = Strategy(
-        name="t-flat-fly",
+    fly = strat(
+        LegSpec("body", type=P, side=SHORT, strike=Delta(0.32), qty=2),
+        LegSpec("near", type=P, side=LONG, strike=Ref("body", offset=5)),
+        LegSpec("far", type=P, side=LONG, strike=Ref("body", offset=-15)),
         bias=Bias.BULLISH,
-        legs=[
-            LegSpec("body", type=P, side=SHORT, strike=Delta(0.32), qty=2),
-            LegSpec("near", type=P, side=LONG, strike=Ref("body", offset=5)),
-            LegSpec("far", type=P, side=LONG, strike=Ref("body", offset=-15)),
-        ],
         require=[Require("spread_cost", "<=", 0.25)],
     )
     structure = one(fly, cycle(), "32Δ+5-15")
@@ -303,16 +265,16 @@ def test_evaluate_returns_every_variant_including_the_failures():
 def test_variants_that_resolve_to_the_same_contracts_collapse_to_one():
     """A coarse ladder maps several requested widths onto one strike. Two
     rows for one trade means one of the labels is wrong."""
-    strategy = Strategy(
-        name="t-vertical-wide",
+    strategy = strat(
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
+        # -10 and -11 both land on the 80 strike of a 5-point ladder
+        LegSpec(
+            "long_put",
+            type=P,
+            side=LONG,
+            strike=Ref("short_put", offset=[-10, -11]),
+        ),
         bias=Bias.BULLISH,
-        legs=[
-            LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
-            # -10 and -11 both land on the 80 strike of a 5-point ladder
-            LegSpec(
-                "long_put", type=P, side=LONG, strike=Ref("short_put", offset=[-10, -11])
-            ),
-        ],
     )
     assert strategy.variant_count == 2
     structures = evaluate(strategy, cycle())
@@ -322,14 +284,16 @@ def test_variants_that_resolve_to_the_same_contracts_collapse_to_one():
 
 
 def test_a_delta_ladder_collapsed_by_dropouts_refuses_the_labels_it_missed():
-    """From the code-health review's `repro_dedup.py`, on this file's own
-    fixtures: a chain where only the 95 put still quotes below spot collapses
-    all three requested deltas onto one contract. The 29.5-delta contract is
-    an honest 30Δ and a 13.5-point lie as a 16Δ, so only the 30Δ variant may
-    survive — before the gate this shipped as `cash-secured-put · 16Δ`,
-    ok=True, with `worst_off_target` 0.135 and nothing consulting it."""
-    coarse = (leg(95, P, -0.295, 2.07), leg(100, P, -0.50, 3.50),
-              leg(100, C, 0.50, 3.50), leg(105, C, 0.30, 2.00))
+    """A chain where only the 95 put still quotes below spot collapses all
+    three requested deltas onto one contract. The 29.5-delta contract is an
+    honest 30Δ and a 13.5-point miss as a 16Δ, so only the 30Δ variant may
+    survive."""
+    coarse = (
+        leg(95, P, -0.295, 2.07),
+        leg(100, P, -0.50, 3.50),
+        leg(100, C, 0.50, 3.50),
+        leg(105, C, 0.30, 2.00),
+    )
     csp = STRATEGIES["cash-secured-put"]  # Delta([0.16, 0.20, 0.30])
     structures = evaluate(csp, cycle(coarse))
 
@@ -345,9 +309,14 @@ def test_a_delta_ladder_collapsed_by_dropouts_refuses_the_labels_it_missed():
 def test_no_built_variant_can_carry_a_label_its_contracts_do_not_have():
     """The property the gate exists for, over every shipped strategy and a
     ladder coarse enough to strand each requested delta."""
-    coarse = (leg(75, P, -0.02, 0.10), leg(95, P, -0.295, 2.07),
-              leg(100, P, -0.50, 3.50), leg(100, C, 0.50, 3.50),
-              leg(105, C, 0.30, 2.00), leg(125, C, 0.02, 0.10))
+    coarse = (
+        leg(75, P, -0.02, 0.10),
+        leg(95, P, -0.295, 2.07),
+        leg(100, P, -0.50, 3.50),
+        leg(100, C, 0.50, 3.50),
+        leg(105, C, 0.30, 2.00),
+        leg(125, C, 0.02, 0.10),
+    )
     cy = cycle(coarse)
     for strategy in ALL:
         for structure in evaluate(strategy, cy):
@@ -359,18 +328,20 @@ def test_no_built_variant_can_carry_a_label_its_contracts_do_not_have():
 
 
 def test_variants_on_one_contract_keep_the_closest_delta_label():
-    """The dedup tiebreak compared `worst_strike_miss`, which is None for
-    every delta-selected leg — so `0 < 0` was always False and the
-    first-enumerated variant won regardless of what it landed on. Here 16Δ
+    """The dedup tiebreak must weigh delta misses: `worst_strike_miss` is None
+    for every delta-selected leg, so it cannot separate them. Here 16Δ
     enumerates first and 20Δ is the closer label."""
-    strategy = Strategy(
-        name="t-csp-ladder",
+    strategy = strat(
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.16, 0.20])),
         bias=Bias.BULLISH,
-        legs=[LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.16, 0.20]))],
     )
     # One quoted put below spot, at a delta both requests can honestly reach.
-    coarse = (leg(90, P, -0.19, 1.20), leg(100, P, -0.50, 3.50),
-              leg(100, C, 0.50, 3.50), leg(105, C, 0.30, 2.00))
+    coarse = (
+        leg(90, P, -0.19, 1.20),
+        leg(100, P, -0.50, 3.50),
+        leg(100, C, 0.50, 3.50),
+        leg(105, C, 0.30, 2.00),
+    )
     structures = evaluate(strategy, cycle(coarse))
 
     assert len(structures) == 1
@@ -416,13 +387,9 @@ def test_best_never_returns_a_variant_that_fails_the_pop_floor():
     """A wider/higher-delta strangle carries more credit and a higher
     annualized_roc, but a lower pop. Ranked on annualized_roc alone, `best`
     would pick the worse-odds variant; the pop floor must stop it."""
-    strategy = Strategy(
-        name="t-pop-gate",
-        bias=Bias.NEUTRAL,
-        legs=[
-            LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.32])),
-            LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.32])),
-        ],
+    strategy = strat(
+        LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.32])),
+        LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.32])),
         require=[Require("pop", ">=", 0.70)],
     )
     structures = evaluate(strategy, cycle())
@@ -437,9 +404,9 @@ def test_best_never_returns_a_variant_that_fails_the_pop_floor():
 
 
 def test_a_flat_smile_leaves_pop_on_the_atm_number():
-    """Requirement: a symmetric chain must be unchanged. The default ladder
-    quotes 30% on every strike, so the per-boundary read has to land exactly
-    where the single-ATM-vol read did."""
+    """The default ladder quotes 30% on every strike, so pricing each
+    breakeven under its local vol has to land exactly on the ATM-only
+    number."""
     structure = one(STRANGLE_20, cycle(), "20Δ/20Δ")
     cy = structure.cycle
     assert cy.atm_iv == pytest.approx(0.30)
@@ -449,9 +416,8 @@ def test_a_flat_smile_leaves_pop_on_the_atm_number():
 
 
 def test_put_over_call_skew_pulls_pop_below_the_atm_only_number():
-    """Requirement: a skewed chain must report a lower POP. Same strikes,
-    same credit, same `atm_iv` — only the wings' own vols differ, and the
-    fatter downside has to show up as worse odds."""
+    """Same strikes, same credit, same `atm_iv` — only the wings' own vols
+    differ, and the fatter downside has to show up as worse odds."""
     structure = one(STRANGLE_20, cycle(legs=skewed_ladder()), "20Δ/20Δ")
     assert structure.cycle.atm_iv == pytest.approx(0.30)  # unchanged by the smile
     atm_only = pop_over_intervals(
@@ -480,9 +446,8 @@ def test_pop_falls_back_to_atm_when_only_the_atm_strike_carries_iv():
 
 
 def test_be_over_em_measures_the_nearer_breakeven_in_expected_moves():
-    """Moved down from the strangle-era chain tests: the same read, now
-    derived from the payoff's breakevens rather than a structure that knew
-    it had exactly two."""
+    """Derived from the payoff's breakevens, so it holds for any number of
+    them, not only a strangle's two."""
     cy = cycle()
     # straddle 7.00, 1st OTM strangle 4.00, 2nd 2.40, weighted 60/30/10
     em = 0.6 * 7.00 + 0.3 * 4.00 + 0.1 * 2.40
@@ -493,13 +458,9 @@ def test_be_over_em_measures_the_nearer_breakeven_in_expected_moves():
     assert structure.be_over_em == pytest.approx(12.40 / em)
 
 
-LADDERED_STRANGLE = Strategy(
-    name="t-ladder",
-    bias=Bias.NEUTRAL,
-    legs=[
-        LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.12, 0.20])),
-        LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.12, 0.20])),
-    ],
+LADDERED_STRANGLE = strat(
+    LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.08, 0.12, 0.20])),
+    LegSpec("short_call", type=C, side=SHORT, strike=Delta([0.08, 0.12, 0.20])),
 )
 
 
@@ -507,8 +468,6 @@ def _shortlist_priced(structures, count):
     """The first `count` passing variants carrying a broker figure, the rest
     left on the formula — the shape `enrich_with_broker_bpr` produces on a
     name with more passing variants than the bounded pull covers."""
-    from dataclasses import replace
-
     priced = 0
     out = []
     for s in rank(structures):
@@ -522,11 +481,9 @@ def _shortlist_priced(structures, count):
 
 def test_a_partly_priced_ladder_orders_on_the_formula_throughout():
     """The pull is bounded, so rows past the cut keep the formula while the
-    ones above them carry portfolio margin. Interleaving the two floats
-    whichever was measured by the more generous model to the top of its own
+    ones above them carry the broker figure. Interleaving the two floats
+    whichever was priced by the more generous model to the top of its own
     drill-in."""
-    from tau.build import uniformly_broker_priced
-
     structures = evaluate(LADDERED_STRANGLE, cycle())
     passing = [s for s in structures if s.ok]
     assert len(passing) > 2  # a real ladder, not a single row
@@ -539,25 +496,18 @@ def test_a_partly_priced_ladder_orders_on_the_formula_throughout():
 
 
 def test_a_fully_priced_ladder_orders_on_the_broker_figures():
-    from dataclasses import replace
-
-    from tau.build import uniformly_broker_priced
-
     structures = evaluate(LADDERED_STRANGLE, cycle())
-    # every passing row priced, and the widest one flattered enough to lead
+    # every passing row priced, and the last-ranked one flattered enough to lead
     passing = rank([s for s in structures if s.ok])
     laggard = passing[-1]
     priced = [
-        replace(s, broker_bpr=s.bpr * (0.1 if s is laggard else 1.0))
-        for s in passing
+        replace(s, broker_bpr=s.bpr * (0.1 if s is laggard else 1.0)) for s in passing
     ]
     assert uniformly_broker_priced(priced, "annualized_roc")
     assert rank(priced)[0].variant == laggard.variant
 
 
 def test_ordering_on_a_metric_that_ignores_buying_power_is_unaffected():
-    from tau.build import uniformly_broker_priced
-
     structures = evaluate(LADDERED_STRANGLE, cycle())
     mixed = _shortlist_priced(structures, 1)
     assert uniformly_broker_priced(mixed, "credit")

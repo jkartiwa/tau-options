@@ -1,17 +1,20 @@
+import itertools
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 
 import pytest
 
 from tau.chain import (
     MAX_STRIKES_PER_SIDE,
-    Cycle,
+    UNSTRIDED_CORE,
     Leg,
+    _stride,
     choose_expiration,
     select_strikes,
     strike_ladder,
 )
 from tau.payoff import OptionType
+from tests.factories import cycle
 
 C, P = OptionType.CALL, OptionType.PUT
 
@@ -35,17 +38,6 @@ def leg(strike, option_type, delta, bid=1.0, ask=1.2, iv=0.30):
         ask=ask,
         delta=delta,
         iv=iv,
-    )
-
-
-def cycle(legs, underlying=100.0, dte=45):
-    return Cycle(
-        symbol="TEST",
-        expiration=date(2026, 9, 4),
-        dte=dte,
-        underlying=underlying,
-        legs=tuple(legs),
-        fetched_at=datetime.now(UTC),
     )
 
 
@@ -88,12 +80,12 @@ def test_iv_at_interpolates_linearly_between_bracketing_strikes():
 
 def test_iv_at_is_flat_outside_the_quoted_strike_range():
     cy = cycle(EM_LEGS, underlying=100.0)
-    assert cy.iv_at(50.0, P) == pytest.approx(0.33)   # below the lowest put
+    assert cy.iv_at(50.0, P) == pytest.approx(0.33)  # below the lowest put
     assert cy.iv_at(500.0, C) == pytest.approx(0.28)  # above the highest call
 
 
 def test_iv_at_is_none_when_that_side_carries_no_iv():
-    calls_only = tuple(leg for leg in EM_LEGS if leg.type is C)
+    calls_only = tuple(lg for lg in EM_LEGS if lg.type is C)
     assert cycle(calls_only).iv_at(95.0, P) is None
     assert cycle((leg(100, C, 0.50, iv=None),)).iv_at(100.0, C) is None
 
@@ -133,33 +125,41 @@ def test_strike_ladder_groups_call_and_put_by_strike():
 
 
 def test_strike_window_spans_the_wings_on_a_dense_ladder():
-    """The original bug: a count cap stopped the window short of the 16-delta
-    strikes on densely struck names."""
+    """A count cap must not stop the window short of the 16-delta strikes on
+    densely struck names."""
     strikes = [FakeStrike(s) for s in range(500, 900)]  # 400 one-point strikes
     sel = select_strikes(strikes, underlying=684.0, dte=40, iv_hint=0.194)
     prices = [s.strike_price for s in sel]
     # one sigma is ~45 points here; the window must reach well beyond it
     assert min(prices) <= 684 - 90
     assert max(prices) >= 684 + 90
-    # Still thinned: the striding cap holds per side, plus the outermost
-    # strike each way, which _stride always keeps so the window's edge
-    # survives. Expressed against the constant so raising the budget doesn't
-    # need this number edited by hand.
-    assert len(sel) <= 2 * (MAX_STRIKES_PER_SIDE + 1)
+    # Still thinned. Expressed against the constant so raising the budget
+    # doesn't need this number edited by hand.
+    assert len(sel) <= 2 * MAX_STRIKES_PER_SIDE
 
 
 def test_strike_window_keeps_the_near_money_ladder_unbroken():
     """Multi-leg structures place a wing a fixed number of dollars from their
     short leg. Striding right through the money would delete the strike that
     wing points at, and the spread would come back narrower than its label."""
-    from tau.chain import UNSTRIDED_CORE
-
     strikes = [FakeStrike(s) for s in range(500, 900)]
     sel = select_strikes(strikes, underlying=684.0, dte=40, iv_hint=0.194)
     prices = sorted(s.strike_price for s in sel)
     near = [p for p in prices if abs(p - 684) < UNSTRIDED_CORE]
-    gaps = {b - a for a, b in zip(near, near[1:])}
+    gaps = {b - a for a, b in itertools.pairwise(near)}
     assert gaps == {1}, f"near-the-money ladder is not contiguous: {near}"
+
+
+def test_stride_holds_the_cap_and_keeps_both_ends():
+    for n in range(1, 60):
+        items = list(range(n))
+        for cap in range(1, 12):
+            for core in (0, 3):
+                out = _stride(items, cap, core)
+                assert len(out) == min(n, cap)
+                assert out == sorted(set(out))
+                assert out[-1] == items[-1]
+                assert out[: min(core, cap - 1, n)] == items[: min(core, cap - 1, n)]
 
 
 def test_strike_window_without_spot_falls_back_to_the_middle():
@@ -194,7 +194,5 @@ def test_choose_expiration_excludes_weeklies():
 
 
 def test_choose_expiration_none_when_only_weeklies_available():
-    chain = FakeChain(
-        expirations=(FakeExpiration(date(2026, 9, 4), 40, "Weekly"),)
-    )
+    chain = FakeChain(expirations=(FakeExpiration(date(2026, 9, 4), 40, "Weekly"),))
     assert choose_expiration(chain, target_dte=45) is None

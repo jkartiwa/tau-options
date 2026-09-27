@@ -5,12 +5,16 @@ every structure the search produced, so disabling a strategy re-ranks the list
 from what is already in memory, and re-enabling it costs nothing either.
 """
 
+from collections.abc import Iterable
+
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Static
+
+from tau.strategy import Strategy
 
 COLUMNS = ("", "STRATEGY", "BIAS", "VARIANTS")
 
@@ -35,10 +39,10 @@ class StrategyPicker(ModalScreen[set[str]]):
         Binding("escape", "close", "done"),
         Binding("space", "toggle", "toggle"),
         Binding("a", "enable_all", "all"),
-        Binding("n", "enable_none", "none"),
+        Binding("n", "enable_only", "only"),
     ]
 
-    def __init__(self, strategies, enabled: set[str]) -> None:
+    def __init__(self, strategies: Iterable[Strategy], enabled: set[str]) -> None:
         super().__init__()
         self._strategies = list(strategies)
         # A copy: the picker edits its own set and hands it back on close, so
@@ -49,9 +53,7 @@ class StrategyPicker(ModalScreen[set[str]]):
         with Vertical(id="picker"):
             yield Static("Strategies searched", id="picker-title")
             yield DataTable(id="picker-table", cursor_type="row")
-            yield Static(
-                "space toggle · a all · n none · esc done", id="picker-help"
-            )
+            yield Static("space toggle · a all · n only · esc done", id="picker-help")
 
     def on_mount(self) -> None:
         table = self.query_one("#picker-table", DataTable)
@@ -75,14 +77,12 @@ class StrategyPicker(ModalScreen[set[str]]):
             # renders as nothing at all when it is parsed rather than shown.
             # Disabled rows are greyed, matching the rejected rows elsewhere.
             style = "" if on else "dim"
-            table.add_row(
-                *(Text(c, style=style) for c in cells), key=strategy.name
-            )
+            table.add_row(*(Text(c, style=style) for c in cells), key=strategy.name)
         if self._strategies:
             table.move_cursor(row=max(0, min(cursor, len(self._strategies) - 1)))
 
     @property
-    def highlighted(self):
+    def highlighted(self) -> Strategy | None:
         table = self.query_one("#picker-table", DataTable)
         if not self._strategies or table.cursor_row < 0:
             return None
@@ -108,11 +108,13 @@ class StrategyPicker(ModalScreen[set[str]]):
         self._enabled = {s.name for s in self._strategies}
         self.repaint()
 
-    def action_enable_none(self) -> None:
+    def action_enable_only(self) -> None:
         """Leaves the highlighted one on, for the same reason `toggle` will not
         clear the last strategy: this is a way to isolate one, not to empty the
         list."""
-        strategy = self.highlighted or (self._strategies[0] if self._strategies else None)
+        strategy = self.highlighted or (
+            self._strategies[0] if self._strategies else None
+        )
         self._enabled = {strategy.name} if strategy is not None else set()
         self.repaint()
 

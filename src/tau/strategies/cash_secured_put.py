@@ -7,8 +7,8 @@ strike x 100 instead, so read the return on capital accordingly.
 """
 
 from tau.payoff import OptionType, Side
-from tau.strategy import Bias, Delta, LegSpec, Require, Strategy
 from tau.strategies.defaults import MAX_SPREAD_COST, MIN_POP
+from tau.strategy import Bias, Delta, LegSpec, Require, Strategy
 
 P = OptionType.PUT
 SHORT = Side.SHORT

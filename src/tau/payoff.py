@@ -2,32 +2,24 @@
 
 Composition is the right model for legs and the wrong model for math. An iron
 condor is "two verticals" in its leg list and in nothing else: margin does not
-compose (two verticals charged separately is 2x width, a condor is charged
-1x because only one side can lose), probabilities do not compose (it is the
-same underlying variable in both), and a jade lizard's defining property —
-no upside risk — is a pricing outcome rather than a shape, so a structure
-built from the right legs may not have it on any given day.
+compose (two verticals charged separately is 2x width, a condor is charged 1x
+because only one side can lose), and probabilities do not compose (both sides
+depend on the same underlying). So every metric is derived from the payoff
+function of the whole signed leg list, not summed over components.
 
-So the universal representation is the payoff function, not the taxonomy.
-Given a signed leg list and quoted prices, every metric worth ranking on is
-derivable here, once, generically.
+Everything here is pure: no I/O, no SDK types, no chain types. The payoff is
+piecewise-linear with kinks exactly at the strikes, so breakevens, extrema and
+profitable regions are solved analytically rather than sampled.
 
-Everything in this module is pure: no I/O, no SDK types, no chain types. The
-payoff is piecewise-linear with kinks exactly at the strikes, which is what
-lets breakevens, extrema and profitable regions be solved analytically rather
-than sampled.
-
-Buying power stays an *estimate* from the standard naked-margin formula —
-never a broker quote. The broker's own figure comes from a separate dry-run
-calculation (`tau/broker.py`) that overrides this formula when the account
-answers; this formula is what every offline and fallen-back read uses. The
-formula is not a portfolio-margin model, so it must be checked against
-tastytrade's own figure the first time each new structure family is traded.
+Buying power is an estimate from the standard naked-margin formula. The
+broker's own figure comes from a dry-run (`broker.py`) and overrides it when
+available.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import pairwise
 from math import erf, inf, log, sqrt
 
 CONTRACT_MULTIPLIER = 100
@@ -41,8 +33,7 @@ MIN_PER_CONTRACT = 50.0
 
 
 class OptionType(StrEnum):
-    """Values match OCC symbols and the strings chain.Leg.right already
-    carries, so `leg.right == OptionType.CALL` is true without a conversion."""
+    """Values match the call/put letter in OCC option symbols."""
 
     CALL = "C"
     PUT = "P"
@@ -54,9 +45,7 @@ class Side(StrEnum):
 
     @property
     def sign(self) -> int:
-        """+1 long, -1 short — the one thing the payoff engine needs from a
-        side. It lives on the enum so there is no parallel lookup table to
-        drift out of sync."""
+        """+1 long, -1 short."""
         return 1 if self is Side.LONG else -1
 
 
@@ -120,14 +109,14 @@ def _kinks(legs: tuple[PayoffLeg, ...]) -> list[float]:
 
 
 def breakevens(legs: tuple[PayoffLeg, ...]) -> list[float]:
-    """Every underlying price where the structure breaks even at expiry.
-    Handles one, two or four identically — the payoff is piecewise-linear, so
-    each sign change between consecutive kinks has exactly one root."""
+    """Every underlying price where the structure breaks even at expiry. The
+    payoff is piecewise-linear, so each sign change between consecutive kinks
+    has exactly one root."""
     points = _kinks(legs)
     if len(points) < 2:
         return []
     found: list[float] = []
-    for a, b in zip(points, points[1:]):
+    for a, b in pairwise(points):
         pa, pb = payoff_at(legs, a), payoff_at(legs, b)
         if pa == 0.0 and a > 0.0:
             found.append(a)
@@ -165,9 +154,8 @@ def worst_loss_up(legs: tuple[PayoffLeg, ...], spot: float) -> float:
     """Worst loss at or above spot, as a positive magnitude; 0.0 when there is
     no loss up there and `inf` when the tail is open.
 
-    This is what makes a jade lizard's defining property expressible as a
-    plain scalar comparison (`worst_loss_up <= 0`) with no expression
-    language in the constraint vocabulary.
+    This lets a jade lizard's defining property, no upside risk, be a plain
+    scalar constraint (`worst_loss_up <= 0`).
     """
     if slope_right(legs) < 0:
         return inf
@@ -179,10 +167,8 @@ def worst_loss_down(legs: tuple[PayoffLeg, ...], spot: float) -> float:
     """Worst loss at or below spot, as a positive magnitude.
 
     Unlike `worst_loss_up` this is never `inf`: the underlying cannot go below
-    zero, so a naked short put's worst case is a real, finite, large number.
-    The asymmetry is deliberate — reporting `inf` here would hide the one
-    figure worth looking at. Margin treats the tail as open regardless, which
-    `bpr` handles separately.
+    zero, so a naked short put's worst case is a finite number worth showing.
+    Margin treats that tail as open regardless, which `bpr` handles.
     """
     points = [0.0] + [k for k in strikes(legs) if k < spot] + [spot]
     return max(0.0, -min(payoff_at(legs, point) for point in points))
@@ -195,9 +181,7 @@ def naked_side_requirement(
 
     Which way is out of the money depends on the side: a short put is OTM
     below spot, a short call above it. An in-the-money short has no OTM
-    distance to hand back, so the 20 %-of-underlying term is charged in full
-    — taking `abs(spot - strike)` there would discount the leg that is
-    actually at risk.
+    distance to subtract, so the 20%-of-underlying term is charged in full.
     """
     if option_type is OptionType.PUT:
         otm = max(0.0, spot - strike)
@@ -220,18 +204,15 @@ def _open_side_requirement(
     """Naked margin on a side whose tail is open.
 
     The short leg with the largest requirement sets the rate, times the net
-    short quantity. That is exact for one net-short contract, which is every
-    structure shipped today; a ratio spread with two net-short contracts gets
-    a conservative estimate rather than an exact figure.
+    short quantity. That is exact for one net-short contract, which covers
+    every shipped structure; more net-short contracts get a conservative
+    estimate.
     """
-    shorts = [
-        leg for leg in legs if leg.type is option_type and leg.side is Side.SHORT
-    ]
+    shorts = [leg for leg in legs if leg.type is option_type and leg.side is Side.SHORT]
     if not shorts or net_short <= 0:
         return 0.0
     per = max(
-        naked_side_requirement(spot, leg.strike, leg.mid, option_type)
-        for leg in shorts
+        naked_side_requirement(spot, leg.strike, leg.mid, option_type) for leg in shorts
     )
     return per * net_short
 
@@ -241,12 +222,12 @@ def bpr(legs: tuple[PayoffLeg, ...], spot: float) -> float | None:
 
     Defined risk on both tails is charged as the max loss. Otherwise the open
     side is charged naked margin, the closed side its own worst loss, and only
-    the larger of the two is charged — one side cannot lose while the other
-    does — plus the premium collected on the side that went uncharged.
+    the larger of the two is charged (both sides cannot lose at once), plus
+    the premium collected on the uncharged side.
 
-    Reduces correctly: a short strangle to the larger naked side plus the
-    other side's credit, an iron condor to width minus credit, a jade lizard
-    to the naked put.
+    This reduces to the familiar figures: a short strangle to the larger naked
+    side plus the other side's credit, an iron condor to width minus credit,
+    a jade lizard to the naked put plus the call spread's credit.
     """
     if not legs or spot <= 0:
         return None
@@ -279,9 +260,11 @@ def profitable_intervals(legs: tuple[PayoffLeg, ...]) -> list[tuple[float, float
     bounds = [0.0] + breakevens(legs) + [inf]
     ks = strikes(legs)
     out: list[tuple[float, float]] = []
-    for a, b in zip(bounds, bounds[1:]):
-        if b == inf:
-            probe = (a + max(1.0, a * 0.5)) if a > 0 else (ks[len(ks) // 2] if ks else 1.0)
+    for a, b in pairwise(bounds):
+        if b == inf and a > 0:
+            probe = a + max(1.0, a * 0.5)
+        elif b == inf:
+            probe = ks[len(ks) // 2] if ks else 1.0
         else:
             probe = (a + b) / 2
         if payoff_at(legs, probe) > 0:
@@ -291,14 +274,6 @@ def profitable_intervals(legs: tuple[PayoffLeg, ...]) -> list[tuple[float, float
 
 def _norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + erf(x / sqrt(2.0)))
-
-
-def _lognormal_cdf(bound: float, spot: float, sigma: float, drift: float) -> float:
-    if bound <= 0:
-        return 0.0
-    if bound == inf:
-        return 1.0
-    return _norm_cdf((log(bound / spot) - drift) / sigma)
 
 
 def _boundary_cdf(
@@ -318,8 +293,8 @@ def _boundary_cdf(
     local = iv_at(bound, option_type) if iv_at is not None else None
     vol = local if local is not None and local > 0 else iv
     sigma = vol * sqrt(dte / DAYS_PER_YEAR)
-    # Driftless in log terms means a -sigma^2/2 median shift.
-    return _lognormal_cdf(bound, spot, sigma, -0.5 * sigma * sigma)
+    # A driftless price has a -sigma^2/2 drift in log terms.
+    return _norm_cdf((log(bound / spot) + 0.5 * sigma * sigma) / sigma)
 
 
 def pop_over_intervals(
@@ -332,30 +307,16 @@ def pop_over_intervals(
     """Probability the underlying finishes inside any profitable interval,
     under a driftless lognormal.
 
-    Deliberately not the 1 - delta shortcut: delta measures finishing beyond
-    the *strikes*, while the trade is profitable out to the breakevens, which
-    the credit pushes further out. The shortcut understates every proposal's
-    odds.
+    Not the 1 - delta shortcut: delta measures finishing beyond the strikes,
+    while the trade is profitable out to the breakevens, which the credit
+    pushes further out.
 
-    With no `iv_at`, one vol prices the whole distribution and the smile is
-    thrown away. Pass `iv_at(price, option_type) -> vol | None` and each
-    boundary is instead priced under the vol local to it: the put side for a
-    lower boundary, the call side for an upper one. On an equity where puts
-    are bid over calls that lowers the estimate, which is the point — a single
-    ATM vol systematically overstates POP on skewed names.
-
-    Be clear about what that is. Reading a lower boundary off one lognormal
-    and the upper boundary off another is a practitioner approximation, not a
-    distribution: the two CDFs subtracted here do not belong to the same
-    random variable, and nothing constrains the result to be monotone in the
-    skew (a call side quoted far under ATM can push the number back *up*). It
-    is strictly better than ATM-for-everything and it is what a desk would
-    do; it is not a correct POP. The rigorous version recovers the
-    risk-neutral density from the whole smile (Breeden-Litzenberger across the
-    chain) and is not implemented here.
-
-    A boundary whose own vol is missing falls back to `iv` rather than
-    invalidating the proposal — a partially skewed estimate beats none.
+    With no `iv_at`, one vol prices the whole distribution. With
+    `iv_at(price, option_type) -> vol | None`, each boundary uses the vol
+    local to it (put side below, call side above), so put skew lowers the
+    estimate. This is a practitioner approximation: the two CDFs do not come
+    from one distribution. A boundary with no vol of its own falls back to
+    `iv`.
     """
     if spot <= 0 or iv <= 0 or dte <= 0:
         return None
@@ -365,13 +326,3 @@ def pop_over_intervals(
             upper, spot, iv, dte, OptionType.CALL, iv_at
         ) - _boundary_cdf(lower, spot, iv, dte, OptionType.PUT, iv_at)
     return min(1.0, max(0.0, total))
-
-
-def pop_between(
-    spot: float, lower: float, upper: float, iv: float, dte: int
-) -> float | None:
-    """Single-interval form, kept for the two-breakeven case. Single-vol
-    only — the skew-aware path is `pop_over_intervals(..., iv_at=...)`."""
-    if spot <= 0 or lower <= 0 or upper <= lower or iv <= 0 or dte <= 0:
-        return None
-    return pop_over_intervals([(lower, upper)], spot, iv, dte)

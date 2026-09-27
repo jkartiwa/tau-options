@@ -1,4 +1,5 @@
-from math import inf
+from math import inf, log, sqrt
+from statistics import NormalDist
 
 import pytest
 
@@ -10,9 +11,9 @@ from tau.payoff import (
     breakevens,
     max_loss,
     max_profit,
+    naked_side_requirement,
     net_premium,
     payoff_at,
-    pop_between,
     pop_over_intervals,
     profitable_intervals,
     slope_left,
@@ -160,6 +161,42 @@ def test_strangle_margin_reduces_to_the_larger_side_plus_the_other_premium():
     assert bpr(STRANGLE, 100.0) == pytest.approx(1200.0 + 100.0)
 
 
+def test_naked_requirement_uses_the_greater_of_two_formulas():
+    # far OTM, cheap premium -> the 10%-of-strike floor should bind
+    req = naked_side_requirement(spot=100.0, strike=50.0, premium=0.10, option_type=P)
+    assert req == pytest.approx(
+        max(
+            (0.20 * 100 - 50 + 0.10) * 100,
+            (0.10 * 50 + 0.10) * 100,
+            50.0,
+        )
+    )
+
+
+def test_naked_requirement_floor_applies_to_tiny_premium():
+    req = naked_side_requirement(spot=10.0, strike=9.0, premium=0.01, option_type=P)
+    assert req >= 50.0
+
+
+def test_naked_requirement_otm_term_is_side_aware():
+    # spot 100, premium 2.00. K=90 is OTM for a put by 10 and ITM for a
+    # call; K=110 is the mirror image.
+    assert naked_side_requirement(100.0, 90.0, 2.00, P) == pytest.approx(
+        max((0.20 * 100 - 10 + 2.00) * 100, (0.10 * 90 + 2.00) * 100, 50.0)
+    )
+    assert naked_side_requirement(100.0, 110.0, 2.00, C) == pytest.approx(
+        max((0.20 * 100 - 10 + 2.00) * 100, (0.10 * 110 + 2.00) * 100, 50.0)
+    )
+
+
+def test_naked_requirement_charges_an_itm_short_no_otm_credit():
+    # ITM has no out-of-the-money distance to subtract: the 20% term is
+    # charged in full. A short put at 110 against spot 100 is ITM.
+    # max((0.20*100 + 2.00)*100, (0.10*K + 2.00)*100, 50) = 2200 either way.
+    assert naked_side_requirement(100.0, 110.0, 2.00, P) == pytest.approx(2200.0)
+    assert naked_side_requirement(100.0, 90.0, 2.00, C) == pytest.approx(2200.0)
+
+
 def test_profitable_intervals_are_bounded_by_the_breakevens():
     assert profitable_intervals(STRANGLE) == [(88.0, 112.0)]
     assert profitable_intervals(PUT_SPREAD) == [(88.0, inf)]
@@ -167,9 +204,8 @@ def test_profitable_intervals_are_bounded_by_the_breakevens():
     assert profitable_intervals(BROKEN_WING) == [(84.5, inf)]
 
 
-def test_pop_over_intervals_matches_the_two_breakeven_form():
+def test_pop_over_a_bounded_interval_is_a_probability():
     over = pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 45)
-    assert over == pytest.approx(pop_between(100.0, 88.0, 112.0, 0.30, 45))
     assert 0.0 < over < 1.0
 
 
@@ -179,7 +215,24 @@ def test_pop_of_an_open_ended_region_counts_the_whole_tail():
     assert pop < 1.0
 
 
+def test_pop_is_the_driftless_lognormal_mass_between_the_breakevens():
+    # sigma = 0.30 * sqrt(45/365); log-price mean -sigma^2/2. 90/110 sit
+    # about one sigma out, so roughly two thirds of the mass lies between.
+    sigma = 0.30 * sqrt(45 / 365)
+    z = NormalDist(-sigma * sigma / 2, sigma).cdf
+    p = pop_over_intervals([(90.0, 110.0)], spot=100.0, iv=0.30, dte=45)
+    assert p == pytest.approx(z(log(1.1)) - z(log(0.9)))
+    assert p == pytest.approx(0.659, abs=5e-4)
+
+
+def test_pop_wider_breakevens_increase_probability():
+    narrow = pop_over_intervals([(95.0, 105.0)], 100.0, 0.30, 45)
+    wide = pop_over_intervals([(80.0, 120.0)], 100.0, 0.30, 45)
+    assert wide > narrow
+
+
 def test_pop_is_none_on_degenerate_inputs():
+    assert pop_over_intervals([(88.0, 112.0)], 0.0, 0.30, 45) is None
     assert pop_over_intervals([(88.0, 112.0)], 100.0, 0.0, 45) is None
     assert pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 0) is None
 
@@ -189,9 +242,8 @@ def _flat_smile(vol):
 
 
 def test_a_flat_smile_reproduces_the_single_vol_answer_exactly():
-    """Requirement: a symmetric chain must be unchanged. Put-side and
-    call-side vol equal to the ATM vol has to land on the old number, not
-    near it."""
+    """Put-side and call-side vol equal to the ATM vol has to land on the
+    single-vol number exactly, not near it."""
     single = pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 45)
     local = pop_over_intervals(
         [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=_flat_smile(0.30)
@@ -203,7 +255,7 @@ def test_put_over_call_skew_lowers_pop_for_a_short_strangle():
     """A realistic 45-DTE equity smile: 30% ATM, the 88 breakeven priced off
     a 36% put and the 112 breakeven off a 27% call. The downside is fatter
     than the ATM lognormal says, so the estimate has to come down."""
-    smile = {OptionType.PUT: 0.36, OptionType.CALL: 0.27}
+    smile = {P: 0.36, C: 0.27}
     skewed = pop_over_intervals(
         [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=lambda price, t: smile[t]
     )
@@ -216,17 +268,18 @@ def test_put_over_call_skew_lowers_pop_for_a_short_strangle():
 def test_a_missing_local_vol_falls_back_to_the_atm_vol_per_boundary():
     """Degrade, never fail: the put side has no IV, so the lower boundary
     reverts to the ATM vol while the upper keeps its own."""
+
     def half_smile(price, option_type):
-        return None if option_type is OptionType.PUT else 0.27
+        return None if option_type is P else 0.27
 
     both_sides = pop_over_intervals(
-        [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=lambda price, t: {
-            OptionType.PUT: 0.30, OptionType.CALL: 0.27
-        }[t]
+        [(88.0, 112.0)],
+        100.0,
+        0.30,
+        45,
+        iv_at=lambda price, t: {P: 0.30, C: 0.27}[t],
     )
-    degraded = pop_over_intervals(
-        [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=half_smile
-    )
+    degraded = pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 45, iv_at=half_smile)
     assert degraded == both_sides
     assert degraded is not None
 

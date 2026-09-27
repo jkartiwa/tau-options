@@ -1,18 +1,16 @@
-"""Capture README screenshots from a live run.
+"""Capture the documentation screenshots from a live run.
 
 Textual writes SVG, which stays sharp at any width and renders inline on
 GitHub. Run against a real account so the shots show real chains:
 
     python scripts/screenshots.py
 
-Only market data appears in these views — no positions, balances, or account
-identifiers — so the output is safe to commit.
+These views show market data only, with no positions, balances or account
+identifiers, so the output is safe to commit.
 
-Pricing a name here goes through the same buying-power path the app does, so
-a capture run POSTs order dry-run *calculations* against the account (nothing
-is placed). With a trading-scoped grant the BPR column comes back plain; with
-a read-scoped one it falls back to the formula and every figure carries the
-`~`. The committed shots are the formula ones.
+Pricing goes through the app's buying-power path, so a capture run sends order
+dry-runs to the account (nothing is placed). Without a trading-scoped grant the
+BPR column falls back to the formula estimate, marked with `~`.
 """
 
 import asyncio
@@ -20,12 +18,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+from tau.tui.app import TauApp
 
-from tau.tui.app import TauApp  # noqa: E402  (needs the env loaded first)
-
-OUT = Path(__file__).resolve().parents[1] / "docs" / "img"
-# The screen loads ~170 symbols of metrics; a chain is a websocket round trip
+ROOT = Path(__file__).resolve().parents[1]
+OUT = ROOT / "docs" / "img"
+# The screen loads ~190 symbols of metrics; a chain is a websocket round trip
 # and a shortlist is many of them at once.
 LOAD_WAIT = 25
 CHAIN_WAIT = 20
@@ -35,38 +32,53 @@ RANK_WAIT = 90
 
 
 async def main() -> None:
+    load_dotenv(ROOT / ".env")
     OUT.mkdir(parents=True, exist_ok=True)
     app = TauApp()
+
+    def shot(name: str) -> None:
+        app.save_screenshot(str(OUT / name))
+        print(name)
+
     async with app.run_test(size=(120, 34)) as pilot:
         await pilot.pause(LOAD_WAIT)
-        app.save_screenshot(str(OUT / "screen.svg"))
-        print("screen.svg")
+        shot("screen.svg")
 
         # Detail pane with a priced chain.
         await pilot.press("c")
         await pilot.pause(CHAIN_WAIT)
-        app.save_screenshot(str(OUT / "detail.svg"))
-        print("detail.svg")
+        shot("detail.svg")
 
         # Price context plus the catalyst read, on the same name.
         await pilot.press("w")
         await pilot.pause(WHY_WAIT)
-        app.save_screenshot(str(OUT / "catalyst.svg"))
-        print("catalyst.svg")
+        shot("catalyst.svg")
 
         # Ranked proposals across the whole shortlist.
         await pilot.press("p")
         await pilot.pause(RANK_WAIT)
-        app.save_screenshot(str(OUT / "rank.svg"))
-        print("rank.svg")
+        shot("rank.svg")
+
+        # One name's whole search, rejections included.
+        await pilot.press("v")
+        await pilot.pause(1)
+        shot("variants.svg")
+        await pilot.press("escape")
+        await pilot.pause(1)
+
+        # The strategy picker, over the rank list.
+        await pilot.press("S")
+        await pilot.pause(1)
+        shot("picker.svg")
+        await pilot.press("escape")
+        await pilot.pause(1)
 
         # Exclusions, back on the screen.
         await pilot.press("escape")
         await pilot.pause(1)
         await pilot.press("x")
         await pilot.pause(1)
-        app.save_screenshot(str(OUT / "excluded.svg"))
-        print("excluded.svg")
+        shot("excluded.svg")
 
 
 if __name__ == "__main__":

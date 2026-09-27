@@ -1,6 +1,7 @@
 import pytest
 
-from tau.cli import _rank_summary, _selected_strategies
+from tau.cli import _parser, _rank_summary, _selected_strategies
+from tau.fmt import bpr
 from tau.strategies import ALL, MIN_POP
 from tau.strategy import Require
 
@@ -24,6 +25,15 @@ def test_unknown_strategy_name_is_a_hard_error():
         _selected_strategies(["not-a-real-strategy"])
 
 
+def test_unknown_sort_metric_is_a_hard_error():
+    """An unknown metric reads as None on every row, which would print the
+    search unranked with no sign that the flag was ignored."""
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["variants", "SPY", "--sort", "annualised_roc"])
+    args = _parser().parse_args(["variants", "SPY", "--sort", "pop"])
+    assert args.sort == "pop"
+
+
 def test_an_empty_rank_says_so_rather_than_printing_a_bare_header():
     """Refusing a variant that missed its requested delta means a thin day can
     leave every name without a structure. That has to read as a result — a
@@ -40,8 +50,6 @@ def test_a_partly_priced_rank_reports_how_many_names_produced_one():
 def test_bpr_formatting_marks_the_formula_estimate():
     """Broker figures render plain under the `BPR` header; the formula
     estimate carries the tilde, and a missing figure stays a dash."""
-    from tau.cli import _bpr
-
-    assert _bpr(3651.0, "broker") == "3,651"
-    assert _bpr(3980.0, "estimate") == "3,980~"
-    assert _bpr(None, "estimate") == "—"
+    assert bpr(3651.0, "broker") == "3,651"
+    assert bpr(3980.0, "estimate") == "3,980~"
+    assert bpr(None, "estimate") == "—"
