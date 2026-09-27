@@ -44,11 +44,25 @@ FIXTURE = [
 ]
 
 
-def app() -> TauApp:
+def app(fixture=FIXTURE, **loaders) -> TauApp:
     async def loader():
-        return list(FIXTURE)
+        return list(fixture)
 
-    return TauApp(loader=loader)
+    return TauApp(loader=loader, **loaders)
+
+
+def _strangle_cycle(symbol="HIGH") -> Cycle:
+    """The smallest chain a strangle prices on: one 16Δ put, one 17Δ call."""
+    return Cycle(
+        symbol=symbol,
+        expiration=date(2026, 9, 4),
+        dte=40,
+        underlying=100.0,
+        legs=(
+            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
+            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
+        ),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -147,16 +161,7 @@ async def test_detail_pane_renders_and_chain_loads_on_enter():
     """Guards the Textual base-class collision that silently deadlocked the
     app: mounting a widget whose helper shadowed MessagePump._context stopped
     message dispatch entirely."""
-    cycle = Cycle(
-        symbol="HIGH",
-        expiration=date(2026, 9, 4),
-        dte=40,
-        underlying=100.0,
-        legs=(
-            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
-            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
-        ),
-    )
+    cycle = _strangle_cycle()
 
     calls = []
 
@@ -164,10 +169,7 @@ async def test_detail_pane_renders_and_chain_loads_on_enter():
         calls.append(candidate.symbol)
         return cycle
 
-    async def loader():
-        return list(FIXTURE)
-
-    a = TauApp(loader=loader, chain_loader=chain_loader)
+    a = app(chain_loader=chain_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
         pane = a.query_one("#detail")
@@ -219,12 +221,7 @@ def _why_app(history=None, brief=None, calls=None):
         calls.append(("brief", candidate.symbol))
         return brief
 
-    async def loader():
-        return list(FIXTURE)
-
-    return TauApp(
-        loader=loader, history_loader=history_loader, brief_loader=brief_loader
-    ), calls
+    return app(history_loader=history_loader, brief_loader=brief_loader), calls
 
 
 def _trip_broker_breaker() -> None:
@@ -280,16 +277,7 @@ async def test_why_does_not_cancel_an_in_flight_chain_load():
         started.set()
         await asyncio.sleep(0.3)
         chain_calls.append(candidate.symbol)
-        return Cycle(
-            symbol=candidate.symbol,
-            expiration=date(2026, 9, 4),
-            dte=40,
-            underlying=100.0,
-            legs=(
-                Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.3),
-                Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.3),
-            ),
-        )
+        return _strangle_cycle(candidate.symbol)
 
     a, _ = _why_app()
     a._chain_loader = slow_chain_loader
@@ -358,30 +346,17 @@ def _proposal(symbol, dte=40):
         underlying=100.0,
         legs=tuple(legs),
     )
-    candidate = Candidate(
-        symbol=symbol,
-        ivr=50.0,
-        ivp=50.0,
-        iv30=30.0,
-        hv30=25.0,
-        liquidity=4,
-        beta=1.0,
-        earnings_date=None,
-    )
-    return propose_on(candidate, cy)
+    return propose_on(cand(symbol, 50.0), cy)
 
 
 @pytest.mark.asyncio
 async def test_rank_view_prices_the_passing_shortlist():
-    async def loader():
-        return list(FIXTURE)  # HIGH, ERN(excluded by earnings), CHEAP pass by default
-
     proposals = {
         "HIGH": _proposal("HIGH", dte=80),
         "CHEAP": _proposal("CHEAP", dte=20),  # same trade, annualizes higher
         "MID": _proposal("MID", dte=40),
     }
-    a = TauApp(loader=loader, proposal_loader=_proposal_loader_factory(proposals))
+    a = app(proposal_loader=_proposal_loader_factory(proposals))
     async with a.run_test() as pilot:
         await pilot.pause()
         assert symbols(a) == ["HIGH", "CHEAP", "MID"]  # screen order, default IVR sort
@@ -396,16 +371,13 @@ async def test_rank_view_prices_the_passing_shortlist():
 
 @pytest.mark.asyncio
 async def test_rank_view_reuses_cached_proposals_on_reentry():
-    async def loader():
-        return [FIXTURE[0]]  # just HIGH
-
     calls = []
 
     async def track_loader(candidates, on_done):
         calls.append([c.symbol for c in candidates])
         on_done(_proposal("HIGH"))
 
-    a = TauApp(loader=loader, proposal_loader=track_loader)
+    a = app([FIXTURE[0]], proposal_loader=track_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("p")
@@ -418,16 +390,13 @@ async def test_rank_view_reuses_cached_proposals_on_reentry():
 
 @pytest.mark.asyncio
 async def test_reprice_forces_a_refetch():
-    async def loader():
-        return [FIXTURE[0]]
-
     calls = []
 
     async def track_loader(candidates, on_done):
         calls.append([c.symbol for c in candidates])
         on_done(_proposal("HIGH"))
 
-    a = TauApp(loader=loader, proposal_loader=track_loader)
+    a = app([FIXTURE[0]], proposal_loader=track_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("p")
@@ -439,11 +408,7 @@ async def test_reprice_forces_a_refetch():
 
 @pytest.mark.asyncio
 async def test_escape_returns_to_screen_view():
-    async def loader():
-        return list(FIXTURE)
-
-    a = TauApp(
-        loader=loader,
+    a = app(
         proposal_loader=_proposal_loader_factory(
             {
                 "HIGH": _proposal("HIGH"),
@@ -467,11 +432,8 @@ async def test_enter_in_the_rank_view_opens_every_variant_considered():
     """The drill-in exists so a rejection can be read. Failures stay in the
     list with their reasons rather than leaving a name looking empty."""
 
-    async def loader():
-        return [FIXTURE[0]]
-
-    a = TauApp(
-        loader=loader,
+    a = app(
+        [FIXTURE[0]],
         proposal_loader=_proposal_loader_factory({"HIGH": _proposal("HIGH")}),
     )
     async with a.run_test() as pilot:
@@ -493,11 +455,8 @@ async def test_enter_in_the_rank_view_opens_every_variant_considered():
 
 @pytest.mark.asyncio
 async def test_escape_walks_back_one_view_at_a_time():
-    async def loader():
-        return [FIXTURE[0]]
-
-    a = TauApp(
-        loader=loader,
+    a = app(
+        [FIXTURE[0]],
         proposal_loader=_proposal_loader_factory({"HIGH": _proposal("HIGH")}),
     )
     async with a.run_test() as pilot:
@@ -522,21 +481,9 @@ async def test_variants_from_the_screen_view_loads_the_chain_first():
 
     async def chain_loader(candidate):
         calls.append(candidate.symbol)
-        return Cycle(
-            symbol=candidate.symbol,
-            expiration=date(2026, 9, 4),
-            dte=40,
-            underlying=100.0,
-            legs=(
-                Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.3),
-                Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.3),
-            ),
-        )
+        return _strangle_cycle(candidate.symbol)
 
-    async def loader():
-        return [FIXTURE[0]]
-
-    a = TauApp(loader=loader, chain_loader=chain_loader)
+    a = app([FIXTURE[0]], chain_loader=chain_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("v")
@@ -553,16 +500,13 @@ async def test_strategy_picker_toggles_without_refetching():
     """Turning a strategy off is a view over structures already in hand, so it
     must re-rank with no further calls to the pricing loader."""
 
-    async def loader():
-        return [FIXTURE[0]]
-
     calls = []
 
     async def track_loader(candidates, on_done):
         calls.append([c.symbol for c in candidates])
         on_done(_proposal("HIGH"))
 
-    a = TauApp(loader=loader, proposal_loader=track_loader)
+    a = app([FIXTURE[0]], proposal_loader=track_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("p")
@@ -590,10 +534,7 @@ async def test_strategy_picker_toggles_without_refetching():
 async def test_picker_will_not_leave_every_strategy_disabled():
     """An empty rank view reads as a broken scan rather than a filter."""
 
-    async def loader():
-        return [FIXTURE[0]]
-
-    a = TauApp(loader=loader)
+    a = app([FIXTURE[0]])
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("S")
@@ -614,29 +555,17 @@ async def test_picker_will_not_leave_every_strategy_disabled():
 async def test_chain_load_survives_missing_credentials(monkeypatch):
     """No env, no broker dry-run, no crash: the chain load still caches the
     proposal with its formula figures and the detail pane renders."""
-    cycle = Cycle(
-        symbol="HIGH",
-        expiration=date(2026, 9, 4),
-        dte=40,
-        underlying=100.0,
-        legs=(
-            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
-            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
-        ),
-    )
+    cycle = _strangle_cycle()
 
     async def chain_loader(candidate):
         return cycle
-
-    async def loader():
-        return list(FIXTURE)
 
     def no_session():
         raise RuntimeError("TASTY_CLIENT_SECRET / TASTY_REFRESH_TOKEN not set (.env)")
 
     monkeypatch.setattr("tau.tui.app.get_session", no_session)
 
-    a = TauApp(loader=loader, chain_loader=chain_loader)
+    a = app(chain_loader=chain_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("c")
@@ -652,9 +581,6 @@ async def test_rank_table_marks_broker_and_formula_bpr_sources(monkeypatch):
     """Broker-sourced buying power renders plain under the `BPR` header;
     the formula estimate carries a tilde. The row itself has to say which
     model the number came from."""
-
-    async def loader():
-        return [FIXTURE[0]]  # just HIGH
 
     base = _proposal("HIGH")
     fake_account = object()
@@ -673,9 +599,7 @@ async def test_rank_table_marks_broker_and_formula_bpr_sources(monkeypatch):
     enriched = await propose_mod.enrich_with_broker_bpr(object(), base)
     assert enriched.best.bpr_source == "broker"
 
-    a = TauApp(
-        loader=loader, proposal_loader=_proposal_loader_factory({"HIGH": enriched})
-    )
+    a = app([FIXTURE[0]], proposal_loader=_proposal_loader_factory({"HIGH": enriched}))
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("p")
@@ -687,7 +611,7 @@ async def test_rank_table_marks_broker_and_formula_bpr_sources(monkeypatch):
         assert row[6] == _fmt(best.bpr, ",.0f")  # plain: broker-sourced
 
     # the same shortlist un-enriched falls back to the formula — tilde on
-    a2 = TauApp(loader=loader, proposal_loader=_proposal_loader_factory({"HIGH": base}))
+    a2 = app([FIXTURE[0]], proposal_loader=_proposal_loader_factory({"HIGH": base}))
     async with a2.run_test() as pilot:
         await pilot.pause()
         await pilot.press("p")
@@ -702,23 +626,11 @@ async def test_chain_load_renders_before_the_broker_answers(monkeypatch):
     """The drill-in must never wait on the account API. The variants show up
     on the formula figures the `~` marks as estimates, and the broker upgrades
     the rows it answers for afterwards."""
-    cycle = Cycle(
-        symbol="HIGH",
-        expiration=date(2026, 9, 4),
-        dte=40,
-        underlying=100.0,
-        legs=(
-            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
-            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
-        ),
-    )
+    cycle = _strangle_cycle()
     release = asyncio.Event()
 
     async def chain_loader(candidate):
         return cycle
-
-    async def loader():
-        return list(FIXTURE)
 
     async def slow_enrich(session, proposal, *args, **kwargs):
         await release.wait()
@@ -733,7 +645,7 @@ async def test_chain_load_renders_before_the_broker_answers(monkeypatch):
     monkeypatch.setattr("tau.tui.app.get_session", lambda: object())
     monkeypatch.setattr(propose_mod, "enrich_with_broker_bpr", slow_enrich)
 
-    a = TauApp(loader=loader, chain_loader=chain_loader)
+    a = app(chain_loader=chain_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("c")
@@ -758,23 +670,11 @@ async def test_the_variants_drill_in_upgrades_when_the_broker_answers(monkeypatc
     """Opening the drill-in before enrichment returns freezes a snapshot of
     the formula structures. The broker figures landing behind it must reach
     the rendered rows, not just the proposal cache."""
-    cycle = Cycle(
-        symbol="HIGH",
-        expiration=date(2026, 9, 4),
-        dte=40,
-        underlying=100.0,
-        legs=(
-            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
-            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
-        ),
-    )
+    cycle = _strangle_cycle()
     release = asyncio.Event()
 
     async def chain_loader(candidate):
         return cycle
-
-    async def loader():
-        return list(FIXTURE)
 
     async def slow_enrich(session, proposal, *args, **kwargs):
         await release.wait()
@@ -789,7 +689,7 @@ async def test_the_variants_drill_in_upgrades_when_the_broker_answers(monkeypatc
     monkeypatch.setattr("tau.tui.app.get_session", lambda: object())
     monkeypatch.setattr(propose_mod, "enrich_with_broker_bpr", slow_enrich)
 
-    a = TauApp(loader=loader, chain_loader=chain_loader)
+    a = app(chain_loader=chain_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("c")
@@ -902,22 +802,10 @@ async def test_a_breaker_trip_on_the_drill_in_path_reaches_the_meta_line(monkeyp
     """Working from screen mode, a user presses `c` on one name after
     another. That is a path the breaker can trip on, and nothing else
     repaints the chrome."""
-    cycle = Cycle(
-        symbol="HIGH",
-        expiration=date(2026, 9, 4),
-        dte=40,
-        underlying=100.0,
-        legs=(
-            Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.30),
-            Leg("C115", "s2", 115.0, C, bid=0.8, ask=1.0, delta=0.17, iv=0.30),
-        ),
-    )
+    cycle = _strangle_cycle()
 
     async def chain_loader(candidate):
         return cycle
-
-    async def loader():
-        return list(FIXTURE)
 
     async def trip_the_breaker(session, proposal, *args, **kwargs):
         _trip_broker_breaker()
@@ -926,7 +814,7 @@ async def test_a_breaker_trip_on_the_drill_in_path_reaches_the_meta_line(monkeyp
     monkeypatch.setattr("tau.tui.app.get_session", lambda: object())
     monkeypatch.setattr("tau.propose.enrich_with_broker_bpr", trip_the_breaker)
 
-    a = TauApp(loader=loader, chain_loader=chain_loader)
+    a = app(chain_loader=chain_loader)
     async with a.run_test() as pilot:
         await pilot.pause()
         assert "broker BPR off" not in str(a.query_one("#meta").content)
