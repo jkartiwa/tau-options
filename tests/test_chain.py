@@ -1,3 +1,4 @@
+import itertools
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -158,7 +159,7 @@ def test_strike_window_keeps_the_near_money_ladder_unbroken():
     sel = select_strikes(strikes, underlying=684.0, dte=40, iv_hint=0.194)
     prices = sorted(s.strike_price for s in sel)
     near = [p for p in prices if abs(p - 684) < UNSTRIDED_CORE]
-    gaps = {b - a for a, b in zip(near, near[1:])}
+    gaps = {b - a for a, b in itertools.pairwise(near)}
     assert gaps == {1}, f"near-the-money ladder is not contiguous: {near}"
 
 

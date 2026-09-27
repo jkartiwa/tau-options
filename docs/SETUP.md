@@ -23,7 +23,7 @@ pip install -e "."
 Two optional extras:
 
 ```bash
-pip install -e ".[dev]"            # pytest, to run the test suite
+pip install -e ".[dev]"            # pytest and ruff, to run the tests and lint
 pip install -e ".[catalyst]"       # anthropic, for the catalyst classification
 pip install -e ".[dev,catalyst]"   # both
 ```
@@ -104,6 +104,7 @@ structures fail their spread-cost check than would during the session.
 ```bash
 pip install -e ".[dev]"
 pytest
+ruff check
 ```
 
 None of the tests touch the live API.

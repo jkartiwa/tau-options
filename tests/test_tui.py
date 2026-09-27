@@ -1,6 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -641,10 +640,11 @@ async def test_rank_table_marks_broker_and_formula_bpr_sources(monkeypatch):
     """Broker-sourced buying power renders plain under the `BPR` header;
     the formula estimate carries a tilde. The row itself has to say which
     model the number came from."""
+    from textual.widgets import DataTable
+
     from tau import broker as broker_mod
     from tau import propose as propose_mod
     from tau.tui.app import _fmt
-    from textual.widgets import DataTable
 
     async def loader():
         return [FIXTURE[0]]  # just HIGH

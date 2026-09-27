@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.16"]
 # The catalyst read is optional: without it the headlines still show.
 catalyst = ["anthropic>=0.117"]
 
@@ -30,3 +30,18 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 tau = ["data/*.txt"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+ignore = [
+    # Dates are the trader's local calendar day, which is what DTE counts.
+    "DTZ011",
+    # Every broad catch is a fallback or an error shown to the user.
+    "BLE001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Textual's BINDINGS are class-level lists by design.
+"src/tau/tui/*" = ["RUF012"]

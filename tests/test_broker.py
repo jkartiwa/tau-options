@@ -268,7 +268,7 @@ def test_a_missing_zero_or_unusable_margin_requirement_is_no_figure():
         SimpleNamespace(isolated_order_margin_requirement=None)
     ) is None
     assert margin_requirement(
-        SimpleNamespace(isolated_order_margin_requirement=Decimal("0"))
+        SimpleNamespace(isolated_order_margin_requirement=Decimal(0))
     ) is None
     assert margin_requirement(
         SimpleNamespace(isolated_order_margin_requirement="not a number")
