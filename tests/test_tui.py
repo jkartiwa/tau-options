@@ -367,6 +367,36 @@ async def test_reprice_forces_a_refetch():
 
 
 @pytest.mark.asyncio
+async def test_reprice_mid_run_reprices_the_names_already_done():
+    """`R` while a run is in flight restarts it over the whole pass. Waiting
+    on the old run would leave the names it had finished blank, since their
+    proposals were dropped and that run does not price them again."""
+    release = asyncio.Event()
+    calls = []
+
+    async def slow_loader(candidates, on_done):
+        calls.append([c.symbol for c in candidates])
+        on_done(_proposal(candidates[0].symbol))
+        await release.wait()
+        for c in candidates[1:]:
+            on_done(_proposal(c.symbol))
+
+    a = app(proposal_loader=slow_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        assert set(a._proposals) == {"HIGH"}
+        await pilot.press("R")
+        await pilot.pause()
+        release.set()
+        await pilot.pause()
+        assert [sorted(c) for c in calls] == [["CHEAP", "HIGH", "MID"]] * 2
+        assert set(a._proposals) == {"HIGH", "CHEAP", "MID"}
+        assert not a._pricing
+
+
+@pytest.mark.asyncio
 async def test_escape_returns_to_screen_view():
     a = app(
         proposal_loader=_proposal_loader_factory(

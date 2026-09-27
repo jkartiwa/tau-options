@@ -594,13 +594,15 @@ class TauApp(App):
             self.price_shortlist_worker(unpriced)
 
     def action_reprice(self) -> None:
+        """Drop the pass's proposals and price it again. A run in flight is
+        replaced rather than waited on (the worker is exclusive), since it
+        would not re-price the names it had already finished."""
         self.mode = "rank"
         for c in self._passing:
             self._proposals.pop(c.symbol, None)
         self.build_rank_rows()
         self.render_current_table()
-        if not self._pricing:
-            self.price_shortlist_worker(list(self._passing))
+        self.price_shortlist_worker(list(self._passing))
 
     def action_show_variants(self) -> None:
         """Open the highlighted name's full search. An unpriced name loads
