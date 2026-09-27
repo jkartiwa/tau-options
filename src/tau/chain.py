@@ -33,36 +33,29 @@ EVENT_TIMEOUT = 10.0
 TARGET_DTE = 45
 # The strike window is scaled by expected move, not by a fixed percentage:
 # a 16-delta wing sits near one standard deviation, so 2.5 sigma contains it
-# on any name. Capping by strike *count* instead stops inside the wings on a
-# densely struck name like QQQ, and the delta pick degrades to the nearest
-# available strike (0.38 in place of 0.16). Count is capped by striding the
-# window instead, so it still spans the wings.
+# on any name. Capping by strike count instead would stop inside the wings on
+# a densely struck name, and a delta pick would silently land nearer the
+# money than asked. The count is capped by striding the window instead.
 SIGMA_SPAN = 2.5
 MIN_WINDOW = 0.08  # floor, for a low-vol name or a missing IV hint
 FALLBACK_IV = 0.35
-# The fetch costs about the same whether it carries 64 legs or 322 (connection
-# setup dominates), while this cap decides how much of the ladder exists: on
-# SPY, 45/30 built 33 of 56 variants, 60/45 built 52 and 80/60 builds all 56.
-# Sparse ladders are bounded by the sigma window, not by this count.
+# The fetch costs about the same whether it carries 60 legs or 300 (connection
+# setup dominates), while this cap decides how much of a dense ladder exists
+# to build structures on. Sparse ladders are bounded by the sigma window.
 MAX_STRIKES_PER_SIDE = 80
-# Strikes nearest spot are kept contiguous rather than strided, so that a
-# multi-leg structure placing a wing a fixed number of dollars from its short
-# leg has an unbroken ladder to land on. This has to reach past the short
-# strike, not just around the money: at 30 on SPY the 16-delta put sat 40
-# points out, in the strided region, and every 5-wide condor and vertical was
-# refused for a ladder that only looked coarse because of the thinning.
+# Strikes nearest spot are kept contiguous rather than strided, so a wing
+# placed a fixed number of dollars from its short leg has an unbroken ladder
+# to land on. This must reach past a 16-delta short strike, not just around
+# the money, or fixed-width condors and verticals are refused on a ladder
+# that only looks coarse because of the thinning.
 UNSTRIDED_CORE = 60
 DAYS_PER_YEAR = 365.0
 
-# tastytrade's own expected-move convention: the ATM straddle blended with
-# the first two OTM strangles, weighted 60/30/10 — not the plainer
-# straddle*0.85 heuristic (Brenner-Subrahmanyam gives ~0.7979 as the more
-# precise version of that constant, and different desks round it
-# differently). Weighting in the wings is a cheap skew correction: a
-# single-strike straddle only samples the smile at one point. Falls back to
-# the 0.85 straddle-only heuristic when the wing strikes are not both
-# priced, since that can still happen on a thin chain or a narrow fetch
-# window; falls back to None only if even the straddle is unpriced.
+# tastytrade's expected-move convention: the ATM straddle blended with the
+# first two OTM strangles, weighted 60/30/10. Weighting in the wings is a
+# cheap skew correction, since a single straddle samples the smile at one
+# strike. Falls back to straddle * 0.85 when the wing strikes are not both
+# priced, and to None only if the straddle itself is unpriced.
 EM_WEIGHTS = (0.6, 0.3, 0.1)  # straddle, 1st OTM strangle, 2nd OTM strangle
 STRADDLE_ONLY_FACTOR = 0.85
 
