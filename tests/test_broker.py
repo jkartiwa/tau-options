@@ -338,7 +338,7 @@ async def test_the_breaker_re_enables_itself_after_the_cooldown(monkeypatch):
     assert await broker_bpr_for(None, account, strangle()) == pytest.approx(3651.0)
     assert not broker_mod.dry_runs_disabled()
     # the counter reset with it, so the next blip starts from zero
-    assert broker_mod._consecutive_failures == 0
+    assert broker_mod._state.consecutive_failures == 0
 
 
 @pytest.mark.asyncio
@@ -479,7 +479,7 @@ async def test_the_trip_is_logged_once_when_the_failures_land_together(caplog):
         )
 
     assert all(value is None for value in results)
-    assert broker_mod._consecutive_failures > broker_mod.MAX_CONSECUTIVE_FAILURES
+    assert broker_mod._state.consecutive_failures > broker_mod.MAX_CONSECUTIVE_FAILURES
     assert broker_mod.dry_runs_disabled()
     assert len(caplog.records) == 1
 

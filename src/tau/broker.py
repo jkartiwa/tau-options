@@ -15,6 +15,7 @@ formula estimate without raising.
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from weakref import WeakKeyDictionary
 
@@ -91,19 +92,27 @@ def _gate() -> _LoopGate:
     return gate
 
 
-# False = not resolved yet; an Account or None = resolved. An answer from the
-# API is cached for the life of the process, since the account list does not
-# change under a fixed token. A failed request is not an answer: it is held for
-# `BREAKER_COOLDOWN` and then retried, like the dry-run breaker.
-_margin_account: Account | None | bool = False
-_account_retry_at = 0.0
+@dataclass
+class _State:
+    """What the process has learned about the account and the broker's health.
 
-# Breaker state: consecutive failures, when the current trip expires (0.0 =
-# not tripped), and whether the post-cooldown probe is out. Process-wide,
-# because a broker that is not answering does not vary by symbol.
-_consecutive_failures = 0
-_tripped_until = 0.0
-_probing = False
+    Process-wide, because neither varies by symbol. `margin_account` is False
+    until resolved, then an `Account` or `None`. An answer from the API is
+    cached for the life of the process, since the account list does not change
+    under a fixed token; a failed request is not an answer, so it is held until
+    `account_retry_at` and then retried. The breaker counts consecutive
+    failures, trips until `tripped_until` (0.0 = not tripped), and lets one
+    `probing` call through once the cooldown is up.
+    """
+
+    margin_account: Account | None | bool = False
+    account_retry_at: float = 0.0
+    consecutive_failures: int = 0
+    tripped_until: float = 0.0
+    probing: bool = False
+
+
+_state = _State()
 
 
 def dry_runs_disabled() -> bool:
@@ -114,22 +123,21 @@ def dry_runs_disabled() -> bool:
     as estimates. It turns False once the cooldown is up, and the next call
     decides whether it stays that way.
     """
-    return _breaker_holding() or time.monotonic() < _account_retry_at
+    return _breaker_holding() or time.monotonic() < _state.account_retry_at
 
 
 def _breaker_holding() -> bool:
-    return _tripped_until > 0.0 and time.monotonic() < _tripped_until
+    return _state.tripped_until > 0.0 and time.monotonic() < _state.tripped_until
 
 
 def _claim_probe() -> bool | None:
     """`None` when the breaker is holding, `True` for the one caller allowed
     to probe after a cooldown, `False` for an ordinary call."""
-    global _probing
-    if _tripped_until <= 0.0:
+    if _state.tripped_until <= 0.0:
         return False
-    if time.monotonic() < _tripped_until or _probing:
+    if time.monotonic() < _state.tripped_until or _state.probing:
         return None
-    _probing = True
+    _state.probing = True
     return True
 
 
@@ -139,25 +147,23 @@ def _record_failure() -> None:
     Concurrent requests keep failing after the trip, so the warning is logged
     only when the breaker goes from closed to tripped, not once per failure.
     """
-    global _consecutive_failures, _tripped_until
-    _consecutive_failures += 1
-    if _consecutive_failures < MAX_CONSECUTIVE_FAILURES:
+    _state.consecutive_failures += 1
+    if _state.consecutive_failures < MAX_CONSECUTIVE_FAILURES:
         return
     tripping = not _breaker_holding()
-    _tripped_until = time.monotonic() + BREAKER_COOLDOWN
+    _state.tripped_until = time.monotonic() + BREAKER_COOLDOWN
     if tripping:
         log.warning(
             "broker dry-run failed %d times in a row; buying power falls back "
             "to the formula estimate for the next %.0fs",
-            _consecutive_failures,
+            _state.consecutive_failures,
             BREAKER_COOLDOWN,
         )
 
 
 def _record_success() -> None:
-    global _consecutive_failures, _tripped_until
-    _consecutive_failures = 0
-    _tripped_until = 0.0
+    _state.consecutive_failures = 0
+    _state.tripped_until = 0.0
 
 
 async def margin_account(session) -> Account | None:
@@ -168,32 +174,31 @@ async def margin_account(session) -> Account | None:
     cached for the life of the process; a failure is held for
     `BREAKER_COOLDOWN` and then retried.
     """
-    global _margin_account, _account_retry_at
-    if _margin_account is not False:
-        return _margin_account or None
-    if time.monotonic() < _account_retry_at:
+    if _state.margin_account is not False:
+        return _state.margin_account or None
+    if time.monotonic() < _state.account_retry_at:
         return None
     async with _gate().resolving:
-        if _margin_account is not False:
-            return _margin_account or None
-        if time.monotonic() < _account_retry_at:
+        if _state.margin_account is not False:
+            return _state.margin_account or None
+        if time.monotonic() < _state.account_retry_at:
             return None
         try:
             accounts = await Account.get(session)
         except Exception:
-            _account_retry_at = time.monotonic() + BREAKER_COOLDOWN
+            _state.account_retry_at = time.monotonic() + BREAKER_COOLDOWN
             log.warning(
                 "broker account list could not be read; buying power falls "
                 "back to the formula estimate for the next %.0fs",
                 BREAKER_COOLDOWN,
             )
             return None
-        _account_retry_at = 0.0
-        _margin_account = next(
+        _state.account_retry_at = 0.0
+        _state.margin_account = next(
             (a for a in accounts if not a.is_closed and a.margin_or_cash == "Margin"),
             None,
         )
-        return _margin_account
+        return _state.margin_account
 
 
 def order_for(structure: Structure) -> LimitOrder | None:
@@ -258,7 +263,6 @@ async def broker_bpr_for(session, account, structure: Structure) -> float | None
     cancellation from the caller's budget counts as a failure (see
     `BUDGET_EXPIRED`); any other cancellation is re-raised.
     """
-    global _probing
     order = order_for(structure)
     if order is None:
         return None
@@ -278,6 +282,6 @@ async def broker_bpr_for(session, account, structure: Structure) -> float | None
         return None
     finally:
         if probe:
-            _probing = False
+            _state.probing = False
     _record_success()
     return margin_requirement(effect)
