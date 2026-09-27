@@ -284,18 +284,16 @@ async def enrich_with_broker_bpr(
     back unchanged. A partial pull would pick the winner from whichever
     requests happened to return, mixing two margin models in one comparison.
     """
-    if session is None or proposal.error is not None or not proposal.structures:
+    if session is None or proposal.error is not None:
         return proposal
-    if broker_mod.dry_runs_disabled():
+    shortlist = [s for s in proposal.variants() if s.ok][:top_n]
+    if not shortlist or broker_mod.dry_runs_disabled():
         return proposal
     try:
         account = await broker_mod.margin_account(session)
     except Exception:
         return proposal
     if account is None:
-        return proposal
-    shortlist = [s for s in proposal.variants() if s.ok][:top_n]
-    if not shortlist:
         return proposal
 
     priced: dict[int, Structure] = {}
