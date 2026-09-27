@@ -154,7 +154,27 @@ def test_a_log_written_before_the_column_existed_still_opens_and_appends():
     rows keep every value they had, and the absent figure reads as unknown
     rather than as a guess."""
     path = store.db_path()
-    legacy_columns = [c for c in store._PICK_COLUMNS if c != "bpr_source"]
+    legacy_row = {
+        "scan_id": 1,
+        "strategy_def_id": None,
+        "symbol": "OLD",
+        "variant": "v1",
+        "expiration": "2026-01-16",
+        "dte": 45,
+        "underlying": 100.0,
+        "legs_json": "[]",
+        "credit": 1.5,
+        "max_profit": 150.0,
+        "bpr": 3000.0,
+        "roc": 0.05,
+        "annualized_roc": 0.4,
+        "pop": 0.7,
+        "spread_cost": 0.02,
+        "be_over_em": 1.2,
+        "breakevens": "[]",
+        "error": None,
+    }
+    assert set(legacy_row) == set(store._PICK_COLUMNS) - {"bpr_source"}
     legacy_schema = store._SCHEMA.replace("    bpr_source TEXT,\n", "")
     # without this the fixture would build a table that already has the
     # column, and the test would pass while exercising no migration at all
@@ -163,30 +183,7 @@ def test_a_log_written_before_the_column_existed_still_opens_and_appends():
     with conn:
         conn.executescript(legacy_schema)
         conn.execute("INSERT INTO scan (ts, params_json) VALUES ('t', '{}')")
-        conn.execute(
-            f"INSERT INTO pick ({', '.join(legacy_columns)}) "
-            f"VALUES ({', '.join('?' * len(legacy_columns))})",
-            (
-                1,
-                None,
-                "OLD",
-                "v1",
-                "2026-01-16",
-                45,
-                100.0,
-                "[]",
-                1.5,
-                150.0,
-                3000.0,
-                0.05,
-                0.4,
-                0.7,
-                0.02,
-                1.2,
-                "[]",
-                None,
-            ),
-        )
+        conn.execute(store._insert("pick", tuple(legacy_row)), legacy_row)
     conn.close()
 
     scan_id = store.log_scan({}, [])
