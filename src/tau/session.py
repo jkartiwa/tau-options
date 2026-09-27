@@ -10,20 +10,15 @@ order-placement code in this package.
 """
 
 import os
+from functools import cache
 
 from tastytrade import Session
 
-_session: Session | None = None
 
-
+@cache
 def get_session() -> Session:
-    global _session
-    if _session is None:
-        secret = os.environ.get("TASTY_CLIENT_SECRET")
-        token = os.environ.get("TASTY_REFRESH_TOKEN")
-        if not (secret and token):
-            raise RuntimeError(
-                "TASTY_CLIENT_SECRET / TASTY_REFRESH_TOKEN not set (.env)"
-            )
-        _session = Session(secret, token)
-    return _session
+    secret = os.environ.get("TASTY_CLIENT_SECRET")
+    token = os.environ.get("TASTY_REFRESH_TOKEN")
+    if not (secret and token):
+        raise RuntimeError("TASTY_CLIENT_SECRET / TASTY_REFRESH_TOKEN not set (.env)")
+    return Session(secret, token)
