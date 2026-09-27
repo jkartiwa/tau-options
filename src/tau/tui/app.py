@@ -428,11 +428,12 @@ class TauApp(App):
 
     def render_variant_table(self) -> None:
         table, cursor = self._reset_columns("variants", VARIANT_COLUMNS)
+        blanks = len(VARIANT_COLUMNS) - 3
         for i, s in enumerate(self._variant_rows):
             if not s.complete:
                 # Never built, so no numbers. The full reason is in the
                 # detail pane.
-                cells = ["✗", s.label] + ["—"] * 6 + ["not built"]
+                cells = ["✗", s.label, *(["—"] * blanks), "not built"]
             else:
                 # Only the metrics that failed; the numbers behind them are
                 # in the detail pane.
