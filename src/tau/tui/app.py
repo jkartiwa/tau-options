@@ -114,6 +114,10 @@ RANK_SORTS = (
 )
 
 
+def _next_in(cycle: tuple[int, ...], current: int) -> int:
+    return cycle[(cycle.index(current) + 1) % len(cycle)]
+
+
 async def fetch_candidates() -> list[Candidate]:
     metrics = await screen.fetch_metrics(get_session(), universe.load_universe(None))
     today = date.today()
@@ -341,6 +345,13 @@ class TauApp(App):
         _, attr, _ = RANK_SORTS[self.rank_sort_index]
         key = "annualized_roc" if attr == "symbol" else attr
         self._variant_rows = proposal.variants(key)
+
+    def rerank(self) -> None:
+        """Re-sort both priced views after the sort or strategy filter moved."""
+        self.build_rank_rows()
+        self.build_variant_rows()
+        self.render_current_table()
+        self.refresh_meta()
 
     def render_current_table(self) -> None:
         if self.mode == "rank":
@@ -611,10 +622,7 @@ class TauApp(App):
             if enabled is None or enabled == self._enabled:
                 return
             self._enabled = enabled
-            self.build_rank_rows()
-            self.build_variant_rows()
-            self.render_current_table()
-            self.refresh_meta()
+            self.rerank()
 
         self.push_screen(StrategyPicker(self._strategies, self._enabled), applied)
 
@@ -704,10 +712,7 @@ class TauApp(App):
     def action_sort(self) -> None:
         if self.mode in ("rank", "variants"):
             self.rank_sort_index = (self.rank_sort_index + 1) % len(RANK_SORTS)
-            self.build_rank_rows()
-            self.build_variant_rows()
-            self.render_current_table()
-            self.refresh_meta()
+            self.rerank()
         else:
             self.sort_index = (self.sort_index + 1) % len(SORTS)
             self.rebuild()
@@ -725,13 +730,11 @@ class TauApp(App):
         self.rebuild()
 
     def action_cycle_liquidity(self) -> None:
-        i = LIQUIDITY_CYCLE.index(self.min_liquidity)
-        self.min_liquidity = LIQUIDITY_CYCLE[(i + 1) % len(LIQUIDITY_CYCLE)]
+        self.min_liquidity = _next_in(LIQUIDITY_CYCLE, self.min_liquidity)
         self.rebuild()
 
     def action_cycle_earnings(self) -> None:
-        i = EARNINGS_CYCLE.index(self.earnings_days)
-        self.earnings_days = EARNINGS_CYCLE[(i + 1) % len(EARNINGS_CYCLE)]
+        self.earnings_days = _next_in(EARNINGS_CYCLE, self.earnings_days)
         self.rebuild()
 
     def action_star(self) -> None:
