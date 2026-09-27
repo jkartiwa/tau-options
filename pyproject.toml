@@ -1,7 +1,10 @@
 [project]
 name = "tau"
 version = "0.1.0"
-description = "Premium-selling options scanner"
+description = "Options scanner for premium sellers, over the tastytrade API"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "tastytrade>=13.2",
@@ -19,7 +22,7 @@ catalyst = ["anthropic>=0.117"]
 tau = "tau.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

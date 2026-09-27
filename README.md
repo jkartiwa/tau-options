@@ -61,7 +61,7 @@ Quotes are mid-based. The catalyst read is a language model's opinion of recent
 headlines with no measured accuracy.
 
 This is a personal research tool and not financial advice. Selling options
-carries uncapped risk, so verify every number against your broker before you
+can carry uncapped risk, so verify every number against your broker before you
 trade.
 
 ## License
