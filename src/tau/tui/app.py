@@ -19,6 +19,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import DataTable, Footer, Static
+from textual.worker import Worker
 
 from tau import broker as broker_mod
 from tau import catalyst as catalyst_mod
@@ -230,7 +231,6 @@ class TauApp(App):
         self._proposals: dict[str, Proposal] = {}
         self._passing: list[Candidate] = []  # this screen's pass set, unsorted by rank
         self._rank_rows: list[Candidate] = []
-        self._pricing = False
         self._columns_mode = "screen"  # tracks which header row the table wears
         self._strategies = ALL_STRATEGIES
         # Which strategies the views show. Proposals always search all of
@@ -256,7 +256,11 @@ class TauApp(App):
 
     # ---- data ----
 
-    @work(exclusive=True)
+    # Each kind of worker has its own group. `exclusive` cancels every worker
+    # in the group, so a shared group would let one keypress silently kill
+    # another kind of fetch.
+
+    @work(exclusive=True, group="load")
     async def load(self) -> None:
         self._status = "loading…"
         self.refresh_meta()
@@ -267,7 +271,13 @@ class TauApp(App):
         except Exception as exc:  # surfaced, never silently empty
             self._status = f"load failed: {exc}"
         # A refetch invalidates every per-symbol read taken before it, so
-        # stale quotes and briefs cannot pass as fresh.
+        # stale quotes and briefs cannot pass as fresh. Reads still in flight,
+        # including any started during the fetch, are stopped rather than
+        # left to land stale data afterwards.
+        for group in ("chain", "price", "why"):
+            self.workers.cancel_group(self, group)
+        self._detail_status = ""
+        self._why_status = ""
         self._proposals.clear()
         self._history.clear()
         self._briefs.clear()
@@ -488,7 +498,7 @@ class TauApp(App):
         elif self.mode == "screen":
             self.action_load_chain()
 
-    @work(exclusive=True)
+    @work(exclusive=True, group="chain")
     async def load_chain(self, candidate: Candidate) -> None:
         self._detail_status = f"loading {candidate.symbol} chain…"
         self.render_detail()
@@ -525,8 +535,6 @@ class TauApp(App):
         if c is not None:
             self.load_chain(c)
 
-    # Its own worker group: the default group is shared, so an ungrouped
-    # exclusive worker here would cancel an in-flight chain load.
     @work(exclusive=True, group="why")
     async def load_why(self, candidate: Candidate) -> None:
         """Price position and the catalyst read, run concurrently. The price
@@ -567,10 +575,21 @@ class TauApp(App):
             return  # already read; both are cached per symbol
         self.load_why(c)
 
-    @work(exclusive=True)
+    @property
+    def pricing(self) -> bool:
+        """Read off the workers rather than a flag, so a cancelled run can
+        never leave pricing marked as in progress."""
+        return any(
+            w.group == "price" and not w.is_cancelled and not w.is_finished
+            for w in self.workers
+        )
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        if event.worker.group == "price":
+            self.refresh_meta()
+
+    @work(exclusive=True, group="price")
     async def price_shortlist_worker(self, candidates: list[Candidate]) -> None:
-        self._pricing = True
-        self.refresh_meta()
 
         def on_done(p: Proposal) -> None:
             self.cache_proposal(p)
@@ -581,8 +600,6 @@ class TauApp(App):
             await self._proposal_loader(candidates, on_done)
         except Exception as exc:
             self._status = f"pricing failed: {exc}"
-        self._pricing = False
-        self.refresh_meta()
 
     def action_rank_shortlist(self) -> None:
         self.mode = "rank"
@@ -590,7 +607,7 @@ class TauApp(App):
         self.render_current_table()
         self.refresh_meta()
         unpriced = [c for c in self._passing if c.symbol not in self._proposals]
-        if unpriced and not self._pricing:
+        if unpriced and not self.pricing:
             self.price_shortlist_worker(unpriced)
 
     def action_reprice(self) -> None:
@@ -669,7 +686,7 @@ class TauApp(App):
         elif self.mode == "rank":
             priced = sum(1 for c in self._passing if c.symbol in self._proposals)
             bits = [f"tau · rank view · {priced}/{len(self._passing)} priced"]
-            if self._pricing:
+            if self.pricing:
                 bits.append("pricing…")
             bits.append(self.strategy_summary())
             bits += [f"★ {len(self._starred)}", f"fetched {fetched}"]
