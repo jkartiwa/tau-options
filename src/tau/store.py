@@ -20,7 +20,10 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
+from tau.build import Structure
+from tau.propose import Proposal
 from tau.screen import Candidate
+from tau.strategy import Strategy
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS scan (
@@ -188,7 +191,7 @@ def log_scan(params: dict, candidates: list[Candidate]) -> int:
         conn.close()
 
 
-def strategy_identity(strategy) -> tuple[str, str]:
+def strategy_identity(strategy: Strategy) -> tuple[str, str]:
     """A strategy's serialized form and a digest of it.
 
     The digest is over key-sorted JSON of `asdict()`, so it is stable across
@@ -198,7 +201,7 @@ def strategy_identity(strategy) -> tuple[str, str]:
     return spec, hashlib.sha256(spec.encode()).hexdigest()[:16]
 
 
-def _strategy_def_id(conn: sqlite3.Connection, strategy) -> int:
+def _strategy_def_id(conn: sqlite3.Connection, strategy: Strategy) -> int:
     spec, digest = strategy_identity(strategy)
     row = conn.execute(
         "SELECT id FROM strategy_def WHERE digest = ?", (digest,)
@@ -213,7 +216,7 @@ def _strategy_def_id(conn: sqlite3.Connection, strategy) -> int:
     return cur.lastrowid
 
 
-def _leg_rows(structure) -> list[dict]:
+def _leg_rows(structure: Structure) -> list[dict]:
     return [
         {
             "id": b.spec.id,
@@ -232,7 +235,7 @@ def _leg_rows(structure) -> list[dict]:
     ]
 
 
-def _pick_row(scan_id: int, strategy_def_id: int | None, proposal) -> dict:
+def _pick_row(scan_id: int, strategy_def_id: int | None, proposal: Proposal) -> dict:
     """The insert row for one proposal: its winning structure, or only its
     error when it priced nothing."""
     row = dict.fromkeys(_PICK_COLUMNS)
@@ -268,7 +271,7 @@ def _pick_row(scan_id: int, strategy_def_id: int | None, proposal) -> dict:
     return row
 
 
-def log_picks(scan_id: int, proposals) -> int:
+def log_picks(scan_id: int, proposals: list[Proposal]) -> int:
     """Write one pick row per proposal and return how many were written."""
     conn = connect()
     try:
