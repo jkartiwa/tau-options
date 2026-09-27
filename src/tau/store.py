@@ -80,8 +80,21 @@ CREATE TABLE IF NOT EXISTS pick (
 # meaning "not recorded"; no migration may rewrite or backfill rows.
 _MIGRATIONS = (("pick", "bpr_source", "TEXT"),)
 
-# Named rather than positional, so adding a column to `_SCHEMA` cannot shift
-# values into the wrong columns.
+# Inserts name their columns rather than relying on position, so adding a
+# column to `_SCHEMA` or `_MIGRATIONS` cannot shift values into the wrong one.
+_SCAN_RESULT_COLUMNS = (
+    "scan_id",
+    "symbol",
+    "ivr",
+    "ivp",
+    "iv30",
+    "hv30",
+    "liquidity",
+    "beta",
+    "earnings_date",
+    "passed",
+    "reasons",
+)
 _PICK_COLUMNS = (
     "scan_id",
     "strategy_def_id",
@@ -103,10 +116,18 @@ _PICK_COLUMNS = (
     "breakevens",
     "error",
 )
-_INSERT_PICK = (
-    f"INSERT INTO pick ({', '.join(_PICK_COLUMNS)}) "
-    f"VALUES ({', '.join(':' + c for c in _PICK_COLUMNS)})"
-)
+
+
+def _insert(table: str, columns: tuple[str, ...]) -> str:
+    """An INSERT taking named parameters, one per column."""
+    return (
+        f"INSERT INTO {table} ({', '.join(columns)}) "
+        f"VALUES ({', '.join(':' + c for c in columns)})"
+    )
+
+
+_INSERT_SCAN_RESULT = _insert("scan_result", _SCAN_RESULT_COLUMNS)
+_INSERT_PICK = _insert("pick", _PICK_COLUMNS)
 
 
 def db_path() -> Path:
@@ -142,21 +163,23 @@ def log_scan(params: dict, candidates: list[Candidate]) -> int:
             )
             scan_id = cur.lastrowid
             conn.executemany(
-                "INSERT INTO scan_result VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                _INSERT_SCAN_RESULT,
                 [
-                    (
-                        scan_id,
-                        c.symbol,
-                        c.ivr,
-                        c.ivp,
-                        c.iv30,
-                        c.hv30,
-                        c.liquidity,
-                        c.beta,
-                        c.earnings_date.isoformat() if c.earnings_date else None,
-                        int(c.passed),
-                        "; ".join(c.excluded),
-                    )
+                    {
+                        "scan_id": scan_id,
+                        "symbol": c.symbol,
+                        "ivr": c.ivr,
+                        "ivp": c.ivp,
+                        "iv30": c.iv30,
+                        "hv30": c.hv30,
+                        "liquidity": c.liquidity,
+                        "beta": c.beta,
+                        "earnings_date": (
+                            c.earnings_date.isoformat() if c.earnings_date else None
+                        ),
+                        "passed": int(c.passed),
+                        "reasons": "; ".join(c.excluded),
+                    }
                     for c in candidates
                 ],
             )

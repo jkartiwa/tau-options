@@ -125,6 +125,28 @@ def test_a_pick_records_the_definition_and_the_variant_that_produced_it():
     assert {leg["strike"] for leg in legs} == {b.leg.strike for b in p.best.legs}
 
 
+def test_a_scan_result_lands_in_its_named_columns_even_after_a_column_is_added():
+    """Inserts name their columns, so a column added later (as `_MIGRATIONS`
+    does) neither breaks the insert nor shifts values into its neighbours."""
+    conn = store.connect()
+    conn.execute("ALTER TABLE scan_result ADD COLUMN later TEXT")
+    conn.close()
+    excluded = replace(
+        cand("SPY"), earnings_date=date(2026, 9, 1), excluded=("earnings in 5d",)
+    )
+    scan_id = store.log_scan({}, [cand("QQQ"), excluded])
+
+    got = rows(
+        "SELECT symbol, ivr, liquidity, earnings_date, passed, reasons, later "
+        "FROM scan_result WHERE scan_id = ? ORDER BY symbol",
+        scan_id,
+    )
+    assert got == [
+        ("QQQ", 50.0, 4, None, 1, "", None),
+        ("SPY", 50.0, 4, "2026-09-01", 0, "earnings in 5d", None),
+    ]
+
+
 def test_a_definition_is_stored_once_across_scans():
     scan_a = store.log_scan({}, [])
     scan_b = store.log_scan({}, [])
