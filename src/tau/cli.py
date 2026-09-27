@@ -17,6 +17,7 @@ from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
+from tastytrade.metrics import MarketMetricInfo
 
 from tau import chain as chain_mod
 from tau import propose as propose_mod
@@ -27,14 +28,16 @@ from tau.fmt import pct as _pct
 from tau.session import get_session
 from tau.strategies import ALL as ALL_STRATEGIES
 from tau.strategies import MIN_POP, STRATEGIES
-from tau.strategy import METRICS, with_min_pop
+from tau.strategy import METRICS, Strategy, with_min_pop
 
 # A ranked row costs a chain fetch, so the default is a shortlist rather than
 # the whole pass set. The screen is free; pricing is not.
 DEFAULT_RANK_TOP = 15
 
 
-async def _screen(args: argparse.Namespace):
+async def _screen(
+    args: argparse.Namespace,
+) -> tuple[list[str], list[MarketMetricInfo], list[screen.Candidate]]:
     """The universe, its metrics, and every candidate evaluated against the
     screen's filters (passing or not)."""
     symbols = universe.load_universe(args.universe)
@@ -73,7 +76,9 @@ def _print_table(rows: list[screen.Candidate], show_reasons: bool) -> None:
         print(line)
 
 
-def _selected_strategies(names: list[str] | None, min_pop: float = MIN_POP):
+def _selected_strategies(
+    names: list[str] | None, min_pop: float = MIN_POP
+) -> tuple[Strategy, ...]:
     """The strategies to search, defaulting to all, each with its pop floor
     set to `min_pop`. An unknown name is a hard error: a typo'd `--strategy`
     that quietly searched nothing would read as "no trades today"."""

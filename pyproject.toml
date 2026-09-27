@@ -40,6 +40,8 @@ line-length = 88
 exclude = ["src/tau/strategies/*", "*.md"]
 
 [tool.ruff.lint]
+# Nothing type-checks the hints, so this at least keeps every signature typed.
+extend-select = ["ANN"]
 ignore = [
     # Dates are the trader's local calendar day, which is what DTE counts.
     "DTZ011",
@@ -50,3 +52,5 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Textual's BINDINGS are class-level lists by design.
 "src/tau/tui/*" = ["RUF012"]
+# Test functions return nothing and take pytest fixtures.
+"tests/*" = ["ANN"]

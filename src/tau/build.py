@@ -526,7 +526,7 @@ def rank(structures: list[Structure], key: str = "annualized_roc") -> list[Struc
     """
     on_formula = not uniformly_broker_priced(structures, key)
 
-    def sort_key(structure: Structure):
+    def sort_key(structure: Structure) -> tuple[bool, float, str, str]:
         if not structure.complete:
             value = None
         else:

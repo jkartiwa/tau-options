@@ -312,7 +312,7 @@ class TauApp(App):
             p for c in self._passing if (p := self.proposal_for(c.symbol))
         )
 
-        def keyfn(c: Candidate):
+        def keyfn(c: Candidate) -> tuple[bool, str | float]:
             if attr == "symbol":
                 return (False, c.symbol)
             p = self.proposal_for(c.symbol)
@@ -360,7 +360,9 @@ class TauApp(App):
         else:
             self.render_screen_table()
 
-    def _reset_columns(self, mode: str, columns: tuple[str, ...]):
+    def _reset_columns(
+        self, mode: str, columns: tuple[str, ...]
+    ) -> tuple[DataTable, int]:
         """Empty the table for a repaint, returning it with the cursor row it
         had. The cursor has to be read before the clear, which resets it."""
         table = self.query_one("#table", DataTable)
