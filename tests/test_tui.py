@@ -441,6 +441,39 @@ async def test_refetch_stops_pricing_without_leaving_it_marked_in_progress():
 
 
 @pytest.mark.asyncio
+async def test_pricing_started_during_a_refetch_does_not_land_stale_proposals():
+    fetched = asyncio.Event()
+    priced = asyncio.Event()
+    loads = []
+
+    async def loader():
+        loads.append(1)
+        if len(loads) > 1:
+            await fetched.wait()
+        return list(FIXTURE)
+
+    async def gated_loader(candidates, on_done):
+        await priced.wait()
+        for c in candidates:
+            on_done(_proposal(c.symbol))
+
+    a = TauApp(loader=loader, proposal_loader=gated_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("r")
+        assert await _settle(a, lambda: len(loads) == 2)
+        await pilot.press("p")  # prices the pre-refetch pass set
+        assert await _settle(a, lambda: a.pricing)
+        fetched.set()
+        assert await _settle(a, lambda: not a.pricing)
+        priced.set()
+        await pilot.pause()
+        await asyncio.sleep(0.1)
+        assert a._proposals == {}
+        assert not a.pricing
+
+
+@pytest.mark.asyncio
 async def test_escape_returns_to_screen_view():
     a = app(
         proposal_loader=_proposal_loader_factory(

@@ -262,12 +262,6 @@ class TauApp(App):
 
     @work(exclusive=True, group="load")
     async def load(self) -> None:
-        # A refetch invalidates every per-symbol read, so reads still in
-        # flight are stopped rather than left to land stale data afterwards.
-        for group in ("chain", "price", "why"):
-            self.workers.cancel_group(self, group)
-        self._detail_status = ""
-        self._why_status = ""
         self._status = "loading…"
         self.refresh_meta()
         try:
@@ -277,7 +271,13 @@ class TauApp(App):
         except Exception as exc:  # surfaced, never silently empty
             self._status = f"load failed: {exc}"
         # A refetch invalidates every per-symbol read taken before it, so
-        # stale quotes and briefs cannot pass as fresh.
+        # stale quotes and briefs cannot pass as fresh. Reads still in flight,
+        # including any started during the fetch, are stopped rather than
+        # left to land stale data afterwards.
+        for group in ("chain", "price", "why"):
+            self.workers.cancel_group(self, group)
+        self._detail_status = ""
+        self._why_status = ""
         self._proposals.clear()
         self._history.clear()
         self._briefs.clear()
