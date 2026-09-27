@@ -9,6 +9,7 @@ from tau.chain import (
     UNSTRIDED_CORE,
     Cycle,
     Leg,
+    _stride,
     choose_expiration,
     select_strikes,
     strike_ladder,
@@ -142,11 +143,9 @@ def test_strike_window_spans_the_wings_on_a_dense_ladder():
     # one sigma is ~45 points here; the window must reach well beyond it
     assert min(prices) <= 684 - 90
     assert max(prices) >= 684 + 90
-    # Still thinned: the striding cap holds per side, plus the outermost
-    # strike each way, which _stride always keeps so the window's edge
-    # survives. Expressed against the constant so raising the budget doesn't
-    # need this number edited by hand.
-    assert len(sel) <= 2 * (MAX_STRIKES_PER_SIDE + 1)
+    # Still thinned. Expressed against the constant so raising the budget
+    # doesn't need this number edited by hand.
+    assert len(sel) <= 2 * MAX_STRIKES_PER_SIDE
 
 
 def test_strike_window_keeps_the_near_money_ladder_unbroken():
@@ -159,6 +158,18 @@ def test_strike_window_keeps_the_near_money_ladder_unbroken():
     near = [p for p in prices if abs(p - 684) < UNSTRIDED_CORE]
     gaps = {b - a for a, b in itertools.pairwise(near)}
     assert gaps == {1}, f"near-the-money ladder is not contiguous: {near}"
+
+
+def test_stride_holds_the_cap_and_keeps_both_ends():
+    for n in range(1, 60):
+        items = list(range(n))
+        for cap in range(1, 12):
+            for core in (0, 3):
+                out = _stride(items, cap, core)
+                assert len(out) == min(n, cap)
+                assert out == sorted(set(out))
+                assert out[-1] == items[-1]
+                assert out[: min(core, cap - 1, n)] == items[: min(core, cap - 1, n)]
 
 
 def test_strike_window_without_spot_falls_back_to_the_middle():

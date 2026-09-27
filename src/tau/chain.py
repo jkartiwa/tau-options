@@ -243,9 +243,10 @@ def _f(value) -> float | None:
 
 
 def _stride(items: list, cap: int, core: int = 0) -> list:
-    """Thin a list to at most `cap` entries, keeping the outermost one so the
-    window's edge survives. Delta moves smoothly across strikes, so a strided
-    sample still lands within a strike or two of the target.
+    """Thin a list to at most `cap` entries, evenly spaced and keeping the
+    outermost one so the window's edge survives. Delta moves smoothly across
+    strikes, so a strided sample still lands within a strike or two of the
+    target.
 
     `core` entries at the head are kept contiguous. The caller orders each
     side outward from spot, so the core is the near-the-money region, where
@@ -257,12 +258,12 @@ def _stride(items: list, cap: int, core: int = 0) -> list:
         return items
     core = max(0, min(core, cap - 1))
     head, rest = items[:core], items[core:]
-    remaining = max(cap - len(head), 1)
-    step = -(-len(rest) // remaining)  # ceil
-    thinned = rest[::step]
-    if rest and rest[-1] not in thinned:
-        thinned.append(rest[-1])
-    return head + thinned
+    slots = cap - core
+    if slots == 1:
+        return [*head, rest[-1]]
+    # len(rest) > slots, so the spacing exceeds one and no index repeats.
+    last = len(rest) - 1
+    return head + [rest[round(i * last / (slots - 1))] for i in range(slots)]
 
 
 def select_strikes(
