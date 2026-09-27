@@ -39,7 +39,7 @@ class StrategyPicker(ModalScreen[set[str]]):
         Binding("escape", "close", "done"),
         Binding("space", "toggle", "toggle"),
         Binding("a", "enable_all", "all"),
-        Binding("n", "enable_none", "none"),
+        Binding("n", "enable_only", "only"),
     ]
 
     def __init__(self, strategies: Iterable[Strategy], enabled: set[str]) -> None:
@@ -53,7 +53,7 @@ class StrategyPicker(ModalScreen[set[str]]):
         with Vertical(id="picker"):
             yield Static("Strategies searched", id="picker-title")
             yield DataTable(id="picker-table", cursor_type="row")
-            yield Static("space toggle · a all · n none · esc done", id="picker-help")
+            yield Static("space toggle · a all · n only · esc done", id="picker-help")
 
     def on_mount(self) -> None:
         table = self.query_one("#picker-table", DataTable)
@@ -108,7 +108,7 @@ class StrategyPicker(ModalScreen[set[str]]):
         self._enabled = {s.name for s in self._strategies}
         self.repaint()
 
-    def action_enable_none(self) -> None:
+    def action_enable_only(self) -> None:
         """Leaves the highlighted one on, for the same reason `toggle` will not
         clear the last strategy: this is a way to isolate one, not to empty the
         list."""

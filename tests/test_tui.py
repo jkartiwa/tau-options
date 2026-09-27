@@ -529,7 +529,7 @@ async def test_picker_will_not_leave_every_strategy_disabled():
         await pilot.press("S")
         await pilot.pause()
         picker = a.screen
-        picker.action_enable_none()
+        picker.action_enable_only()
         assert len(picker._enabled) == 1
         picker.action_toggle()  # the last one must survive
         assert len(picker._enabled) == 1
