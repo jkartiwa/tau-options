@@ -196,8 +196,14 @@ async def variants(args: argparse.Namespace) -> None:
     # No metrics pull here: this command is about one name's chain, and the
     # vol context it would add is what `tau scan` is for.
     candidate = screen.Candidate(
-        symbol=symbol, ivr=None, ivp=None, iv30=None, hv30=None,
-        liquidity=None, beta=None, earnings_date=None,
+        symbol=symbol,
+        ivr=None,
+        ivp=None,
+        iv30=None,
+        hv30=None,
+        liquidity=None,
+        beta=None,
+        earnings_date=None,
     )
     proposal = await propose_mod.enrich_with_broker_bpr(
         session, propose_mod.propose_on(candidate, cycle, strategies)
@@ -206,21 +212,27 @@ async def variants(args: argparse.Namespace) -> None:
     print(f"{symbol} · {cycle.expiration} · {cycle.dte} DTE · spot {spot}\n")
     ordered = proposal.variants(args.sort)
     w = _label_width(s.label for s in ordered)
-    print(f"{'':<2}{'STRUCTURE':<{w}} {'BIAS':<8} {'CREDIT':>7} {'BPR':>8} "
-          f"{'ANN%':>7} {'POP%':>5} {'SPRD%':>6}  WHY NOT")
+    print(
+        f"{'':<2}{'STRUCTURE':<{w}} {'BIAS':<8} {'CREDIT':>7} {'BPR':>8} "
+        f"{'ANN%':>7} {'POP%':>5} {'SPRD%':>6}  WHY NOT"
+    )
     passing = 0
     for s in ordered:
         mark = "· " if s.ok else "✗ "
         if not s.complete:
-            print(f"{mark}{s.label:<{w}} {s.strategy.bias!s:<8} "
-                  f"{'—':>7} {'—':>8} {'—':>7} {'—':>5} {'—':>6}  {s.reason}")
+            print(
+                f"{mark}{s.label:<{w}} {s.strategy.bias!s:<8} "
+                f"{'—':>7} {'—':>8} {'—':>7} {'—':>5} {'—':>6}  {s.reason}"
+            )
             continue
         passing += bool(s.ok)
         why = "; ".join(f.reason for f in s.failures)
-        print(f"{mark}{s.label:<{w}} "
-              f"{s.strategy.bias!s:<8} {_fmt(s.credit, '.2f'):>7} "
-              f"{_bpr(s.bpr, s.bpr_source):>8} {_pct(s.annualized_roc):>7} "
-              f"{_pct(s.pop):>5} {_pct(s.spread_cost):>6}  {why}")
+        print(
+            f"{mark}{s.label:<{w}} "
+            f"{s.strategy.bias!s:<8} {_fmt(s.credit, '.2f'):>7} "
+            f"{_bpr(s.bpr, s.bpr_source):>8} {_pct(s.annualized_roc):>7} "
+            f"{_pct(s.pop):>5} {_pct(s.spread_cost):>6}  {why}"
+        )
     print(f"\n{passing} of {len(proposal.structures)} variants passed")
 
 
@@ -240,20 +252,44 @@ def strategies(args: argparse.Namespace) -> None:
 
 
 def _add_screen_filters(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--min-ivr", type=float, default=30.0, help="IV rank floor (default 30)")
-    p.add_argument("--min-liquidity", type=int, default=3, help="tasty liquidity rating floor, 4 best (default 3)")
-    p.add_argument("--days", type=int, default=45, help="exclude symbols with earnings within N days; 0 disables (default 45)")
+    p.add_argument(
+        "--min-ivr", type=float, default=30.0, help="IV rank floor (default 30)"
+    )
+    p.add_argument(
+        "--min-liquidity",
+        type=int,
+        default=3,
+        help="tasty liquidity rating floor, 4 best (default 3)",
+    )
+    p.add_argument(
+        "--days",
+        type=int,
+        default=45,
+        help="exclude symbols with earnings within N days; 0 disables (default 45)",
+    )
     p.add_argument("--universe", help="path to a custom universe file")
 
 
 def _add_strategy_selection(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--strategy", action="append", metavar="NAME",
-                   help="strategy to search, repeatable (default: all; see `tau strategies`)")
-    p.add_argument("--dte", type=int, default=chain_mod.TARGET_DTE,
-                   help=f"target days to expiration, monthly cycles only (default {chain_mod.TARGET_DTE})")
-    p.add_argument("--min-pop", type=float, default=MIN_POP,
-                   help=f"minimum probability of profit to be eligible as best "
-                        f"(default {MIN_POP:.0%})".replace("%", "%%"))
+    p.add_argument(
+        "--strategy",
+        action="append",
+        metavar="NAME",
+        help="strategy to search, repeatable (default: all; see `tau strategies`)",
+    )
+    p.add_argument(
+        "--dte",
+        type=int,
+        default=chain_mod.TARGET_DTE,
+        help=f"target days to expiration, monthly cycles only (default {chain_mod.TARGET_DTE})",
+    )
+    p.add_argument(
+        "--min-pop",
+        type=float,
+        default=MIN_POP,
+        help=f"minimum probability of profit to be eligible as best "
+        f"(default {MIN_POP:.0%})".replace("%", "%%"),
+    )
 
 
 def main() -> None:
@@ -263,21 +299,43 @@ def main() -> None:
 
     p = sub.add_parser("scan", help="run the premium-selling screen (text output)")
     _add_screen_filters(p)
-    p.add_argument("--top", type=int, default=0, help="show only the top N passing rows")
-    p.add_argument("--all", action="store_true", help="show every symbol with exclusion reasons")
-    p.add_argument("--log", action="store_true", help="record this scan to the local scan log")
+    p.add_argument(
+        "--top", type=int, default=0, help="show only the top N passing rows"
+    )
+    p.add_argument(
+        "--all", action="store_true", help="show every symbol with exclusion reasons"
+    )
+    p.add_argument(
+        "--log", action="store_true", help="record this scan to the local scan log"
+    )
 
-    p = sub.add_parser("rank", help="price the screen's shortlist and rank the best structure per name")
+    p = sub.add_parser(
+        "rank", help="price the screen's shortlist and rank the best structure per name"
+    )
     _add_screen_filters(p)
     _add_strategy_selection(p)
-    p.add_argument("--top", type=int, default=DEFAULT_RANK_TOP,
-                   help=f"price only the top N passing names; 0 for all (default {DEFAULT_RANK_TOP})")
-    p.add_argument("--log", action="store_true", help="record this scan and its picks to the local scan log")
+    p.add_argument(
+        "--top",
+        type=int,
+        default=DEFAULT_RANK_TOP,
+        help=f"price only the top N passing names; 0 for all (default {DEFAULT_RANK_TOP})",
+    )
+    p.add_argument(
+        "--log",
+        action="store_true",
+        help="record this scan and its picks to the local scan log",
+    )
 
-    p = sub.add_parser("variants", help="every structure considered on one symbol, rejections included")
+    p = sub.add_parser(
+        "variants", help="every structure considered on one symbol, rejections included"
+    )
     p.add_argument("symbol")
     _add_strategy_selection(p)
-    p.add_argument("--sort", default="annualized_roc", help="metric to rank by (default annualized_roc)")
+    p.add_argument(
+        "--sort",
+        default="annualized_roc",
+        help="metric to rank by (default annualized_roc)",
+    )
 
     sub.add_parser("strategies", help="list the shipped strategy definitions")
     sub.add_parser("tui", help="interactive triage over the screen (default)")

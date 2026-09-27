@@ -64,5 +64,11 @@ def test_past_earnings_date_ignored():
 
 
 def test_rank_ivr_desc_none_last():
-    ranked = rank([cand(symbol="A", ivr=None), cand(symbol="B", ivr=80.0), cand(symbol="C", ivr=90.0)])
+    ranked = rank(
+        [
+            cand(symbol="A", ivr=None),
+            cand(symbol="B", ivr=80.0),
+            cand(symbol="C", ivr=90.0),
+        ]
+    )
     assert [c.symbol for c in ranked] == ["C", "B", "A"]

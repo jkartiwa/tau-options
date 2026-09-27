@@ -58,9 +58,7 @@ VERDICT = {
 
 
 def headlines(n=5):
-    return tuple(
-        Headline(day=date(2026, 7, 20), title=f"Story {i}") for i in range(n)
-    )
+    return tuple(Headline(day=date(2026, 7, 20), title=f"Story {i}") for i in range(n))
 
 
 def test_classify_parses_a_verdict():
@@ -96,9 +94,7 @@ def test_key_dates_are_carried_through():
         key_dates=[{"date": "2026-08-14", "event": "FDA PDUFA"}],
     )
     brief = classify("OMGA", headlines(), client=FakeClient(payload))
-    assert [(k.day, k.event) for k in brief.key_dates] == [
-        ("2026-08-14", "FDA PDUFA")
-    ]
+    assert [(k.day, k.event) for k in brief.key_dates] == [("2026-08-14", "FDA PDUFA")]
     assert not brief.tradable
 
 

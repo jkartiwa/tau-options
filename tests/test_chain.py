@@ -89,7 +89,7 @@ def test_iv_at_interpolates_linearly_between_bracketing_strikes():
 
 def test_iv_at_is_flat_outside_the_quoted_strike_range():
     cy = cycle(EM_LEGS, underlying=100.0)
-    assert cy.iv_at(50.0, P) == pytest.approx(0.33)   # below the lowest put
+    assert cy.iv_at(50.0, P) == pytest.approx(0.33)  # below the lowest put
     assert cy.iv_at(500.0, C) == pytest.approx(0.28)  # above the highest call
 
 
@@ -195,7 +195,5 @@ def test_choose_expiration_excludes_weeklies():
 
 
 def test_choose_expiration_none_when_only_weeklies_available():
-    chain = FakeChain(
-        expirations=(FakeExpiration(date(2026, 9, 4), 40, "Weekly"),)
-    )
+    chain = FakeChain(expirations=(FakeExpiration(date(2026, 9, 4), 40, "Weekly"),))
     assert choose_expiration(chain, target_dte=45) is None

@@ -28,16 +28,27 @@ def data_dir(tmp_path, monkeypatch):
 
 def cand(symbol="TEST"):
     return Candidate(
-        symbol=symbol, ivr=50.0, ivp=50.0, iv30=30.0, hv30=25.0,
-        liquidity=4, beta=1.0, earnings_date=None,
+        symbol=symbol,
+        ivr=50.0,
+        ivp=50.0,
+        iv30=30.0,
+        hv30=25.0,
+        liquidity=4,
+        beta=1.0,
+        earnings_date=None,
     )
 
 
 def leg(strike, option_type, delta, mid):
     return Leg(
-        occ=f"{option_type}{strike:g}", streamer=f"s{option_type}{strike:g}",
-        strike=float(strike), type=option_type,
-        bid=mid - 0.01, ask=mid + 0.01, delta=delta, iv=0.30,
+        occ=f"{option_type}{strike:g}",
+        streamer=f"s{option_type}{strike:g}",
+        strike=float(strike),
+        type=option_type,
+        bid=mid - 0.01,
+        ask=mid + 0.01,
+        delta=delta,
+        iv=0.30,
     )
 
 
@@ -45,8 +56,12 @@ def cycle(symbol="TEST", dte=45):
     legs = [leg(k, P, d, PUT_MIDS[k]) for k, d in PUT_DELTAS.items()]
     legs += [leg(k, C, d, CALL_MIDS[k]) for k, d in CALL_DELTAS.items()]
     return Cycle(
-        symbol=symbol, expiration=date(2026, 9, 18), dte=dte, underlying=100.0,
-        legs=tuple(legs), fetched_at=datetime.now(UTC),
+        symbol=symbol,
+        expiration=date(2026, 9, 18),
+        dte=dte,
+        underlying=100.0,
+        legs=tuple(legs),
+        fetched_at=datetime.now(UTC),
     )
 
 
@@ -66,17 +81,20 @@ def test_identity_is_stable_for_the_same_definition():
 
 def test_identity_changes_when_a_leg_or_a_constraint_changes():
     base = Strategy(
-        name="t", bias=Bias.NEUTRAL,
+        name="t",
+        bias=Bias.NEUTRAL,
         legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
         require=[Require("pop", ">=", 0.5)],
     )
     wider = Strategy(
-        name="t", bias=Bias.NEUTRAL,
+        name="t",
+        bias=Bias.NEUTRAL,
         legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.30))],
         require=[Require("pop", ">=", 0.5)],
     )
     stricter = Strategy(
-        name="t", bias=Bias.NEUTRAL,
+        name="t",
+        bias=Bias.NEUTRAL,
         legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
         require=[Require("pop", ">=", 0.7)],
     )
@@ -146,17 +164,14 @@ def test_a_pick_records_which_margin_model_produced_its_figures():
     priced = replace(
         p,
         structures=tuple(
-            replace(s, broker_bpr=2500.0) if s is p.best else s
-            for s in p.structures
+            replace(s, broker_bpr=2500.0) if s is p.best else s for s in p.structures
         ),
     )
     assert priced.best.bpr_source == "broker"
     broker_scan = store.log_scan({}, [])
     store.log_picks(broker_scan, [priced])
 
-    logged = dict(
-        rows("SELECT scan_id, bpr_source FROM pick ORDER BY scan_id")
-    )
+    logged = dict(rows("SELECT scan_id, bpr_source FROM pick ORDER BY scan_id"))
     assert logged[formula_scan] == "estimate"
     assert logged[broker_scan] == "broker"
     bpr = dict(rows("SELECT scan_id, bpr FROM pick ORDER BY scan_id"))
@@ -182,8 +197,26 @@ def test_a_log_written_before_the_column_existed_still_opens_and_appends():
         conn.execute(
             f"INSERT INTO pick ({', '.join(legacy_columns)}) "
             f"VALUES ({', '.join('?' * len(legacy_columns))})",
-            (1, None, "OLD", "v1", "2026-01-16", 45, 100.0, "[]",
-             1.5, 150.0, 3000.0, 0.05, 0.4, 0.7, 0.02, 1.2, "[]", None),
+            (
+                1,
+                None,
+                "OLD",
+                "v1",
+                "2026-01-16",
+                45,
+                100.0,
+                "[]",
+                1.5,
+                150.0,
+                3000.0,
+                0.05,
+                0.4,
+                0.7,
+                0.02,
+                1.2,
+                "[]",
+                None,
+            ),
         )
     conn.close()
 

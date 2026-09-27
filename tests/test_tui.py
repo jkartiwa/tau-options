@@ -195,7 +195,13 @@ def _why_app(history=None, brief=None, calls=None):
     history = history or History(
         symbol="HIGH",
         bars=tuple(
-            Bar(day=TODAY - timedelta(days=i), open=100.0, high=120.0, low=80.0, close=100.0)
+            Bar(
+                day=TODAY - timedelta(days=i),
+                open=100.0,
+                high=120.0,
+                low=80.0,
+                close=100.0,
+            )
             for i in range(60, 0, -1)
         ),
         fetched_at=datetime.now(_UTC),
@@ -350,16 +356,34 @@ def _proposal(symbol, dte=40):
         return Leg(
             occ=f"{option_type}{strike:g}{symbol}",
             streamer=f"s{option_type}{strike:g}{symbol}",
-            strike=float(strike), type=option_type,
-            bid=mid - 0.01, ask=mid + 0.01, delta=delta, iv=0.30,
+            strike=float(strike),
+            type=option_type,
+            bid=mid - 0.01,
+            ask=mid + 0.01,
+            delta=delta,
+            iv=0.30,
         )
 
     legs = [leg(k, P, d, PUT_MIDS[k]) for k, d in PUT_DELTAS.items()]
     legs += [leg(k, C, d, CALL_MIDS[k]) for k, d in CALL_DELTAS.items()]
-    cy = Cycle(symbol=symbol, expiration=date(2026, 9, 4), dte=dte,
-               underlying=100.0, legs=tuple(legs), fetched_at=datetime.now(UTC))
-    candidate = Cand(symbol=symbol, ivr=50.0, ivp=50.0, iv30=30.0, hv30=25.0,
-                     liquidity=4, beta=1.0, earnings_date=None)
+    cy = Cycle(
+        symbol=symbol,
+        expiration=date(2026, 9, 4),
+        dte=dte,
+        underlying=100.0,
+        legs=tuple(legs),
+        fetched_at=datetime.now(UTC),
+    )
+    candidate = Cand(
+        symbol=symbol,
+        ivr=50.0,
+        ivp=50.0,
+        iv30=30.0,
+        hv30=25.0,
+        liquidity=4,
+        beta=1.0,
+        earnings_date=None,
+    )
     return propose_on(candidate, cy)
 
 
@@ -434,9 +458,16 @@ async def test_escape_returns_to_screen_view():
     async def loader():
         return list(FIXTURE)
 
-    a = TauApp(loader=loader, proposal_loader=_proposal_loader_factory(
-        {"HIGH": _proposal("HIGH"), "CHEAP": _proposal("CHEAP"), "MID": _proposal("MID")}
-    ))
+    a = TauApp(
+        loader=loader,
+        proposal_loader=_proposal_loader_factory(
+            {
+                "HIGH": _proposal("HIGH"),
+                "CHEAP": _proposal("CHEAP"),
+                "MID": _proposal("MID"),
+            }
+        ),
+    )
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("p")
@@ -451,6 +482,7 @@ async def test_escape_returns_to_screen_view():
 async def test_enter_in_the_rank_view_opens_every_variant_considered():
     """The drill-in exists so a rejection can be read. Failures stay in the
     list with their reasons rather than leaving a name looking empty."""
+
     async def loader():
         return [FIXTURE[0]]
 
@@ -509,7 +541,9 @@ async def test_variants_from_the_screen_view_loads_the_chain_first():
     async def chain_loader(candidate):
         calls.append(candidate.symbol)
         return Cycle(
-            symbol=candidate.symbol, expiration=date(2026, 9, 4), dte=40,
+            symbol=candidate.symbol,
+            expiration=date(2026, 9, 4),
+            dte=40,
             underlying=100.0,
             legs=(
                 Leg("P85", "s1", 85.0, P, bid=1.0, ask=1.2, delta=-0.16, iv=0.3),
@@ -537,6 +571,7 @@ async def test_variants_from_the_screen_view_loads_the_chain_first():
 async def test_strategy_picker_toggles_without_refetching():
     """Turning a strategy off is a view over structures already in hand, so it
     must re-rank with no further calls to the pricing loader."""
+
     async def loader():
         return [FIXTURE[0]]
 
@@ -564,9 +599,7 @@ async def test_strategy_picker_toggles_without_refetching():
 
         assert first not in a._enabled
         assert len(a._enabled) == 5
-        assert first not in {
-            s.strategy.name for s in a.proposal_for("HIGH").structures
-        }
+        assert first not in {s.strategy.name for s in a.proposal_for("HIGH").structures}
         assert calls == [["HIGH"]]  # no refetch
         if before == first:
             assert a.proposal_for("HIGH").best.strategy.name != first
@@ -575,6 +608,7 @@ async def test_strategy_picker_toggles_without_refetching():
 @pytest.mark.asyncio
 async def test_picker_will_not_leave_every_strategy_disabled():
     """An empty rank view reads as a broken scan rather than a filter."""
+
     async def loader():
         return [FIXTURE[0]]
 
@@ -666,7 +700,9 @@ async def test_rank_table_marks_broker_and_formula_bpr_sources(monkeypatch):
     enriched = await propose_mod.enrich_with_broker_bpr(object(), base)
     assert enriched.best.bpr_source == "broker"
 
-    a = TauApp(loader=loader, proposal_loader=_proposal_loader_factory({"HIGH": enriched}))
+    a = TauApp(
+        loader=loader, proposal_loader=_proposal_loader_factory({"HIGH": enriched})
+    )
     async with a.run_test() as pilot:
         await pilot.pause()
         await pilot.press("p")
@@ -851,7 +887,7 @@ def _ladder_rows(lines):
         i for i, ln in enumerate(lines) if ln.endswith("credit / POP / ANN[/dim]")
     )
     rows = []
-    for line in lines[start + 1:]:
+    for line in lines[start + 1 :]:
         if "variants passed" in line:
             break
         rows.append(line)
@@ -860,7 +896,8 @@ def _ladder_rows(lines):
 
 def _family(proposal):
     return [
-        s for s in proposal.structures
+        s
+        for s in proposal.structures
         if s.strategy.name == proposal.best.strategy.name and s.complete
     ]
 
@@ -937,9 +974,7 @@ async def test_a_breaker_trip_on_the_drill_in_path_reaches_the_meta_line(monkeyp
         return proposal
 
     monkeypatch.setattr("tau.tui.app.get_session", lambda: object())
-    monkeypatch.setattr(
-        "tau.propose.enrich_with_broker_bpr", trip_the_breaker
-    )
+    monkeypatch.setattr("tau.propose.enrich_with_broker_bpr", trip_the_breaker)
 
     a = TauApp(loader=loader, chain_loader=chain_loader)
     async with a.run_test() as pilot:

@@ -105,6 +105,7 @@ structures fail their spread-cost check than would during the session.
 pip install -e ".[dev]"
 pytest
 ruff check
+ruff format --check
 ```
 
 None of the tests touch the live API.

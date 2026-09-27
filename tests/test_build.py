@@ -192,8 +192,14 @@ def test_an_unpriced_leg_never_yields_a_partial_credit():
 
 def test_a_leg_without_greeks_is_not_selectable():
     no_greeks = tuple(
-        Leg(occ=x.occ, streamer=x.streamer, strike=x.strike, type=x.type,
-            bid=x.bid, ask=x.ask)
+        Leg(
+            occ=x.occ,
+            streamer=x.streamer,
+            strike=x.strike,
+            type=x.type,
+            bid=x.bid,
+            ask=x.ask,
+        )
         if x.type is P
         else x
         for x in ladder()
@@ -309,7 +315,10 @@ def test_variants_that_resolve_to_the_same_contracts_collapse_to_one():
             LegSpec("short_put", type=P, side=SHORT, strike=Delta(0.20)),
             # -10 and -11 both land on the 80 strike of a 5-point ladder
             LegSpec(
-                "long_put", type=P, side=LONG, strike=Ref("short_put", offset=[-10, -11])
+                "long_put",
+                type=P,
+                side=LONG,
+                strike=Ref("short_put", offset=[-10, -11]),
             ),
         ],
     )
@@ -325,8 +334,12 @@ def test_a_delta_ladder_collapsed_by_dropouts_refuses_the_labels_it_missed():
     three requested deltas onto one contract. The 29.5-delta contract is an
     honest 30Δ and a 13.5-point miss as a 16Δ, so only the 30Δ variant may
     survive."""
-    coarse = (leg(95, P, -0.295, 2.07), leg(100, P, -0.50, 3.50),
-              leg(100, C, 0.50, 3.50), leg(105, C, 0.30, 2.00))
+    coarse = (
+        leg(95, P, -0.295, 2.07),
+        leg(100, P, -0.50, 3.50),
+        leg(100, C, 0.50, 3.50),
+        leg(105, C, 0.30, 2.00),
+    )
     csp = STRATEGIES["cash-secured-put"]  # Delta([0.16, 0.20, 0.30])
     structures = evaluate(csp, cycle(coarse))
 
@@ -342,9 +355,14 @@ def test_a_delta_ladder_collapsed_by_dropouts_refuses_the_labels_it_missed():
 def test_no_built_variant_can_carry_a_label_its_contracts_do_not_have():
     """The property the gate exists for, over every shipped strategy and a
     ladder coarse enough to strand each requested delta."""
-    coarse = (leg(75, P, -0.02, 0.10), leg(95, P, -0.295, 2.07),
-              leg(100, P, -0.50, 3.50), leg(100, C, 0.50, 3.50),
-              leg(105, C, 0.30, 2.00), leg(125, C, 0.02, 0.10))
+    coarse = (
+        leg(75, P, -0.02, 0.10),
+        leg(95, P, -0.295, 2.07),
+        leg(100, P, -0.50, 3.50),
+        leg(100, C, 0.50, 3.50),
+        leg(105, C, 0.30, 2.00),
+        leg(125, C, 0.02, 0.10),
+    )
     cy = cycle(coarse)
     for strategy in ALL:
         for structure in evaluate(strategy, cy):
@@ -365,8 +383,12 @@ def test_variants_on_one_contract_keep_the_closest_delta_label():
         legs=[LegSpec("short_put", type=P, side=SHORT, strike=Delta([0.16, 0.20]))],
     )
     # One quoted put below spot, at a delta both requests can honestly reach.
-    coarse = (leg(90, P, -0.19, 1.20), leg(100, P, -0.50, 3.50),
-              leg(100, C, 0.50, 3.50), leg(105, C, 0.30, 2.00))
+    coarse = (
+        leg(90, P, -0.19, 1.20),
+        leg(100, P, -0.50, 3.50),
+        leg(100, C, 0.50, 3.50),
+        leg(105, C, 0.30, 2.00),
+    )
     structures = evaluate(strategy, cycle(coarse))
 
     assert len(structures) == 1
@@ -544,8 +566,7 @@ def test_a_fully_priced_ladder_orders_on_the_broker_figures():
     passing = rank([s for s in structures if s.ok])
     laggard = passing[-1]
     priced = [
-        replace(s, broker_bpr=s.bpr * (0.1 if s is laggard else 1.0))
-        for s in passing
+        replace(s, broker_bpr=s.bpr * (0.1 if s is laggard else 1.0)) for s in passing
     ]
     assert uniformly_broker_priced(priced, "annualized_roc")
     assert rank(priced)[0].variant == laggard.variant

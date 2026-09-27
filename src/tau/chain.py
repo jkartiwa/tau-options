@@ -309,9 +309,7 @@ def is_monthly(expiration) -> bool:
 
 
 def _live_monthlies(chain) -> list:
-    return [
-        e for e in chain.expirations if e.days_to_expiration >= 0 and is_monthly(e)
-    ]
+    return [e for e in chain.expirations if e.days_to_expiration >= 0 and is_monthly(e)]
 
 
 def choose_expiration(chain, target_dte: int):
@@ -365,9 +363,7 @@ async def fetch_cycle(
             if bid is not None and ask is not None:
                 underlying = (bid + ask) / 2
 
-        selected = select_strikes(
-            strikes, underlying, exp.days_to_expiration, iv_hint
-        )
+        selected = select_strikes(strikes, underlying, exp.days_to_expiration, iv_hint)
 
         streamer_symbols = [s.call_streamer_symbol for s in selected] + [
             s.put_streamer_symbol for s in selected

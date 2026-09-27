@@ -66,7 +66,9 @@ def test_with_min_pop_appends_a_rule_when_a_strategy_has_none():
 
 
 def test_scalar_selector_is_a_one_element_search():
-    strategy = Strategy(name="s", bias=Bias.NEUTRAL, legs=[spec("a", strike=Delta(0.16))])
+    strategy = Strategy(
+        name="s", bias=Bias.NEUTRAL, legs=[spec("a", strike=Delta(0.16))]
+    )
     assert strategy.variant_count == 1
     assert len(strategy.variants()) == 1
 
@@ -179,20 +181,23 @@ def test_a_constraint_cannot_be_built_on_a_buying_power_metric():
     for metric in ("bpr", "roc", "annualized_roc"):
         with pytest.raises(ValueError, match="cannot be required"):
             Strategy(
-                name="t", bias=Bias.NEUTRAL,
+                name="t",
+                bias=Bias.NEUTRAL,
                 legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
                 require=[Require(metric, ">=", 0.05)],
             )
     # naming one as the comparison value is the same trap
     with pytest.raises(ValueError, match="cannot be required"):
         Strategy(
-            name="t", bias=Bias.NEUTRAL,
+            name="t",
+            bias=Bias.NEUTRAL,
             legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
             require=[Require("credit", ">=", "bpr")],
         )
     # ranking on one is fine: nothing has been decided yet when it is read
     ranked = Strategy(
-        name="t", bias=Bias.NEUTRAL,
+        name="t",
+        bias=Bias.NEUTRAL,
         legs=[LegSpec("p", type=P, side=SHORT, strike=Delta(0.16))],
         rank="annualized_roc",
     )

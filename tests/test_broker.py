@@ -155,6 +155,7 @@ async def test_margin_account_picks_the_open_margin_account(monkeypatch):
 
     monkeypatch.setattr(broker_mod.Account, "get", fake_get)
     assert await margin_account(None) is margin
+
     # resolved once per process: a second call must not hit the API again
     async def boom(session):
         raise AssertionError("account list fetched twice")
@@ -164,7 +165,9 @@ async def test_margin_account_picks_the_open_margin_account(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_margin_account_falls_back_when_the_account_list_cannot_be_read(monkeypatch):
+async def test_margin_account_falls_back_when_the_account_list_cannot_be_read(
+    monkeypatch,
+):
     from tau import broker as broker_mod
 
     async def fake_get(session):
@@ -249,14 +252,10 @@ def test_a_debit_signed_margin_requirement_is_read_as_the_requirement():
     magnitude is the requirement whichever way it is signed."""
     from tau.broker import margin_requirement
 
-    sdk_signed = SimpleNamespace(
-        isolated_order_margin_requirement=Decimal("-3651.00")
-    )
+    sdk_signed = SimpleNamespace(isolated_order_margin_requirement=Decimal("-3651.00"))
     assert margin_requirement(sdk_signed) == pytest.approx(3651.0)
 
-    unsigned = SimpleNamespace(
-        isolated_order_margin_requirement=Decimal("3651.00")
-    )
+    unsigned = SimpleNamespace(isolated_order_margin_requirement=Decimal("3651.00"))
     assert margin_requirement(unsigned) == pytest.approx(3651.0)
 
 
@@ -264,21 +263,29 @@ def test_a_missing_zero_or_unusable_margin_requirement_is_no_figure():
     from tau.broker import margin_requirement
 
     assert margin_requirement(SimpleNamespace()) is None
-    assert margin_requirement(
-        SimpleNamespace(isolated_order_margin_requirement=None)
-    ) is None
-    assert margin_requirement(
-        SimpleNamespace(isolated_order_margin_requirement=Decimal(0))
-    ) is None
-    assert margin_requirement(
-        SimpleNamespace(isolated_order_margin_requirement="not a number")
-    ) is None
+    assert (
+        margin_requirement(SimpleNamespace(isolated_order_margin_requirement=None))
+        is None
+    )
+    assert (
+        margin_requirement(
+            SimpleNamespace(isolated_order_margin_requirement=Decimal(0))
+        )
+        is None
+    )
+    assert (
+        margin_requirement(
+            SimpleNamespace(isolated_order_margin_requirement="not a number")
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
 async def test_a_debit_signed_dry_run_produces_a_broker_figure():
     """End to end through the module's own entry point: the negative figure
     the SDK hands back is what a live dry-run looks like."""
+
     class FakeEffect:
         isolated_order_margin_requirement = Decimal("-3651.00")
 
@@ -333,9 +340,7 @@ async def test_a_success_between_failures_keeps_the_breaker_closed():
                 raise RuntimeError("connection reset")
             return result
 
-    values = [
-        await broker_bpr_for(None, FlakyAccount(), strangle()) for _ in range(5)
-    ]
+    values = [await broker_bpr_for(None, FlakyAccount(), strangle()) for _ in range(5)]
     assert values == [None, None, pytest.approx(3651.0), None, None]
     assert not broker_mod.dry_runs_disabled()
 
@@ -563,6 +568,7 @@ async def test_a_failed_probe_after_the_cooldown_says_so_again(caplog):
     monkey = broker_mod.BREAKER_COOLDOWN
     broker_mod.BREAKER_COOLDOWN = 0.05
     try:
+
         class DeadAccount:
             async def get_order_buying_power_effect(self, session, order):
                 raise TimeoutError("read timeout")
@@ -631,8 +637,14 @@ async def test_a_whole_proposal_is_priced_without_touching_the_order_book(monkey
         ],
     )
     candidate = Candidate(
-        symbol="TEST", ivr=None, ivp=None, iv30=None, hv30=None,
-        liquidity=None, beta=None, earnings_date=None,
+        symbol="TEST",
+        ivr=None,
+        ivp=None,
+        iv30=None,
+        hv30=None,
+        liquidity=None,
+        beta=None,
+        earnings_date=None,
     )
     proposal = propose_mod.propose_on(candidate, cy, [strategy])
     account = OnlyDryRun()

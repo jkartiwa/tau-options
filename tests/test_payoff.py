@@ -214,17 +214,18 @@ def test_put_over_call_skew_lowers_pop_for_a_short_strangle():
 def test_a_missing_local_vol_falls_back_to_the_atm_vol_per_boundary():
     """Degrade, never fail: the put side has no IV, so the lower boundary
     reverts to the ATM vol while the upper keeps its own."""
+
     def half_smile(price, option_type):
         return None if option_type is OptionType.PUT else 0.27
 
     both_sides = pop_over_intervals(
-        [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=lambda price, t: {
-            OptionType.PUT: 0.30, OptionType.CALL: 0.27
-        }[t]
+        [(88.0, 112.0)],
+        100.0,
+        0.30,
+        45,
+        iv_at=lambda price, t: {OptionType.PUT: 0.30, OptionType.CALL: 0.27}[t],
     )
-    degraded = pop_over_intervals(
-        [(88.0, 112.0)], 100.0, 0.30, 45, iv_at=half_smile
-    )
+    degraded = pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 45, iv_at=half_smile)
     assert degraded == both_sides
     assert degraded is not None
 

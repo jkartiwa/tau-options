@@ -23,8 +23,14 @@ SPREAD = 0.02
 
 def cand(symbol="TEST", iv30=30.0):
     return Candidate(
-        symbol=symbol, ivr=50.0, ivp=50.0, iv30=iv30, hv30=25.0,
-        liquidity=4, beta=1.0, earnings_date=None,
+        symbol=symbol,
+        ivr=50.0,
+        ivp=50.0,
+        iv30=iv30,
+        hv30=25.0,
+        liquidity=4,
+        beta=1.0,
+        earnings_date=None,
     )
 
 
@@ -49,7 +55,9 @@ def ladder():
 
 def cycle(legs=None, underlying=100.0, dte=45):
     return Cycle(
-        symbol="TEST", expiration=date(2026, 9, 18), dte=dte,
+        symbol="TEST",
+        expiration=date(2026, 9, 18),
+        dte=dte,
         underlying=underlying,
         legs=legs if legs is not None else ladder(),
         fetched_at=datetime.now(UTC),
@@ -66,20 +74,18 @@ def proposal(symbol="TEST", cy=None, strategies=SHIPPED):
 
 def test_naked_requirement_uses_the_greater_of_two_formulas():
     # far OTM, cheap premium -> the 10%-of-strike floor should bind
-    req = naked_side_requirement(
-        spot=100.0, strike=50.0, premium=0.10, option_type=P
+    req = naked_side_requirement(spot=100.0, strike=50.0, premium=0.10, option_type=P)
+    assert req == pytest.approx(
+        max(
+            (0.20 * 100 - 50 + 0.10) * 100,
+            (0.10 * 50 + 0.10) * 100,
+            50.0,
+        )
     )
-    assert req == pytest.approx(max(
-        (0.20 * 100 - 50 + 0.10) * 100,
-        (0.10 * 50 + 0.10) * 100,
-        50.0,
-    ))
 
 
 def test_naked_requirement_floor_applies_to_tiny_premium():
-    req = naked_side_requirement(
-        spot=10.0, strike=9.0, premium=0.01, option_type=P
-    )
+    req = naked_side_requirement(spot=10.0, strike=9.0, premium=0.01, option_type=P)
     assert req >= 50.0
 
 
@@ -264,8 +270,26 @@ def test_a_cycle_where_every_variant_fails_says_so_rather_than_going_blank():
 # needs deltas and mids that stay mutually consistent as strikes are removed.
 
 BS_SPOT, BS_IV, BS_DTE = 100.0, 0.30, 45
-BS_STRIKES = [70, 75, 80, 82.5, 85, 87.5, 90, 92.5, 95, 97.5, 100,
-              102.5, 105, 107.5, 110, 115, 120, 125]
+BS_STRIKES = [
+    70,
+    75,
+    80,
+    82.5,
+    85,
+    87.5,
+    90,
+    92.5,
+    95,
+    97.5,
+    100,
+    102.5,
+    105,
+    107.5,
+    110,
+    115,
+    120,
+    125,
+]
 
 
 def _bs(strike, option_type):
@@ -291,16 +315,18 @@ def bs_ladder(unquoted=frozenset()):
         for option_type in (C, P):
             mid, delta = _bs(strike, option_type)
             quoted = (strike, option_type) not in unquoted
-            legs.append(Leg(
-                occ=f"{option_type}{strike:g}",
-                streamer=f"s{option_type}{strike:g}",
-                strike=float(strike),
-                type=option_type,
-                bid=mid - 0.02 if quoted else None,
-                ask=mid + 0.02 if quoted else None,
-                delta=delta,
-                iv=BS_IV,
-            ))
+            legs.append(
+                Leg(
+                    occ=f"{option_type}{strike:g}",
+                    streamer=f"s{option_type}{strike:g}",
+                    strike=float(strike),
+                    type=option_type,
+                    bid=mid - 0.02 if quoted else None,
+                    ask=mid + 0.02 if quoted else None,
+                    delta=delta,
+                    iv=BS_IV,
+                )
+            )
     return tuple(legs)
 
 
@@ -314,13 +340,21 @@ def test_a_dropout_no_longer_changes_which_structure_wins():
     """
     csp = (STRATEGIES["cash-secured-put"],)
     full_cycle = Cycle(
-        symbol="FULL", expiration=date(2026, 9, 18), dte=BS_DTE,
-        underlying=BS_SPOT, legs=bs_ladder(), fetched_at=datetime.now(UTC),
+        symbol="FULL",
+        expiration=date(2026, 9, 18),
+        dte=BS_DTE,
+        underlying=BS_SPOT,
+        legs=bs_ladder(),
+        fetched_at=datetime.now(UTC),
     )
     unquoted = {(k, P) for k in BS_STRIKES if k < 95}
     degraded_cycle = Cycle(
-        symbol="DEGR", expiration=date(2026, 9, 18), dte=BS_DTE,
-        underlying=BS_SPOT, legs=bs_ladder(unquoted), fetched_at=datetime.now(UTC),
+        symbol="DEGR",
+        expiration=date(2026, 9, 18),
+        dte=BS_DTE,
+        underlying=BS_SPOT,
+        legs=bs_ladder(unquoted),
+        fetched_at=datetime.now(UTC),
     )
     full = propose_on(cand("FULL"), full_cycle, csp)
     degraded = propose_on(cand("DEGR"), degraded_cycle, csp)
@@ -345,10 +379,7 @@ def test_rank_orders_by_metric_descending_failed_last():
     # true reading of the structure and a useless one for ordering a test.
     only = (STRATEGIES["strangle"],)
     rich = cycle(
-        tuple(
-            leg(x.strike, x.type, x.delta, (x.bid + x.ask) / 2 * 3)
-            for x in ladder()
-        )
+        tuple(leg(x.strike, x.type, x.delta, (x.bid + x.ask) / 2 * 3) for x in ladder())
     )
     good_high = proposal("HIGH", rich, only)
     good_low = proposal("LOW", strategies=only)
@@ -406,8 +437,12 @@ def test_a_cycle_that_mostly_could_not_be_priced_says_so_too():
     # Only the 95 put quotes below spot, so two of the three requested deltas
     # cannot be built at all — and the third is then held under a pop floor
     # nothing on this chain can clear.
-    coarse = (leg(95, P, -0.295, 2.07), leg(100, P, -0.50, 3.50),
-              leg(100, C, 0.50, 3.50), leg(105, C, 0.30, 2.00))
+    coarse = (
+        leg(95, P, -0.295, 2.07),
+        leg(100, P, -0.50, 3.50),
+        leg(100, C, 0.50, 3.50),
+        leg(105, C, 0.30, 2.00),
+    )
     demanding = with_min_pop((STRATEGIES["cash-secured-put"],), 0.99)
     cy = cycle(coarse)
     structures = tuple(evaluate(demanding[0], cy))
@@ -417,6 +452,8 @@ def test_a_cycle_that_mostly_could_not_be_priced_says_so_too():
     assert "failed a constraint" in reason
     assert "2 of 3 never priced" in reason
     assert "no strike near that delta" in reason
+
+
 # --- broker buying-power enrichment ---
 
 
@@ -584,9 +621,7 @@ def _strategy_winners(p):
     for s in p.structures:
         groups.setdefault(s.strategy.name, []).append(s)
     winners = [w for g in groups.values() if (w := build_best(g)) is not None]
-    return sorted(
-        winners, key=lambda s: s.metric("annualized_roc"), reverse=True
-    )
+    return sorted(winners, key=lambda s: s.metric("annualized_roc"), reverse=True)
 
 
 def test_a_formula_estimate_never_outranks_a_broker_figure_for_best():
@@ -607,8 +642,7 @@ def test_a_formula_estimate_never_outranks_a_broker_figure_for_best():
     priced = replace(
         p,
         structures=tuple(
-            replace(s, broker_bpr=s.bpr) if s is runner_up else s
-            for s in p.structures
+            replace(s, broker_bpr=s.bpr) if s is runner_up else s for s in p.structures
         ),
     )
     assert priced.best.label == runner_up.label
@@ -627,7 +661,8 @@ def test_a_formula_estimate_never_outranks_a_broker_figure_within_a_strategy():
     top = _strategy_winners(p)[0]
     group = [s for s in p.structures if s.strategy.name == top.strategy.name]
     loser = next(
-        s for s in group
+        s
+        for s in group
         if s.ok and s is not top and s.metric("annualized_roc") is not None
     )
     priced = [replace(s, broker_bpr=s.bpr) if s is loser else s for s in group]
@@ -734,9 +769,7 @@ async def test_a_name_with_no_tradable_structure_spends_no_dry_runs(monkeypatch)
     monkeypatch.setattr(broker_mod, "broker_bpr_for", fake_bpr)
 
     p = proposal()
-    dead = Proposal(
-        p.candidate, p.cycle, p.structures, error="all variants failed"
-    )
+    dead = Proposal(p.candidate, p.cycle, p.structures, error="all variants failed")
     assert await propose_mod.enrich_with_broker_bpr(object(), dead) is dead
     assert calls == []
 
@@ -820,15 +853,14 @@ def _priced(p, factor):
     return replace(
         p,
         structures=tuple(
-            replace(s, broker_bpr=s.bpr * factor) if s.bpr else s
-            for s in p.structures
+            replace(s, broker_bpr=s.bpr * factor) if s.bpr else s for s in p.structures
         ),
     )
 
 
 def test_a_whole_broker_priced_pass_ranks_on_the_broker_figures():
-    a = _priced(proposal("AAA"), 0.5)   # broker margin below the formula
-    b = _priced(proposal("BBB"), 2.0)   # broker margin above it
+    a = _priced(proposal("AAA"), 0.5)  # broker margin below the formula
+    b = _priced(proposal("BBB"), 2.0)  # broker margin above it
     assert a.best.bpr_source == b.best.bpr_source == "broker"
     assert a.annualized_roc > b.annualized_roc
 
@@ -898,9 +930,7 @@ async def test_a_dry_run_the_budget_cuts_off_counts_toward_the_breaker(monkeypat
     assert broker_mod.dry_runs_disabled()
 
     spent = len(started)
-    later = await propose_mod.enrich_with_broker_bpr(
-        object(), proposal(), budget=0.05
-    )
+    later = await propose_mod.enrich_with_broker_bpr(object(), proposal(), budget=0.05)
     assert all(s.bpr_source == "estimate" for s in later.structures)
     assert len(started) == spent
 
