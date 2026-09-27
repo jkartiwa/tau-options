@@ -10,6 +10,7 @@ from tau.payoff import (
     breakevens,
     max_loss,
     max_profit,
+    naked_side_requirement,
     net_premium,
     payoff_at,
     pop_over_intervals,
@@ -159,6 +160,50 @@ def test_strangle_margin_reduces_to_the_larger_side_plus_the_other_premium():
     assert bpr(STRANGLE, 100.0) == pytest.approx(1200.0 + 100.0)
 
 
+def test_naked_requirement_uses_the_greater_of_two_formulas():
+    # far OTM, cheap premium -> the 10%-of-strike floor should bind
+    req = naked_side_requirement(spot=100.0, strike=50.0, premium=0.10, option_type=P)
+    assert req == pytest.approx(
+        max(
+            (0.20 * 100 - 50 + 0.10) * 100,
+            (0.10 * 50 + 0.10) * 100,
+            50.0,
+        )
+    )
+
+
+def test_naked_requirement_floor_applies_to_tiny_premium():
+    req = naked_side_requirement(spot=10.0, strike=9.0, premium=0.01, option_type=P)
+    assert req >= 50.0
+
+
+def test_naked_requirement_otm_term_is_side_aware():
+    # spot 100, premium 2.00. K=90 is OTM for a put by 10 and ITM for a
+    # call; K=110 is the mirror image.
+    assert naked_side_requirement(100.0, 90.0, 2.00, P) == pytest.approx(
+        max((0.20 * 100 - 10 + 2.00) * 100, (0.10 * 90 + 2.00) * 100, 50.0)
+    )
+    assert naked_side_requirement(100.0, 110.0, 2.00, C) == pytest.approx(
+        max((0.20 * 100 - 10 + 2.00) * 100, (0.10 * 110 + 2.00) * 100, 50.0)
+    )
+
+
+def test_naked_requirement_charges_an_itm_short_no_otm_credit():
+    # ITM has no out-of-the-money distance to subtract: the 20% term is
+    # charged in full. A short put at 110 against spot 100 is ITM.
+    itm_put = naked_side_requirement(100.0, 110.0, 2.00, P)
+    assert itm_put == pytest.approx(
+        max((0.20 * 100 - 0.0 + 2.00) * 100, (0.10 * 110 + 2.00) * 100, 50.0)
+    )
+    assert itm_put == pytest.approx(2200.0)
+
+    itm_call = naked_side_requirement(100.0, 90.0, 2.00, C)
+    assert itm_call == pytest.approx(
+        max((0.20 * 100 - 0.0 + 2.00) * 100, (0.10 * 90 + 2.00) * 100, 50.0)
+    )
+    assert itm_call == pytest.approx(2200.0)
+
+
 def test_profitable_intervals_are_bounded_by_the_breakevens():
     assert profitable_intervals(STRANGLE) == [(88.0, 112.0)]
     assert profitable_intervals(PUT_SPREAD) == [(88.0, inf)]
@@ -177,7 +222,22 @@ def test_pop_of_an_open_ended_region_counts_the_whole_tail():
     assert pop < 1.0
 
 
+def test_pop_symmetric_breakevens_near_half_with_slight_drift_correction():
+    # symmetric breakevens around spot -> the driftless-lognormal median
+    # shift pushes PoP slightly above 0.5, never below.
+    p = pop_over_intervals([(90.0, 110.0)], spot=100.0, iv=0.30, dte=45)
+    assert p is not None
+    assert 0.5 < p < 0.7
+
+
+def test_pop_wider_breakevens_increase_probability():
+    narrow = pop_over_intervals([(95.0, 105.0)], 100.0, 0.30, 45)
+    wide = pop_over_intervals([(80.0, 120.0)], 100.0, 0.30, 45)
+    assert wide > narrow
+
+
 def test_pop_is_none_on_degenerate_inputs():
+    assert pop_over_intervals([(88.0, 112.0)], 0.0, 0.30, 45) is None
     assert pop_over_intervals([(88.0, 112.0)], 100.0, 0.0, 45) is None
     assert pop_over_intervals([(88.0, 112.0)], 100.0, 0.30, 0) is None
 
