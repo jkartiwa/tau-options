@@ -393,7 +393,51 @@ async def test_reprice_mid_run_reprices_the_names_already_done():
         await pilot.pause()
         assert [sorted(c) for c in calls] == [["CHEAP", "HIGH", "MID"]] * 2
         assert set(a._proposals) == {"HIGH", "CHEAP", "MID"}
-        assert not a._pricing
+        assert not a.pricing
+
+
+@pytest.mark.asyncio
+async def test_chain_load_does_not_cancel_an_in_flight_pricing_run():
+    release = asyncio.Event()
+
+    async def slow_loader(candidates, on_done):
+        await release.wait()
+        for c in candidates:
+            on_done(_proposal(c.symbol))
+
+    async def chain_loader(candidate):
+        return _strangle_cycle(candidate.symbol)
+
+    a = app(proposal_loader=slow_loader, chain_loader=chain_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.press("c")
+        assert await _settle(a, lambda: "HIGH" in a._proposals)
+        release.set()
+        assert await _settle(a, lambda: set(a._proposals) == {"HIGH", "CHEAP", "MID"})
+        assert await _settle(a, lambda: not a.pricing)
+
+
+@pytest.mark.asyncio
+async def test_refetch_stops_pricing_without_leaving_it_marked_in_progress():
+    calls = []
+
+    async def stalled_loader(candidates, on_done):
+        calls.append([c.symbol for c in candidates])
+        await asyncio.Event().wait()
+
+    a = app(proposal_loader=stalled_loader)
+    async with a.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        assert await _settle(a, lambda: a.pricing)
+        await pilot.press("r")
+        assert await _settle(a, lambda: not a.pricing)
+        await pilot.press("p")  # prices again rather than waiting on a dead run
+        assert await _settle(a, lambda: len(calls) == 2)
 
 
 @pytest.mark.asyncio
