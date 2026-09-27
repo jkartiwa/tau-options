@@ -133,8 +133,8 @@ def test_strike_ladder_groups_call_and_put_by_strike():
 
 
 def test_strike_window_spans_the_wings_on_a_dense_ladder():
-    """The original bug: a count cap stopped the window short of the 16-delta
-    strikes on densely struck names."""
+    """A count cap must not stop the window short of the 16-delta strikes on
+    densely struck names."""
     strikes = [FakeStrike(s) for s in range(500, 900)]  # 400 one-point strikes
     sel = select_strikes(strikes, underlying=684.0, dte=40, iv_hint=0.194)
     prices = [s.strike_price for s in sel]

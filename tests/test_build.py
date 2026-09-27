@@ -91,10 +91,9 @@ def test_delta_selection_picks_the_nearest_strike_and_reports_no_miss():
 
 
 def test_delta_miss_beyond_tolerance_is_refused_not_folded_into_the_label():
-    """The original bug in this codebase: a 0.38-delta leg returned labelled
-    16-delta. A coarse ladder must not be quietly relabelled, and the rule is
-    now the same one `MAX_REF_MISS` applies to a missed width — refuse the
-    variant rather than return it under a name it does not have."""
+    """A coarse ladder must not be quietly relabelled: a 0.38-delta leg asked
+    for as 16-delta is refused, the same rule `MAX_REF_MISS` applies to a
+    missed width."""
     coarse = (leg(70, P, -0.40, 1.0), leg(130, C, 0.38, 1.0))
     structure = one(STRANGLE_20, cycle(coarse), "20Δ/20Δ")
     assert not structure.complete
@@ -142,8 +141,8 @@ def test_reference_leg_resolves_by_strike_count():
 
 
 def test_a_coarse_ladder_kills_the_variant_rather_than_mislabelling_the_width():
-    """Same failure shape as the delta bug: asking for a 5-wide wing and
-    silently getting a 10-wide one changes the margin and the max loss."""
+    """Asking for a 5-wide wing and silently getting a 10-wide one changes the
+    margin and the max loss."""
     wide = (
         leg(80, P, -0.08, 0.50),
         leg(90, P, -0.20, 1.20),
@@ -265,7 +264,7 @@ def test_spread_cost_weights_a_doubled_leg_twice():
 
 
 def test_a_structure_that_costs_too_much_to_cross_is_failed_not_ranked():
-    """The live AAPL case: two legs cost ~99% of the credit to cross. On a
+    """Wide markets can cost nearly the whole credit to cross. On a
     four-legger it is worse, and return on capital cannot see it."""
     wide = tuple(
         leg(x.strike, x.type, x.delta, (x.bid + x.ask) / 2, spread=0.30)
@@ -322,12 +321,10 @@ def test_variants_that_resolve_to_the_same_contracts_collapse_to_one():
 
 
 def test_a_delta_ladder_collapsed_by_dropouts_refuses_the_labels_it_missed():
-    """From the code-health review's `repro_dedup.py`, on this file's own
-    fixtures: a chain where only the 95 put still quotes below spot collapses
-    all three requested deltas onto one contract. The 29.5-delta contract is
-    an honest 30Δ and a 13.5-point lie as a 16Δ, so only the 30Δ variant may
-    survive — before the gate this shipped as `cash-secured-put · 16Δ`,
-    ok=True, with `worst_off_target` 0.135 and nothing consulting it."""
+    """A chain where only the 95 put still quotes below spot collapses all
+    three requested deltas onto one contract. The 29.5-delta contract is an
+    honest 30Δ and a 13.5-point miss as a 16Δ, so only the 30Δ variant may
+    survive."""
     coarse = (leg(95, P, -0.295, 2.07), leg(100, P, -0.50, 3.50),
               leg(100, C, 0.50, 3.50), leg(105, C, 0.30, 2.00))
     csp = STRATEGIES["cash-secured-put"]  # Delta([0.16, 0.20, 0.30])
@@ -359,9 +356,8 @@ def test_no_built_variant_can_carry_a_label_its_contracts_do_not_have():
 
 
 def test_variants_on_one_contract_keep_the_closest_delta_label():
-    """The dedup tiebreak compared `worst_strike_miss`, which is None for
-    every delta-selected leg — so `0 < 0` was always False and the
-    first-enumerated variant won regardless of what it landed on. Here 16Δ
+    """The dedup tiebreak must weigh delta misses: `worst_strike_miss` is None
+    for every delta-selected leg, so it cannot separate them. Here 16Δ
     enumerates first and 20Δ is the closer label."""
     strategy = Strategy(
         name="t-csp-ladder",
@@ -522,8 +518,8 @@ def _shortlist_priced(structures, count):
 
 def test_a_partly_priced_ladder_orders_on_the_formula_throughout():
     """The pull is bounded, so rows past the cut keep the formula while the
-    ones above them carry portfolio margin. Interleaving the two floats
-    whichever was measured by the more generous model to the top of its own
+    ones above them carry the broker figure. Interleaving the two floats
+    whichever was priced by the more generous model to the top of its own
     drill-in."""
     from tau.build import uniformly_broker_priced
 

@@ -257,7 +257,7 @@ def test_a_cycle_where_every_variant_fails_says_so_rather_than_going_blank():
     assert "failed a constraint" in _no_structure_reason(cy, structures)
 
 
-# --- the degraded-chain reproduction, from the code-health review's exp_a3.py ---
+# --- a degraded chain: the same market with some quotes missing ---
 #
 # A Black-Scholes ladder rather than this file's hand-set one, because the
 # question is whether the *ranking* moves when quotes go missing, and that
@@ -305,14 +305,12 @@ def bs_ladder(unquoted=frozenset()):
 
 
 def test_a_dropout_no_longer_changes_which_structure_wins():
-    """The review's exp_a3: the same market, priced twice, differing only in
-    which contracts happened to quote before the timeout.
+    """The same market, priced twice, differing only in which contracts
+    happened to quote before the timeout.
 
-    Every put below 95 goes missing, which used to collapse the whole delta
-    ladder onto the 95 strike and hand back the *first* label — a 29.5-delta
-    contract shipped as `cash-secured-put · 16Δ`, ok=True, ranked above the
-    fully quoted copy of the identical market. The winner must now be the same
-    structure either way, and it must be the one whose label is true.
+    Every put below 95 goes missing, collapsing the delta ladder onto the 95
+    strike. The winner must be the same structure either way, and it must be
+    the one whose label is true, not a 29.5-delta contract labelled 16Δ.
     """
     csp = (STRATEGIES["cash-secured-put"],)
     full_cycle = Cycle(
@@ -593,9 +591,9 @@ def _strategy_winners(p):
 
 def test_a_formula_estimate_never_outranks_a_broker_figure_for_best():
     """The shortlist is bounded, so a strategy's winner can miss the dry-run
-    and keep the naked-margin formula while another carries portfolio margin.
-    The two are different numbers for the same trade — up to 30% apart on the
-    author's own measurement — so `best` must not decide between them."""
+    and keep the naked-margin formula while another carries the broker figure.
+    The two are different numbers for the same trade, so `best` must not
+    decide between them."""
     from dataclasses import replace
 
     p = proposal()
@@ -815,8 +813,8 @@ async def test_enrichment_stops_after_the_broker_circuit_breaker_trips(monkeypat
 
 def _priced(p, factor):
     """`p` with every structure carrying a broker figure `factor` times its
-    formula estimate — the broker ran below the formula on one of the
-    author's measured names and above it on the other."""
+    formula estimate. The broker figure can sit on either side of the
+    formula."""
     from dataclasses import replace
 
     return replace(

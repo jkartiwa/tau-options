@@ -639,8 +639,8 @@ async def test_chain_load_survives_missing_credentials(monkeypatch):
 @pytest.mark.asyncio
 async def test_rank_table_marks_broker_and_formula_bpr_sources(monkeypatch):
     """Broker-sourced buying power renders plain under the `BPR` header;
-    the formula estimate keeps the tilde the header used to carry. The row
-    itself has to say which model the number came from."""
+    the formula estimate carries a tilde. The row itself has to say which
+    model the number came from."""
     from tau import broker as broker_mod
     from tau import propose as propose_mod
     from tau.tui.app import _fmt
@@ -881,7 +881,7 @@ def test_the_detail_ladder_compares_siblings_on_one_margin_model():
 
     formula_column = ann_column(p)
 
-    # every sibling priced 30% higher by the broker, as measured on MU: a
+    # every sibling priced 30% higher by the broker: a
     # uniform ladder moves together and stays the broker's
     uniform = replace(
         p,
