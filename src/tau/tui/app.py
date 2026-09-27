@@ -18,7 +18,6 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Static
 
 from tau import broker as broker_mod
@@ -191,14 +190,6 @@ class TauApp(App):
         Binding("escape", "back", "back", show=False),
     ]
 
-    min_ivr: reactive[float] = reactive(30.0)
-    min_liquidity: reactive[int] = reactive(3)
-    earnings_days: reactive[int] = reactive(45)
-    sort_index: reactive[int] = reactive(0)
-    show_excluded: reactive[bool] = reactive(False)
-    mode: reactive[str] = reactive("screen")  # "screen" | "rank" | "variants"
-    rank_sort_index: reactive[int] = reactive(0)
-
     def __init__(
         self,
         loader: Loader | None = None,
@@ -213,6 +204,15 @@ class TauApp(App):
         self._proposal_loader: ProposalLoader = proposal_loader or price_shortlist
         self._history_loader: HistoryLoader = history_loader or fetch_history_for
         self._brief_loader: BriefLoader = brief_loader or fetch_brief_for
+        # View state. Nothing watches these: every action that moves one
+        # re-filters or re-sorts explicitly.
+        self.min_ivr = 30.0
+        self.min_liquidity = 3
+        self.earnings_days = 45
+        self.sort_index = 0
+        self.show_excluded = False
+        self.mode = "screen"  # "screen" | "rank" | "variants"
+        self.rank_sort_index = 0
         self._raw: list[Candidate] = []
         self._rows: list[Candidate] = []
         self._starred: set[str] = set()
@@ -253,7 +253,6 @@ class TauApp(App):
     def on_mount(self) -> None:
         table = self.query_one("#table", DataTable)
         table.add_columns(*COLUMNS)
-        self._columns_mode = "screen"
         self.refresh_meta()
         self.load()
 
