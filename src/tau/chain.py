@@ -18,6 +18,7 @@ or greeks is invalid rather than partially credited.
 import asyncio
 from dataclasses import dataclass
 from datetime import date
+from functools import cached_property
 from itertools import pairwise
 from math import sqrt
 
@@ -155,16 +156,22 @@ class Cycle:
     legs: tuple[Leg, ...]
     expirations: tuple[tuple[date, int], ...] = ()  # every cycle available
 
-    @property
+    # The derived figures below are cached: every variant built over this
+    # cycle reads them, and the cycle is frozen, so they cannot change.
+
+    @cached_property
+    def _ladder(self) -> list[StrikeRow]:
+        return strike_ladder(self.legs)
+
+    @cached_property
     def atm_iv(self) -> float | None:
         """Call and put IV at the nearest strike to spot, averaged — a
         single leg's IV is skew-biased (puts richer than calls, typically),
         so blending both sides of the same strike is the honest read."""
-        ladder = strike_ladder(self.legs)
-        idx = _atm_index(ladder, self.underlying) if self.underlying else None
+        idx = _atm_index(self._ladder, self.underlying) if self.underlying else None
         if idx is None:
             return None
-        row = ladder[idx]
+        row = self._ladder[idx]
         ivs = [leg.iv for leg in (row.call, row.put) if leg and leg.iv is not None]
         return sum(ivs) / len(ivs) if ivs else None
 
@@ -181,11 +188,7 @@ class Cycle:
         `None` when that side of the chain carries no IV at all, which is the
         caller's cue to fall back to `atm_iv` for that boundary.
         """
-        points = sorted(
-            (leg.strike, leg.iv)
-            for leg in self.legs
-            if leg.type is option_type and leg.iv is not None and leg.iv > 0
-        )
+        points = self._iv_points[option_type]
         if not points:
             return None
         if price <= points[0][0]:
@@ -199,20 +202,33 @@ class Cycle:
                 return v0 + (v1 - v0) * (price - k0) / (k1 - k0)
         return None
 
+    @cached_property
+    def _iv_points(self) -> dict[OptionType, list[tuple[float, float]]]:
+        """(strike, iv) per side, sorted by strike, for `iv_at`."""
+        return {
+            option_type: sorted(
+                (leg.strike, leg.iv)
+                for leg in self.legs
+                if leg.type is option_type and leg.iv is not None and leg.iv > 0
+            )
+            for option_type in OptionType
+        }
+
     @property
     def expected_move(self) -> float | None:
-        value = self._expected_move_calc()
+        value = self._expected_move
         return None if value is None else value[0]
 
     @property
     def expected_move_method(self) -> str | None:
-        value = self._expected_move_calc()
+        value = self._expected_move
         return None if value is None else value[1]
 
-    def _expected_move_calc(self) -> tuple[float, str] | None:
+    @cached_property
+    def _expected_move(self) -> tuple[float, str] | None:
         if self.underlying is None:
             return None
-        ladder = strike_ladder(self.legs)
+        ladder = self._ladder
         idx = _atm_index(ladder, self.underlying)
         if idx is None:
             return None
