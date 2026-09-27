@@ -1,4 +1,5 @@
-from math import inf
+from math import inf, log, sqrt
+from statistics import NormalDist
 
 import pytest
 
@@ -214,11 +215,14 @@ def test_pop_of_an_open_ended_region_counts_the_whole_tail():
     assert pop < 1.0
 
 
-def test_pop_symmetric_breakevens_near_half_with_slight_drift_correction():
-    # symmetric breakevens around spot -> the driftless-lognormal median
-    # shift pushes PoP slightly above 0.5, never below.
+def test_pop_is_the_driftless_lognormal_mass_between_the_breakevens():
+    # sigma = 0.30 * sqrt(45/365); log-price mean -sigma^2/2. 90/110 sit
+    # about one sigma out, so roughly two thirds of the mass lies between.
+    sigma = 0.30 * sqrt(45 / 365)
+    z = NormalDist(-sigma * sigma / 2, sigma).cdf
     p = pop_over_intervals([(90.0, 110.0)], spot=100.0, iv=0.30, dte=45)
-    assert 0.5 < p < 0.7
+    assert p == pytest.approx(z(log(1.1)) - z(log(0.9)))
+    assert p == pytest.approx(0.659, abs=5e-4)
 
 
 def test_pop_wider_breakevens_increase_probability():

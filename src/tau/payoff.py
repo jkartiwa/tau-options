@@ -227,7 +227,7 @@ def bpr(legs: tuple[PayoffLeg, ...], spot: float) -> float | None:
 
     This reduces to the familiar figures: a short strangle to the larger naked
     side plus the other side's credit, an iron condor to width minus credit,
-    a jade lizard to the naked put.
+    a jade lizard to the naked put plus the call spread's credit.
     """
     if not legs or spot <= 0:
         return None
