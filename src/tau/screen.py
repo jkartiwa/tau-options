@@ -54,15 +54,16 @@ class Candidate:
         return (self.earnings_date - today).days
 
 
+def _float(value) -> float | None:
+    return None if value is None else float(value)
+
+
 def _pct(value) -> float | None:
     return None if value is None else float(value) * 100
 
 
 def parse(m: MarketMetricInfo, today: date | None = None) -> Candidate:
     today = today or date.today()
-    earnings = None
-    if m.earnings is not None and m.earnings.expected_report_date is not None:
-        earnings = m.earnings.expected_report_date
     # Per-expiration IV arrives 0-1 (unlike the percent-scale iv30/hv30), and
     # the list can keep a just-expired row with a meaningless IV, so drop
     # anything not still live.
@@ -75,19 +76,15 @@ def parse(m: MarketMetricInfo, today: date | None = None) -> Candidate:
         if v.implied_volatility is not None and v.expiration_date >= today
     )
     return Candidate(
-        term=term,
         symbol=m.symbol,
         ivr=_pct(m.implied_volatility_index_rank),
         ivp=_pct(m.implied_volatility_percentile),
-        iv30=None
-        if m.implied_volatility_30_day is None
-        else float(m.implied_volatility_30_day),
-        hv30=None
-        if m.historical_volatility_30_day is None
-        else float(m.historical_volatility_30_day),
+        iv30=_float(m.implied_volatility_30_day),
+        hv30=_float(m.historical_volatility_30_day),
         liquidity=m.liquidity_rating,
-        beta=None if m.beta is None else float(m.beta),
-        earnings_date=earnings,
+        beta=_float(m.beta),
+        earnings_date=None if m.earnings is None else m.earnings.expected_report_date,
+        term=term,
     )
 
 
