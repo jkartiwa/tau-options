@@ -152,70 +152,47 @@ sits at a strike above the credit, and the structure can price as a debit.
 
 ### Where the buying-power figure comes from
 
-`BPR` is the broker's own number when tau can get it: for each symbol, the
-top-ranked structures are sent to your account's order **dry-run** endpoint —
-one POST per structure, a calculation preview that places, modifies, and
-cancels nothing — and the broker's isolated margin requirement replaces the
-in-house estimate. The real number matters because the formula is a standard
-naked-margin model, and on a portfolio-margin account the broker's requirement
-can land well above or below it.
+`BPR` is the broker's own number when tau can get it. For each symbol, the
+top 10 tradable structures are sent to your account's order **dry-run**
+endpoint, one POST per structure. The dry-run is a calculation preview: it
+places, modifies and cancels nothing. The broker's isolated margin requirement
+then replaces the formula estimate. That matters because the formula is a
+standard naked-margin model, and the broker's requirement, especially on a
+portfolio-margin account, can land well above or below it.
 
-When the broker does not answer — read-scoped token, network error, timeout,
-rate limit, missing credentials — tau silently falls back to the formula and
-screens exactly as it always has. Nothing crashes and nothing changes shape;
-the fallback is automatic and there is no toggle. The detail pane and the
-rank tables label the source per figure: broker-sourced values are plain,
-formula estimates carry a trailing `~` (the tables' column header is `BPR`
-for both). `tau rank --top N` prices the top N names; within each name the
-top 10 structures get the broker figure.
+When the broker does not answer (read-scoped token, network error, timeout,
+rate limit, missing credentials), tau falls back to the formula automatically.
+There is no toggle. Broker figures are shown plain and formula estimates carry
+a trailing `~`.
 
-Because that shortlist is bounded, one name's rows can carry figures from both
-models at once. The two are not comparable — the same trade prices 30% apart
-between them — so the winning structure is picked within one model: whenever
-any candidate has a broker figure, only broker-priced candidates compete, and
-a name with none of them ranks exactly as it did before the dry-run existed.
-The same rule governs every ordering. `tau rank` sorts symbols against each
-other on the broker figures only when every name in the pass got them, and the
-variants drill-in sorts a name's ladder on them only when every passing variant
-got them — which, since the pull stops at ten, means a name with more than ten
-passing variants always orders on the formula. Either way one name missing them
-drops the whole list back to the formula, the yardstick every row always has.
-Each row still shows and labels its own figure; this decides the sort key, not
-the display.
+The two models are not comparable, so every ordering stays within one of them:
 
-The pull is all or nothing for that reason. Which POSTs come back first is
-network timing, so a shortlist priced in part would hand the headline pick to
-whichever ones did — the seventh-best structure presented as the trade to do,
-with nothing saying the six above it were never priced. Either every candidate
-gets a broker figure or the name stays on the formula across the board. Only
-tradable structures are priced at all; a variant that failed a constraint keeps
-its estimate rather than costing a live call.
+- A name's winning structure is picked among broker-priced candidates whenever
+  any has a broker figure, otherwise on the formula.
+- `tau rank` orders names on broker figures only when every name got them.
+- The variants drill-in orders on broker figures only when every passing
+  variant got them. A name with more than 10 passing variants therefore always
+  orders on the formula.
 
-Two bounds keep an unavailable broker from stalling a pass. The pull gets 30
-seconds per name, and after three dry-run failures in a row tau stops asking —
-the case that needs it is an account API that hangs rather than fails, where
-nothing would otherwise be cached and every name would pay the wait again.
-Running out of those 30 seconds counts as one of the three: a broker slow
-enough to burn the deadline did not answer, and the pass stops paying the
-stall rather than repeating it name after name. So does failing to read the
-account list at all, which gets the same two-minute pause rather than being
-taken as a permanent verdict on the token.
-That pause lasts two minutes, not the rest of the run: the dry-run endpoint
-gives tau no way to tell a rate limit from a real failure, and a session that
-runs for hours must not lose broker pricing for good over one rough patch.
-When the two minutes are up a single call goes out to find out — if it answers,
-pricing resumes; if not, another two minutes. While it is paused the TUI meta
-line reads `broker BPR off`, so a screen full of `~` is never ambiguous between
-"the broker stopped answering" and "these were always estimates". In the TUI
-the drill-in never waits on the broker at all: the variants appear on the
+This decides the sort key, not the display: each row still shows and labels
+its own figure. For the same reason the pull per name is all or nothing. Which
+POSTs return first is network timing, and a partly priced shortlist would hand
+the top spot to whichever did. Variants that failed a constraint are never
+sent.
+
+Two bounds keep a slow or unavailable broker from stalling a pass. Each name
+gets 30 seconds for its pull. After three failures in a row (running out of
+the 30 seconds counts as one), tau stops asking for two minutes, then sends a
+single call to test whether the broker is back. An account list that cannot be
+read gets the same two-minute pause before it is retried. While paused, the TUI
+meta line reads `broker BPR off`, so a screen full of `~` is never ambiguous.
+In the TUI the drill-in never waits on the broker: variants appear on the
 estimates immediately and upgrade in place when it answers.
 
 Underneath the structure you get the rest of that strategy's ladder, with the
 winner marked. The rank view can only show one row per name, and on return
 alone the widest delta almost always wins, so this is where you see what the
-extra credit costs you in probability. On the example above, moving from
-16Δ/16Δ to 30Δ/30Δ roughly doubles the credit and takes the chance of profit
-from 74% down to 62%.
+extra credit costs you in probability of profit.
 
 ## Rejections
 
@@ -247,16 +224,16 @@ different probability of profit. This is what a partially quoted chain looks
 like: the far wings are the contracts with no resting market, so they are the
 ones that fail to quote, and the nearest survivor can be most of the way to the
 money. Expect it on thin names, and expect it to leave some of them with no row
-at all — `tau rank` closes with a count of how many names produced a structure
-so that none is legible as a result rather than as a blank screen.
+at all. `tau rank` closes with a count of how many names produced a structure,
+so an empty result reads as one rather than as a blank screen.
 
 **two legs resolved to the same contract** — the requested strikes collapsed
 onto one strike. Variants resolving to identical contracts are also merged into
 one row, keeping whichever asked closest to what it got.
 
-In the screenshot above, the rejected broken wings show far higher annualized
-returns than anything that passed, and cost 68% to 224% of the premium to
-cross. That is what the `spread_cost` constraint is for.
+Rejected broken wings often show far higher annualized returns than anything
+that passed, at a spread cost of well over the whole premium. That is what the
+`spread_cost` constraint is for.
 
 ## Defining your own structure
 
@@ -401,9 +378,8 @@ Be clear about what that is. Reading a lower boundary off one lognormal and the
 upper boundary off another is a practitioner approximation, not a distribution:
 the two CDFs subtracted here do not belong to the same random variable, and
 nothing constrains the result to be monotone in the skew (a call side quoted
-far under ATM can push the number back *up*). It is strictly better than
-ATM-for-everything and it is what a desk would do; it is not a correct POP. The
-rigorous version recovers the risk-neutral density from the whole smile
+far under ATM can push the number back *up*). It is better than using ATM
+vol for everything, but it is not a correct POP. The rigorous version recovers the risk-neutral density from the whole smile
 (Breeden-Litzenberger across the chain) and is not implemented here.
 
 It uses the breakevens rather than the strikes. Credit pushes the breakevens
