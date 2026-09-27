@@ -6,64 +6,20 @@ from datetime import date
 import pytest
 
 from tau import store
-from tau.chain import Cycle, Leg
 from tau.payoff import OptionType, Side
 from tau.propose import Proposal, propose_on
-from tau.screen import Candidate
 from tau.strategies import STRATEGIES
 from tau.strategy import Bias, Delta, LegSpec, Require, Strategy
+from tests.factories import cand, cycle
 
 C, P = OptionType.CALL, OptionType.PUT
 SHORT = Side.SHORT
-
-PUT_DELTAS = {80: -0.08, 85: -0.12, 90: -0.20, 95: -0.32, 100: -0.50}
-CALL_DELTAS = {100: 0.50, 105: 0.30, 110: 0.20, 115: 0.12, 120: 0.08}
-PUT_MIDS = {80: 0.50, 85: 0.80, 90: 1.20, 95: 2.00, 100: 3.50}
-CALL_MIDS = {100: 3.50, 105: 2.00, 110: 1.20, 115: 0.80, 120: 0.50}
 
 
 @pytest.fixture(autouse=True)
 def data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TAU_DATA_DIR", str(tmp_path))
     return tmp_path
-
-
-def cand(symbol="TEST"):
-    return Candidate(
-        symbol=symbol,
-        ivr=50.0,
-        ivp=50.0,
-        iv30=30.0,
-        hv30=25.0,
-        liquidity=4,
-        beta=1.0,
-        earnings_date=None,
-    )
-
-
-def leg(strike, option_type, delta, mid):
-    return Leg(
-        occ=f"{option_type}{strike:g}",
-        streamer=f"s{option_type}{strike:g}",
-        strike=float(strike),
-        type=option_type,
-        bid=mid - 0.01,
-        ask=mid + 0.01,
-        delta=delta,
-        iv=0.30,
-    )
-
-
-def cycle(symbol="TEST", dte=45):
-    legs = [leg(k, P, d, PUT_MIDS[k]) for k, d in PUT_DELTAS.items()]
-    legs += [leg(k, C, d, CALL_MIDS[k]) for k, d in CALL_DELTAS.items()]
-    return Cycle(
-        symbol=symbol,
-        expiration=date(2026, 9, 18),
-        dte=dte,
-        underlying=100.0,
-        legs=tuple(legs),
-    )
 
 
 def rows(sql, *params):
@@ -107,7 +63,7 @@ def test_a_pick_records_the_definition_and_the_variant_that_produced_it():
     """The whole reason the strategy layer is worth building: without this the
     corpus can never answer "how did 16-delta strangles do versus 30-delta
     jade lizards"."""
-    p = propose_on(cand("SPY"), cycle("SPY"))
+    p = propose_on(cand("SPY"), cycle(symbol="SPY"))
     scan_id = store.log_scan({"date": "2026-08-03"}, [cand("SPY")])
     assert store.log_picks(scan_id, [p]) == 1
 
@@ -150,8 +106,8 @@ def test_a_scan_result_lands_in_its_named_columns_even_after_a_column_is_added()
 def test_a_definition_is_stored_once_across_scans():
     scan_a = store.log_scan({}, [])
     scan_b = store.log_scan({}, [])
-    store.log_picks(scan_a, [propose_on(cand("A"), cycle("A"))])
-    store.log_picks(scan_b, [propose_on(cand("B"), cycle("B"))])
+    store.log_picks(scan_a, [propose_on(cand("A"), cycle(symbol="A"))])
+    store.log_picks(scan_b, [propose_on(cand("B"), cycle(symbol="B"))])
     names = [r[0] for r in rows("SELECT name FROM strategy_def")]
     assert len(names) == len(set(names))
     assert len(rows("SELECT * FROM pick")) == 2
@@ -178,7 +134,7 @@ def test_an_open_profit_tail_is_stored_as_absent_not_as_a_number():
 def test_a_pick_records_which_margin_model_produced_its_figures():
     """`bpr`, `roc` and `annualized_roc` mean different things depending on
     whether the broker or the formula produced them, so the row says which."""
-    p = propose_on(cand("SPY"), cycle("SPY"))
+    p = propose_on(cand("SPY"), cycle(symbol="SPY"))
     formula_scan = store.log_scan({}, [])
     store.log_picks(formula_scan, [p])
 
@@ -240,7 +196,7 @@ def test_a_log_written_before_the_column_existed_still_opens_and_appends():
     conn.close()
 
     scan_id = store.log_scan({}, [])
-    store.log_picks(scan_id, [propose_on(cand("NEW"), cycle("NEW"))])
+    store.log_picks(scan_id, [propose_on(cand("NEW"), cycle(symbol="NEW"))])
 
     logged = dict(rows("SELECT symbol, bpr_source FROM pick"))
     assert logged["OLD"] is None

@@ -18,61 +18,12 @@ from tau.propose import (
     propose_on,
     rank_proposals,
 )
-from tau.screen import Candidate
 from tau.strategies import STRATEGIES
 from tau.strategy import Bias, Delta, LegSpec, Require, Strategy, with_min_pop
+from tests.factories import cand, cycle, ladder, leg
 
 C, P = OptionType.CALL, OptionType.PUT
 SHORT = Side.SHORT
-
-PUT_DELTAS = {80: -0.08, 85: -0.12, 90: -0.20, 95: -0.32, 100: -0.50}
-CALL_DELTAS = {100: 0.50, 105: 0.30, 110: 0.20, 115: 0.12, 120: 0.08}
-PUT_MIDS = {80: 0.50, 85: 0.80, 90: 1.20, 95: 2.00, 100: 3.50}
-CALL_MIDS = {100: 3.50, 105: 2.00, 110: 1.20, 115: 0.80, 120: 0.50}
-SPREAD = 0.02
-
-
-def cand(symbol="TEST", iv30=30.0):
-    return Candidate(
-        symbol=symbol,
-        ivr=50.0,
-        ivp=50.0,
-        iv30=iv30,
-        hv30=25.0,
-        liquidity=4,
-        beta=1.0,
-        earnings_date=None,
-    )
-
-
-def leg(strike, option_type, delta, mid, spread=SPREAD):
-    return Leg(
-        occ=f"{option_type}{strike:g}",
-        streamer=f"s{option_type}{strike:g}",
-        strike=float(strike),
-        type=option_type,
-        bid=mid - spread / 2,
-        ask=mid + spread / 2,
-        delta=delta,
-        iv=0.30,
-    )
-
-
-def ladder():
-    legs = [leg(k, P, d, PUT_MIDS[k]) for k, d in PUT_DELTAS.items()]
-    legs += [leg(k, C, d, CALL_MIDS[k]) for k, d in CALL_DELTAS.items()]
-    return tuple(legs)
-
-
-def cycle(legs=None, underlying=100.0, dte=45):
-    return Cycle(
-        symbol="TEST",
-        expiration=date(2026, 9, 18),
-        dte=dte,
-        underlying=underlying,
-        legs=legs if legs is not None else ladder(),
-    )
-
 
 SHIPPED = tuple(STRATEGIES.values())
 
