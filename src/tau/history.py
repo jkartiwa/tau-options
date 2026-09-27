@@ -180,7 +180,4 @@ async def fetch_history(
                         break
         except TimeoutError:
             pass  # partial history still answers the range question
-    return History(
-        symbol=symbol,
-        bars=_bars_from(events),
-    )
+    return History(symbol=symbol, bars=_bars_from(events))

@@ -1,8 +1,9 @@
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
-from tau.history import MOVE_WINDOW, Bar, History
+from tau.history import MOVE_WINDOW, Bar, History, _bars_from
 
 
 def build(closes: list[float], start: date = date(2025, 1, 1)) -> History:
@@ -85,3 +86,33 @@ def test_empty_history_answers_none_rather_than_raising():
     assert h.range_position is None
     assert h.move_z is None
     assert not h.stretched
+
+
+def candle(day: date, close: float, *, remove: bool = False) -> SimpleNamespace:
+    ms = int(datetime(day.year, day.month, day.day, tzinfo=UTC).timestamp() * 1000)
+    return SimpleNamespace(
+        time=ms, remove=remove, open=close, high=close, low=close, close=close
+    )
+
+
+def test_bars_are_keyed_by_day_and_sorted_whatever_the_arrival_order():
+    d1, d2, d3 = date(2025, 3, 3), date(2025, 3, 4), date(2025, 3, 5)
+    events = [
+        candle(d3, 103.0),
+        candle(d1, 101.0),
+        candle(d2, 99.0),
+        candle(d2, 102.0),  # a later update to the same day wins
+    ]
+    bars = _bars_from(events)
+    assert [(b.day, b.close) for b in bars] == [(d1, 101.0), (d2, 102.0), (d3, 103.0)]
+
+
+def test_removals_and_untraded_bars_are_dropped():
+    d1, d2, d3 = date(2025, 3, 3), date(2025, 3, 4), date(2025, 3, 5)
+    events = [
+        candle(d1, 101.0),
+        candle(d2, 102.0, remove=True),
+        candle(d3, 0.0),  # no trade: zeroed prices
+        SimpleNamespace(time=0, remove=False, open=1, high=1, low=1, close=1),
+    ]
+    assert [b.day for b in _bars_from(events)] == [d1]
