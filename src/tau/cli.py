@@ -33,6 +33,21 @@ from tau.strategy import with_min_pop
 DEFAULT_RANK_TOP = 15
 
 
+async def _screen(args: argparse.Namespace):
+    """The universe, its metrics, and every candidate evaluated against the
+    screen's filters (passing or not)."""
+    symbols = universe.load_universe(args.universe)
+    metrics = await screen.fetch_metrics(get_session(), symbols)
+    candidates = screen.evaluate(
+        metrics,
+        min_ivr=args.min_ivr,
+        min_liquidity=args.min_liquidity,
+        earnings_days=args.days,
+        today=date.today(),
+    )
+    return symbols, metrics, candidates
+
+
 def _load_env() -> None:
     repo_env = Path(__file__).resolve().parents[2] / ".env"
     if repo_env.exists():
@@ -58,13 +73,9 @@ def _print_table(rows: list[screen.Candidate], show_reasons: bool) -> None:
 
 
 def _selected_strategies(names: list[str] | None, min_pop: float = MIN_POP):
-    """The strategies to search, defaulting to all of them. An unknown name is
-    a hard error rather than a silent empty search — a typo'd `--strategy`
-    that quietly returned nothing would read as "no trades today".
-
-    `min_pop` overrides every selected strategy's shipped pop floor (default
-    `MIN_POP`), so `--min-pop` can tune the gate without a code change.
-    """
+    """The strategies to search, defaulting to all, each with its pop floor
+    set to `min_pop`. An unknown name is a hard error: a typo'd `--strategy`
+    that quietly searched nothing would read as "no trades today"."""
     if not names:
         strategies = ALL_STRATEGIES
     else:
@@ -79,16 +90,7 @@ def _selected_strategies(names: list[str] | None, min_pop: float = MIN_POP):
 
 
 async def scan(args: argparse.Namespace) -> None:
-    symbols = universe.load_universe(args.universe)
-    metrics = await screen.fetch_metrics(get_session(), symbols)
-    today = date.today()
-    candidates = screen.evaluate(
-        metrics,
-        min_ivr=args.min_ivr,
-        min_liquidity=args.min_liquidity,
-        earnings_days=args.days,
-        today=today,
-    )
+    symbols, metrics, candidates = await _screen(args)
     passed = [c for c in candidates if c.passed]
     shown = passed if not args.all else candidates
     if args.top and not args.all:
@@ -107,43 +109,23 @@ async def scan(args: argparse.Namespace) -> None:
                 "min_liquidity": args.min_liquidity,
                 "days": args.days,
                 "universe_size": len(symbols),
-                "date": today.isoformat(),
+                "date": date.today().isoformat(),
             },
             candidates,
         )
         print(f"logged scan #{scan_id} → {store.db_path()}")
 
 
-async def _screened(args: argparse.Namespace) -> tuple[list, list]:
-    symbols = universe.load_universe(args.universe)
-    metrics = await screen.fetch_metrics(get_session(), symbols)
-    candidates = screen.evaluate(
-        metrics,
-        min_ivr=args.min_ivr,
-        min_liquidity=args.min_liquidity,
-        earnings_days=args.days,
-        today=date.today(),
-    )
-    return candidates, [c for c in candidates if c.passed]
-
-
 def _label_width(labels) -> int:
-    """Wide enough for the longest label there actually is. A fixed width that
-    clips would turn `30Δ+10-25` into `30Δ+10-2` — a different wing, stated
-    with confidence, which is the failure this codebase keeps catching."""
+    """Wide enough for the longest label. A fixed width would clip `30Δ+10-25`
+    to `30Δ+10-2`, which names a different wing."""
     return max((len(x) for x in labels), default=len("STRUCTURE"))
 
 
 def _rank_summary(priced: int, total: int) -> str:
-    """The footer under the rank table, stated as a count so that an empty
-    result reads as a result.
-
-    A variant whose leg missed its requested delta by more than
-    `build.MAX_DELTA_MISS` is refused rather than relabelled, so a thin day
-    can legitimately leave every name without a structure. Printed as `0 of
-    15`, that is a finding a trader can act on; printed as a table with
-    nothing under the header, it is indistinguishable from a tool that broke.
-    """
+    """The footer under the rank table. Every name can legitimately end up
+    without a structure, so an empty result is stated as a count rather than
+    left as a table with nothing under the header."""
     if total and not priced:
         return (
             f"no structure on any of the {total} names priced — "
@@ -154,7 +136,8 @@ def _rank_summary(priced: int, total: int) -> str:
 
 async def rank(args: argparse.Namespace) -> None:
     strategies = _selected_strategies(args.strategy, args.min_pop)
-    candidates, passed = await _screened(args)
+    _, _, candidates = await _screen(args)
+    passed = [c for c in candidates if c.passed]
     shortlist = passed[: args.top] if args.top else passed
     if not shortlist:
         print("nothing passed the screen")
@@ -179,7 +162,7 @@ async def rank(args: argparse.Namespace) -> None:
             print(f"{p.symbol:<6} {'—':<{w}} {p.error or 'no structure'}")
             continue
         print(
-            f"{p.symbol:<6} {s.label:<{w}} {str(s.strategy.bias):<8} "
+            f"{p.symbol:<6} {s.label:<{w}} {s.strategy.bias!s:<8} "
             f"{p.cycle.dte:>3}d {_fmt(s.credit, '.2f'):>7} "
             f"{_bpr(s.bpr, s.bpr_source):>8} {_pct(s.roc, '.1f'):>6} "
             f"{_pct(s.annualized_roc):>7} {_pct(s.pop):>5} "
@@ -204,9 +187,8 @@ async def rank(args: argparse.Namespace) -> None:
 
 
 async def variants(args: argparse.Namespace) -> None:
-    """Everything considered on one name, rejections included. The point of
-    keeping failures is that "no lizard on MU today, worst_loss_up 340 > 0" is
-    a market condition worth reading, and a missing row says nothing."""
+    """Everything considered on one name, rejections included: a failed
+    constraint says something about the market, a missing row says nothing."""
     strategies = _selected_strategies(args.strategy, args.min_pop)
     symbol = args.symbol.upper()
     session = get_session()
@@ -230,22 +212,20 @@ async def variants(args: argparse.Namespace) -> None:
     for s in ordered:
         mark = "· " if s.ok else "✗ "
         if not s.complete:
-            print(f"{mark}{s.label:<{w}} {str(s.strategy.bias):<8} "
+            print(f"{mark}{s.label:<{w}} {s.strategy.bias!s:<8} "
                   f"{'—':>7} {'—':>8} {'—':>7} {'—':>5} {'—':>6}  {s.reason}")
             continue
         passing += bool(s.ok)
         why = "; ".join(f.reason for f in s.failures)
         print(f"{mark}{s.label:<{w}} "
-              f"{str(s.strategy.bias):<8} {_fmt(s.credit, '.2f'):>7} "
+              f"{s.strategy.bias!s:<8} {_fmt(s.credit, '.2f'):>7} "
               f"{_bpr(s.bpr, s.bpr_source):>8} {_pct(s.annualized_roc):>7} "
               f"{_pct(s.pop):>5} {_pct(s.spread_cost):>6}  {why}")
     print(f"\n{passing} of {len(proposal.structures)} variants passed")
 
 
 def strategies(args: argparse.Namespace) -> None:
-    """What ships, and what each one is looking for. Definitions live in the
-    package (`src/tau/strategies/`) rather than in a config directory, so this
-    is a readable index of them rather than the only way to see them."""
+    """What ships, and what each one is looking for."""
     for s in ALL_STRATEGIES:
         print(f"{s.name}  [{s.bias}]  {s.variant_count} variants, ranked on {s.rank}")
         for spec in s.legs:

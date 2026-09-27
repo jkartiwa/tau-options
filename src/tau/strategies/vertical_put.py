@@ -6,8 +6,8 @@ every name.
 """
 
 from tau.payoff import OptionType, Side
-from tau.strategy import Bias, Delta, LegSpec, Ref, Require, Strategy
 from tau.strategies.defaults import MAX_SPREAD_COST, MIN_POP
+from tau.strategy import Bias, Delta, LegSpec, Ref, Require, Strategy
 
 P = OptionType.PUT
 LONG, SHORT = Side.LONG, Side.SHORT

@@ -5,18 +5,12 @@ package importing itself.
 """
 
 # A four-legger crosses four markets. Ranked on return alone, condors and
-# butterflies would dominate the list on fills that never happen — the same
-# failure already caught live, where a two-legged AAPL strangle cost ~99% of
-# its credit to cross. Every strategy ships a spread_cost constraint for that
-# reason; this is the shared default.
+# butterflies would dominate the list on fills that never happen, so every
+# strategy caps the cost of crossing every leg as a share of the premium.
 MAX_SPREAD_COST = 0.25
 
-# annualized_roc alone cannot see how it was bought: every structure scans
-# several deltas per leg, so a wider/higher-delta variant always carries more
-# credit and a higher annualized_roc at a lower probability of profit. This is
-# a premium-selling scanner, not a lottery-ticket one, so every strategy ships
-# a pop floor too. 0.50 already anchored the broken wing butterfly's own
-# constraint (a structure more likely to lose than win is not the trade); this
-# makes that floor the shared, CLI-overridable default (`--min-pop`, see
-# `strategy.with_min_pop` and `cli.py`).
+# A higher-delta variant always carries more credit and a higher
+# annualized_roc at a lower probability of profit, so return alone would rank
+# the riskiest variant first. Every strategy carries this pop floor;
+# `--min-pop` overrides it (see `strategy.with_min_pop`).
 MIN_POP = 0.68
