@@ -35,7 +35,6 @@ STRETCHED_Z = 2.0
 @dataclass(frozen=True)
 class Bar:
     day: date
-    open: float
     high: float
     low: float
     close: float
@@ -138,18 +137,21 @@ class History:
 
 def _bars_from(events) -> tuple[Bar, ...]:
     """Candles arrive as an unordered snapshot with removals mixed in, so they
-    are keyed by day and sorted rather than trusted in arrival order."""
+    are keyed by day and sorted rather than trusted in arrival order. A removal
+    retracts whatever that day already received."""
     by_day: dict[date, Bar] = {}
     for e in events:
-        if e.remove or not e.time:
+        if not e.time:
+            continue
+        day = datetime.fromtimestamp(e.time / 1000, UTC).date()
+        if e.remove:
+            by_day.pop(day, None)
             continue
         close = float(e.close)
         if close <= 0:  # a bar with no trade carries zeroed prices
             continue
-        day = datetime.fromtimestamp(e.time / 1000, UTC).date()
         by_day[day] = Bar(
             day=day,
-            open=float(e.open),
             high=float(e.high),
             low=float(e.low),
             close=close,

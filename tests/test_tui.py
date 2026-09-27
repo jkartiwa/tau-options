@@ -182,7 +182,6 @@ def _why_app(history=None, brief=None, calls=None):
         bars=tuple(
             Bar(
                 day=TODAY - timedelta(days=i),
-                open=100.0,
                 high=120.0,
                 low=80.0,
                 close=100.0,

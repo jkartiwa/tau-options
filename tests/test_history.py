@@ -9,7 +9,7 @@ from tau.history import MOVE_WINDOW, Bar, History, _bars_from
 def build(closes: list[float], start: date = date(2025, 1, 1)) -> History:
     """Bars with high/low pinned to the close, so range tests are exact."""
     bars = tuple(
-        Bar(day=start + timedelta(days=i), open=c, high=c, low=c, close=c)
+        Bar(day=start + timedelta(days=i), high=c, low=c, close=c)
         for i, c in enumerate(closes)
     )
     return History(symbol="TEST", bars=bars)
@@ -90,9 +90,7 @@ def test_empty_history_answers_none_rather_than_raising():
 
 def candle(day: date, close: float, *, remove: bool = False) -> SimpleNamespace:
     ms = int(datetime(day.year, day.month, day.day, tzinfo=UTC).timestamp() * 1000)
-    return SimpleNamespace(
-        time=ms, remove=remove, open=close, high=close, low=close, close=close
-    )
+    return SimpleNamespace(time=ms, remove=remove, high=close, low=close, close=close)
 
 
 def test_bars_are_keyed_by_day_and_sorted_whatever_the_arrival_order():
@@ -111,8 +109,9 @@ def test_removals_and_untraded_bars_are_dropped():
     d1, d2, d3 = date(2025, 3, 3), date(2025, 3, 4), date(2025, 3, 5)
     events = [
         candle(d1, 101.0),
-        candle(d2, 102.0, remove=True),
+        candle(d2, 102.0),
+        candle(d2, 102.0, remove=True),  # retracts the bar already received
         candle(d3, 0.0),  # no trade: zeroed prices
-        SimpleNamespace(time=0, remove=False, open=1, high=1, low=1, close=1),
+        SimpleNamespace(time=0, remove=False, high=1, low=1, close=1),
     ]
     assert [b.day for b in _bars_from(events)] == [d1]
