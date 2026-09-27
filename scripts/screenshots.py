@@ -1,4 +1,4 @@
-"""Capture README screenshots from a live run.
+"""Capture the documentation screenshots from a live run.
 
 Textual writes SVG, which stays sharp at any width and renders inline on
 GitHub. Run against a real account so the shots show real chains:
@@ -12,7 +12,7 @@ Pricing a name here goes through the same buying-power path the app does, so
 a capture run POSTs order dry-run *calculations* against the account (nothing
 is placed). With a trading-scoped grant the BPR column comes back plain; with
 a read-scoped one it falls back to the formula and every figure carries the
-`~`. The committed shots are the formula ones.
+`~`.
 """
 
 import asyncio
@@ -25,7 +25,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 from tau.tui.app import TauApp  # noqa: E402  (needs the env loaded first)
 
 OUT = Path(__file__).resolve().parents[1] / "docs" / "img"
-# The screen loads ~170 symbols of metrics; a chain is a websocket round trip
+# The screen loads ~190 symbols of metrics; a chain is a websocket round trip
 # and a shortlist is many of them at once.
 LOAD_WAIT = 25
 CHAIN_WAIT = 20
@@ -59,6 +59,22 @@ async def main() -> None:
         await pilot.pause(RANK_WAIT)
         app.save_screenshot(str(OUT / "rank.svg"))
         print("rank.svg")
+
+        # One name's whole search, rejections included.
+        await pilot.press("v")
+        await pilot.pause(1)
+        app.save_screenshot(str(OUT / "variants.svg"))
+        print("variants.svg")
+        await pilot.press("escape")
+        await pilot.pause(1)
+
+        # The strategy picker, over the rank list.
+        await pilot.press("S")
+        await pilot.pause(1)
+        app.save_screenshot(str(OUT / "picker.svg"))
+        print("picker.svg")
+        await pilot.press("escape")
+        await pilot.pause(1)
 
         # Exclusions, back on the screen.
         await pilot.press("escape")
