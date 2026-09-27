@@ -1,7 +1,7 @@
 import json
 import sys
 from datetime import date
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -17,35 +17,32 @@ from tau.catalyst import (
 )
 
 
-class FakeResponse:
-    def __init__(self, payload, stop_reason="end_turn"):
-        self.stop_reason = stop_reason
-
-        class Block:
-            type = "text"
-            text = json.dumps(payload)
-
-        self.content = [Block()] if payload is not None else []
-
-
 class FakeClient:
-    """Stands in for the Anthropic client; records what it was asked."""
+    """Stands in for the Anthropic client and records what it was asked.
 
-    def __init__(self, payload, stop_reason="end_turn"):
-        self._response = FakeResponse(payload, stop_reason)
+    `reply` is a verdict to return as JSON, a string to return verbatim, an
+    exception to raise, or None for a response with no content.
+    """
+
+    def __init__(self, reply, stop_reason="end_turn"):
+        self.reply = reply
+        self.stop_reason = stop_reason
         self.calls = []
-
-    class _Messages:
-        def __init__(self, outer):
-            self._outer = outer
-
-        def create(self, **kwargs):
-            self._outer.calls.append(kwargs)
-            return self._outer._response
 
     @property
     def messages(self):
-        return FakeClient._Messages(self)
+        return self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if isinstance(self.reply, BaseException):
+            raise self.reply
+        if self.reply is None:
+            content = []
+        else:
+            text = self.reply if isinstance(self.reply, str) else json.dumps(self.reply)
+            content = [SimpleNamespace(type="text", text=text)]
+        return SimpleNamespace(stop_reason=self.stop_reason, content=content)
 
 
 VERDICT = {
@@ -174,35 +171,6 @@ def anthropic_installed(monkeypatch):
     return module
 
 
-class RaisingClient:
-    """A client whose model call blows up."""
-
-    def __init__(self, exc):
-        self._exc = exc
-
-    @property
-    def messages(self):
-        return self
-
-    def create(self, **kwargs):
-        raise self._exc
-
-
-class RawTextClient:
-    """Returns whatever text it was given, schema or no schema."""
-
-    def __init__(self, text):
-        self._text = text
-
-    @property
-    def messages(self):
-        return self
-
-    def create(self, **kwargs):
-        block = type("Block", (), {"type": "text", "text": self._text})()
-        return type("Response", (), {"stop_reason": "end_turn", "content": [block]})()
-
-
 def assert_degraded(brief, hs):
     """A failed classification hands back the headlines and endorses nothing."""
     assert brief.classification == UNKNOWN
@@ -225,7 +193,7 @@ def test_a_failed_model_call_still_returns_the_headlines(
     limit reads differently to someone deciding whether to retry, so it is
     named separately from a generic failure."""
     hs = headlines()
-    brief = classify("X", hs, client=RaisingClient(exc))
+    brief = classify("X", hs, client=FakeClient(exc))
     assert_degraded(brief, hs)
     assert expected in brief.note
 
@@ -244,7 +212,7 @@ def test_a_rejected_key_is_named_rather_than_read_as_transient(
     """Waiting does not fix a bad or revoked key, so it must not share the
     generic wording whose whole point is that retrying may work."""
     hs = headlines()
-    brief = classify("X", hs, client=RaisingClient(exc))
+    brief = classify("X", hs, client=FakeClient(exc))
     assert_degraded(brief, hs)
     assert "key" in brief.note
 
@@ -252,14 +220,14 @@ def test_a_rejected_key_is_named_rather_than_read_as_transient(
 def test_a_connection_failure_returns_the_headlines():
     """Not every transport error arrives as an SDK exception."""
     hs = headlines()
-    brief = classify("X", hs, client=RaisingClient(ConnectionError("no route")))
+    brief = classify("X", hs, client=FakeClient(ConnectionError("no route")))
     assert_degraded(brief, hs)
     assert "failed" in brief.note
 
 
 def test_a_timeout_returns_the_headlines():
     hs = headlines()
-    brief = classify("X", hs, client=RaisingClient(TimeoutError("timed out")))
+    brief = classify("X", hs, client=FakeClient(TimeoutError("timed out")))
     assert_degraded(brief, hs)
 
 
@@ -273,7 +241,7 @@ def test_a_timeout_returns_the_headlines():
 )
 def test_an_unreadable_payload_returns_the_headlines(text):
     hs = headlines()
-    brief = classify("X", hs, client=RawTextClient(text))
+    brief = classify("X", hs, client=FakeClient(text))
     assert_degraded(brief, hs)
     assert "unreadable" in brief.note
 
@@ -297,7 +265,7 @@ def test_a_programming_error_is_not_reported_as_headlines_only():
     """Degrading is for failures of the call, not for bugs in this module —
     swallowing those would hide a refactor that broke the request."""
     with pytest.raises(AttributeError):
-        classify("X", headlines(), client=RaisingClient(AttributeError("typo")))
+        classify("X", headlines(), client=FakeClient(AttributeError("typo")))
 
 
 def test_news_query_strips_only_trailing_legal_suffixes():
