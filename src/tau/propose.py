@@ -22,6 +22,7 @@ as such either way. Any broker failure falls back to the formula.
 """
 
 import asyncio
+from collections import Counter
 from dataclasses import dataclass, replace
 
 from tastytrade import Session
@@ -216,19 +217,12 @@ def _unbuilt_reasons(structures: tuple[Structure, ...]) -> str:
 
 
 def _no_structure_reason(cycle: Cycle | None, structures: tuple[Structure, ...]) -> str:
-    """Why a priced cycle yielded no trade. A cycle that built nothing failed
-    for a different reason than one where every variant broke a constraint,
-    and the second is the interesting case — it is a market condition, not a
-    data problem.
+    """Why a priced cycle yielded no trade.
 
-    A missing underlying quote is checked first: without spot, every risk
-    metric fails closed and the constraint tally would describe a dropped
-    feed as a market read.
-
-    Constraint failures are tallied per metric rather than by quoting the
-    first few messages, which would misstate which constraint dominated. A
-    mix of priced and unbuilt variants is reported as a mix, so a chain that
-    partly failed to arrive does not read as a market with nothing to offer.
+    A missing underlying quote is checked first: without spot every risk
+    metric fails closed, and the tally would read a dropped feed as a market
+    condition. Constraint failures are tallied per metric so the dominant one
+    is visible, and unbuilt variants are reported alongside priced ones.
     """
     if cycle is not None and cycle.underlying is None:
         return "no underlying quote"
@@ -237,13 +231,8 @@ def _no_structure_reason(cycle: Cycle | None, structures: tuple[Structure, ...])
     built = [s for s in structures if s.complete]
     if not built:
         return _unbuilt_reasons(structures) or "no variant could be built"
-    counts: dict[str, int] = {}
-    for structure in built:
-        for failure in structure.failures:
-            counts[failure.require.metric] = counts.get(failure.require.metric, 0) + 1
-    tally = ", ".join(
-        f"{metric} ({n})" for metric, n in sorted(counts.items(), key=lambda kv: -kv[1])
-    )
+    counts = Counter(f.require.metric for s in built for f in s.failures)
+    tally = ", ".join(f"{metric} ({n})" for metric, n in counts.most_common())
     reason = f"all {len(built)} priced variants failed a constraint: {tally}"
     unbuilt = len(structures) - len(built)
     if unbuilt:

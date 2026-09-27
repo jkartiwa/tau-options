@@ -312,13 +312,11 @@ def pop_over_intervals(
     pushes further out.
 
     With no `iv_at`, one vol prices the whole distribution. With
-    `iv_at(price, option_type) -> vol | None`, each boundary is priced under
-    the vol local to it: the put side for a lower boundary, the call side for
-    an upper one, so put skew lowers the estimate. This is a practitioner
-    approximation, not a distribution: the two CDFs subtracted do not belong
-    to the same random variable. The rigorous alternative, the risk-neutral
-    density recovered from the whole smile, is not implemented. A boundary
-    whose own vol is missing falls back to `iv`.
+    `iv_at(price, option_type) -> vol | None`, each boundary uses the vol
+    local to it (put side below, call side above), so put skew lowers the
+    estimate. This is a practitioner approximation: the two CDFs do not come
+    from one distribution. A boundary with no vol of its own falls back to
+    `iv`.
     """
     if spot <= 0 or iv <= 0 or dte <= 0:
         return None
