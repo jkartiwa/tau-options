@@ -49,9 +49,7 @@ class StrategyPicker(ModalScreen[set[str]]):
         with Vertical(id="picker"):
             yield Static("Strategies searched", id="picker-title")
             yield DataTable(id="picker-table", cursor_type="row")
-            yield Static(
-                "space toggle · a all · n none · esc done", id="picker-help"
-            )
+            yield Static("space toggle · a all · n none · esc done", id="picker-help")
 
     def on_mount(self) -> None:
         table = self.query_one("#picker-table", DataTable)
@@ -75,9 +73,7 @@ class StrategyPicker(ModalScreen[set[str]]):
             # renders as nothing at all when it is parsed rather than shown.
             # Disabled rows are greyed, matching the rejected rows elsewhere.
             style = "" if on else "dim"
-            table.add_row(
-                *(Text(c, style=style) for c in cells), key=strategy.name
-            )
+            table.add_row(*(Text(c, style=style) for c in cells), key=strategy.name)
         if self._strategies:
             table.move_cursor(row=max(0, min(cursor, len(self._strategies) - 1)))
 
@@ -112,7 +108,9 @@ class StrategyPicker(ModalScreen[set[str]]):
         """Leaves the highlighted one on, for the same reason `toggle` will not
         clear the last strategy: this is a way to isolate one, not to empty the
         list."""
-        strategy = self.highlighted or (self._strategies[0] if self._strategies else None)
+        strategy = self.highlighted or (
+            self._strategies[0] if self._strategies else None
+        )
         self._enabled = {strategy.name} if strategy is not None else set()
         self.repaint()
 

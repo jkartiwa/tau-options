@@ -1,8 +1,8 @@
 """The detail pane: everything known about the highlighted name.
 
 Two tiers, deliberately. The vol context comes from the metrics pull already
-in memory and renders the instant the cursor moves; the chain costs ~1.2s and
-loads only on request. That split is why moving down the list stays free.
+in memory and renders the instant the cursor moves; the chain costs a network
+round trip and loads only on request, so moving down the list stays free.
 """
 
 from datetime import date
@@ -14,6 +14,7 @@ from tau import build as build_mod
 from tau import catalyst as catalyst_mod
 from tau import history as history_mod
 from tau.build import BuiltLeg, Structure
+from tau.fmt import fmt, pct
 from tau.propose import Proposal
 from tau.screen import Candidate
 
@@ -23,16 +24,13 @@ TERM_FLAT_BAND = 2.0  # vol points; inside this the curve reads flat
 HEADLINE_LINES = 8  # shown only when there is no verdict to show instead
 
 
-def _fmt(value, spec: str = ".2f", dash: str = "—") -> str:
-    if value is None:
-        return dash
-    if value in (float("inf"), float("-inf")):
-        return "∞" if value > 0 else "-∞"
-    return format(value, spec)
+def _fmt(value, spec: str = ".2f") -> str:
+    return fmt(value, spec)
 
 
-def _pct(value, spec: str = ".0f", dash: str = "—") -> str:
-    return dash if value is None else _fmt(value * 100, spec) + "%"
+def _pct(value, spec: str = ".0f") -> str:
+    """Unlike the table columns, prose carries its own % sign."""
+    return pct(value, spec) + ("" if value is None else "%")
 
 
 def _leg_line(b: BuiltLeg) -> str:
@@ -157,22 +155,18 @@ class DetailPane(Static):
         an all-clear."""
         colour = "green" if b.tradable else "yellow"
         lines = [
-            f"[b]why vol is bid[/b] "
-            f"[{colour}]{b.classification}[/{colour}] ({b.confidence})",
+            f"[b]why vol is bid[/b] [{colour}]{b.classification}[/{colour}] ({b.confidence})",
             f"[dim]{b.gloss}[/dim]",
         ]
-        # catalyst/event/note are model-written from untrusted headlines, and
-        # this pane renders markup — so they are escaped. Unescaped, a crafted
-        # headline could close the [yellow] around a pending_binary and strip
-        # the warning off the one verdict that most needs it.
+        # Model-written text derived from untrusted headlines is escaped: a
+        # crafted headline could otherwise close the [yellow] markup and strip
+        # the warning off a pending_binary.
         if b.catalyst:
             lines.append(f"catalyst {escape(b.catalyst)}")
         for k in b.key_dates:
             lines.append(f"[yellow]  {escape(k.day)} — {escape(k.event)}[/yellow]")
         lines.append(escape(b.note))
-        # With no verdict the headlines are all there is, so show them — that
-        # is the whole read when no API key is configured. A classified name
-        # doesn't need them; the verdict already stands for them.
+        # With no verdict (e.g. no API key) the headlines are the whole read.
         if b.classification == catalyst_mod.UNKNOWN and b.headlines:
             lines.append("")
             for h in b.headlines[:HEADLINE_LINES]:
@@ -185,16 +179,13 @@ class DetailPane(Static):
         cy = p.cycle
         head = f"[b]{cy.expiration}[/b] · {cy.dte} DTE"
         atm = cy.atm_iv
-        # The fair comparison is metrics' own term-structure IV *at this
-        # expiration*, not the fixed-tenor iv30 (shown separately in the
-        # context lines): iv30 is pinned to 30 days, but the chosen
-        # expiration usually isn't, and on names with steep term structure
-        # that alone produces a large gap that looks like mid-quote
-        # inflation but isn't. Verified live 2026-07-27: apparent 20+pt
-        # gaps against iv30 (SMH, MU, INTC) shrank to a consistent -2 to
-        # -7pt gap once compared at the matching expiration.
+        # Compare against the metrics' term-structure IV at this expiration,
+        # not iv30: iv30 is pinned to 30 days, and on a steep term structure
+        # the tenor mismatch alone opens a gap that looks like mispricing.
         term_iv = next((v for d, v in c.term if d == cy.expiration), None)
-        iv_line = f"spot {_fmt(cy.underlying)} · ATM IV {_fmt(atm and atm * 100, '.1f')}%"
+        iv_line = (
+            f"spot {_fmt(cy.underlying)} · ATM IV {_fmt(atm and atm * 100, '.1f')}%"
+        )
         if atm is not None and term_iv is not None:
             iv_line += f" [dim](metrics @exp {term_iv:.1f}%)[/dim]"
         em_note = ""
@@ -211,27 +202,26 @@ class DetailPane(Static):
         # everywhere else it is the winner across every strategy searched.
         shown = chosen if chosen is not None else p.best
         if shown is None:
-            lines.append(f"[yellow]no structure: {p.error or 'nothing passed'}[/yellow]")
+            lines.append(
+                f"[yellow]no structure: {p.error or 'nothing passed'}[/yellow]"
+            )
             return lines
         if not shown.complete:
             lines.append(f"[b]{shown.label}[/b]")
             lines.append(f"[yellow]not built: {shown.reason}[/yellow]")
             return lines
 
-        # One pane, one margin model. The winner appears twice — in the line
-        # below and again in the ladder under it — and `ANN` is read off the
-        # buying-power figure, so a ladder forced onto the formula takes the
-        # lines above it along. Two different numbers four lines apart under
-        # the same `ANN` label is worse than either model on its own.
+        # One pane, one margin model: the winner appears both here and in the
+        # ladder, so a ladder read on the formula takes the winner's lines
+        # along rather than show two different `ANN` figures for one trade.
         siblings, on_formula = (
             ([], False) if chosen is not None else self._ladder(p, shown)
         )
         lines += self._structure_lines(shown.on_formula if on_formula else shown)
         if chosen is None:
             lines += self._ladder_lines(shown, siblings, on_formula)
-            # The winner is one of many, and how many were rejected is part of
-            # reading it — one passing variant out of twelve is a different
-            # market from twelve out of twelve.
+            # One passing variant out of twelve is a different market from
+            # twelve out of twelve.
             considered = len(p.structures)
             passing = sum(1 for s in p.structures if s.ok)
             lines.append(
@@ -243,15 +233,10 @@ class DetailPane(Static):
         """The winner's siblings in ladder order, and whether the pane has to
         read them on the formula.
 
-        The broker prices a bounded shortlist, so a strategy's ladder can
-        straddle the cut. `ANN` is read off the buying-power figure and
-        carries no source marker of its own, so a ladder that is not
-        uniformly broker-priced is shown on the formula throughout. A marker
-        would tell the reader these rows are incomparable; the formula makes
-        them comparable, which is what the column is for.
-
-        Fewer than two siblings is not a ladder, and nothing is rendered from
-        it — so it forces nothing onto the formula either.
+        The broker prices a bounded shortlist, so a ladder can straddle the
+        cut. `ANN` carries no source marker, so a ladder that is not uniformly
+        broker-priced is read on the formula throughout, keeping its rows
+        comparable. Fewer than two siblings is not a ladder and forces nothing.
         """
         siblings = [
             s
@@ -268,14 +253,8 @@ class DetailPane(Static):
     def _ladder_lines(
         self, best: Structure, siblings: list[Structure], on_formula: bool
     ) -> list[str]:
-        """The winner's siblings: the same strategy's other variants, in ladder
-        order.
-
-        The rank view can only show one row per name, and on return alone the
-        widest delta almost always wins, so the cheaper strikes were only
-        visible by drilling in. Seeing what the extra credit costs in
-        probability is the actual decision, so it belongs beside the winner.
-        """
+        """The same strategy's other variants beside the winner, so what the
+        extra credit costs in probability is visible without drilling in."""
         if not siblings:
             return []
         lines = [
@@ -293,8 +272,7 @@ class DetailPane(Static):
         return lines
 
     def _structure_lines(self, s: Structure) -> list[str]:
-        """The winning structure, leg by leg. Every figure here is per the
-        engine's generic derivation; nothing knows what family it is."""
+        """The structure, leg by leg, then its figures."""
         lines = [f"[b]{s.label}[/b] [dim]{s.strategy.bias}[/dim]"]
         lines += [f"  {_leg_line(b)}" for b in s.legs]
         be = " / ".join(f"{value:g}" for value in s.breakevens) or "—"
@@ -305,11 +283,8 @@ class DetailPane(Static):
             else f"[yellow]debit {_fmt(abs(premium)) if premium else '—'}[/yellow]"
         )
         lines.append(f"{taken} · BE {be}")
-        # Premium is per share and the rest is per contract. Marking the
-        # dollar figures keeps two different units off adjacent lines wearing
-        # the same clothes. Buying power names its source outright: `BPR~` is
-        # the formula, `BPR` is the broker's own dry-run figure, and the two
-        # are different numbers from different models.
+        # Premium is per share, the dollar figures per contract. `BPR~` is the
+        # formula estimate, `BPR` the broker's dry-run figure.
         bpr_label = "BPR" if s.bpr_source == "broker" else "BPR~"
         bpr_note = " (broker dry-run)" if s.bpr_source == "broker" else " (formula)"
         lines.append(
@@ -325,9 +300,4 @@ class DetailPane(Static):
         lines.append(risk)
         for failure in s.failures:
             lines.append(f"[yellow]{failure.reason}[/yellow]")
-        # No off-target warning here any more: `build.MAX_DELTA_MISS` refuses
-        # a variant that missed its requested delta before it is ever priced,
-        # so a structure that reaches this pane holds contracts its label
-        # describes. Those that did not appear as `not built`, with the miss
-        # in their reason.
         return lines

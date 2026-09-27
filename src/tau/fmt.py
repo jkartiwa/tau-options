@@ -1,8 +1,7 @@
 """Number formatting shared by the CLI tables and the TUI tables.
 
 Both surfaces print the same figures in the same columns, so the rules live
-in one place. The detail pane formats for prose rather than columns, so it
-keeps its own helpers.
+in one place.
 """
 
 
